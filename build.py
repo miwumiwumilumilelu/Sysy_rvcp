@@ -6,10 +6,10 @@ import shutil
 
 # ================= 配置区域 =================
 COMPILER = "g++"
-# C++17 是必须的，因为我们要用 std::string_view 和 alignof
-CFLAGS = ["-std=c++17", "-g", "-Wall", "-Wextra", "-Isrc"]
+#include "Lex/Lexer.h" 就能正确映射到 src/include/Lex/Lexer.h
+CFLAGS = ["-std=c++17", "-g", "-Wall", "-Wextra", "-Isrc/include"]
 BUILD_DIR = "build"
-TARGET_NAME = "manc"
+TARGET_NAME = "sysy_rvcp" 
 # ===========================================
 
 def clean():
@@ -33,7 +33,7 @@ def build():
 
     # 1. 扫描源文件
     source_files = []
-    # 递归查找 src 目录下所有的 .cpp 文件
+    # 递归查找 src 目录下所有的 .cpp 文件 (包括 src/main.cpp 和 src/lib 下的文件)
     src_dir = project_root / "src"
     for file_path in src_dir.rglob("*.cpp"):
         source_files.append(str(file_path))
@@ -45,11 +45,12 @@ def build():
     print(f"📂 发现源文件: {[Path(p).name for p in source_files]}")
 
     # 2. 组装编译命令
-    # 核心指令: g++ -std=c++17 -Isrc src/main/main.cpp src/ir/Context.cpp -o build/manc
     cmd = [COMPILER] + CFLAGS + source_files + ["-o", str(target_path)]
 
-    print(f"🚀 正在编译 Manc...")
+    print(f"🚀 正在编译 {TARGET_NAME}...")
     try:
+        # 打印实际执行的命令，方便调试
+        # print(f"DEBUG: {' '.join(cmd)}") 
         subprocess.run(cmd, check=True)
         print(f"✅ 编译成功！输出文件: {target_path}")
     except subprocess.CalledProcessError:
@@ -60,18 +61,16 @@ def build():
 
 def run(target_path):
     """运行编译后的程序"""
-    print(f"\n🧪 正在运行测试 (Main)...")
+    print(f"\n🧪 正在运行测试 (Lexer Test)...")
     print("=" * 40)
     try:
-        # 直接运行生成的可执行文件
         subprocess.run([str(target_path)], check=True)
         print("=" * 40)
-        print("🎉 运行结束。")
+        print("🎉 测试运行结束。")
     except subprocess.CalledProcessError as e:
         print(f"❌ 运行时发生错误，返回码: {e.returncode}")
 
 if __name__ == "__main__":
-    # 如果带参数 clean，则执行清理
     if len(sys.argv) > 1 and sys.argv[1] == "clean":
         clean()
     else:
