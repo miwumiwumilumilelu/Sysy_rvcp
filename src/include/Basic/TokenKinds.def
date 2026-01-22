@@ -1,0 +1,56 @@
+#ifndef TOK
+#define TOK(X)
+#endif
+#ifndef PUNCTUATOR
+#define PUNCTUATOR(X, Y) TOK(X)
+#endif
+#ifndef KEYWORD
+#define KEYWORD(X) TOK(kw_ ## X)
+#endif
+
+TOK(unknown)             // Error or unknown type
+TOK(eof)                 // End of file
+
+TOK(identifier)
+TOK(int_const)           // Decimal, octal, hexadecimal integers
+TOK(float_const)
+
+// Operators & punctuation
+PUNCTUATOR(l_paren,      "(")
+PUNCTUATOR(r_paren,      ")")
+PUNCTUATOR(l_square,     "[")
+PUNCTUATOR(r_square,     "]")
+PUNCTUATOR(l_brace,      "{")
+PUNCTUATOR(r_brace,      "}")
+PUNCTUATOR(comma,        ",")
+PUNCTUATOR(semi,         ";")
+PUNCTUATOR(plus,         "+")
+PUNCTUATOR(minus,        "-")
+PUNCTUATOR(star,         "*")
+PUNCTUATOR(slash,        "/")
+PUNCTUATOR(percent,      "%")
+PUNCTUATOR(equal,        "=")
+PUNCTUATOR(less,         "<")
+PUNCTUATOR(greater,      ">")
+PUNCTUATOR(exclaim,      "!")
+PUNCTUATOR(less_equal,   "<=")
+PUNCTUATOR(greater_equal,">=")
+PUNCTUATOR(equal_equal,  "==")
+PUNCTUATOR(not_equal,    "!=")
+PUNCTUATOR(amp_amp,      "&&")
+PUNCTUATOR(pipe_pipe,    "||")
+
+KEYWORD(int)
+KEYWORD(float)
+KEYWORD(void)
+KEYWORD(const)
+KEYWORD(if)
+KEYWORD(else)
+KEYWORD(while)
+KEYWORD(break)
+KEYWORD(continue)
+KEYWORD(return)
+
+#undef KEYWORD
+#undef PUNCTUATOR
+#undef TOK

@@ -1,0 +1,5 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     '/Users/manbin/projects/Sysy_rvcp/build/sysy_rvcp'
+relocations:     []
+...
