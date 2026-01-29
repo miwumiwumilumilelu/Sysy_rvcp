@@ -22,6 +22,7 @@ public:
 private:
   void skipWhitespace();
   void skipComment();      // Handle // and /* */
+  Token lexNumericConstant();
   char peek() const { return *CurPtr; }
   char consume() { 
     char c = *CurPtr++; 
