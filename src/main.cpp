@@ -1,48 +1,33 @@
 #include "Lex/Lexer.h"
-#include "Basic/Token.h"
+#include "Parse/Parser.h"
 #include <iostream>
-#include <iomanip>
 #include <string>
 
 using namespace sysy;
 
 int main() {
     std::string code = 
-        "@ %#$@@! "
-        "  /* Testing various numeric constants */\n"
-        "const float PI = 3.14159, scale = 0x1.8p+1;\n"
         "int main() {\n"
-        "    int dec = 123, oct = 0123, hex = 0xABC;\n"
-        "    float f1 = 1.2e+3, f2 = .5, f3 = 5e-2;\n"
-        "    float f_hex = 0x.Ap-2; \n"
-        "    if (dec >= oct && hex != 0) {\n"
-        "        return dec % 2;\n"
-        "    }\n"
-        "    return 0; // End of program\n"
-        "}";
+        "    float compute() {};\n"
+        "    return 0;\n"
+        "}\n"
+        "float compute() {}";
     
 
-    std::cout << "--- Lexer : ---" << std::endl;
-    std::cout << std::left << std::setw(15) << "TokenKind" 
-              << std::setw(15) << "Text" 
-              << "Location" << std::endl;
-    std::cout << std::string(50, '-') << std::endl;
+    std::cout << "--- Starting Syntax Analysis ---" << std::endl;
 
     Lexer lexer(code);
-    Token tok;
+    Parser parser(lexer);
 
-    do {
-        tok = lexer.nextToken();
-        
-        std::string kindName = tok::getTokenName(tok.getKind());
-        
-        std::cout << std::left << std::setw(15) << kindName 
-                  << std::setw(15) << (tok.getKind() == tok::eof ? "" : std::string(tok.getText())) 
-                  << "Line " << tok.getLine() << ", Col " << tok.getColumn() 
-                  << std::endl;
+    auto ast = parser.parseCompUnit();
 
-    } while (tok.isNot(tok::eof));
+    if (ast) {
+        std::cout << "\n--- Generated AST Dump ---" << std::endl;
+        ast->dump(0);
+    } else {
+        std::cerr << "Parsing failed!" << std::endl;
+    }
 
-    std::cout << "--- TEST PASSED ---" << std::endl;
+    std::cout << "\n--- TEST COMPLETED ---" << std::endl;
     return 0;
 }
