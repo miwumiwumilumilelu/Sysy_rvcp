@@ -30,10 +30,16 @@ private:
 
     std::unique_ptr<BlockAST> parseBlock();       // {...}
     std::unique_ptr<StmtAST> parseStmt();         // (return, block, etc.)
+    std::unique_ptr<VarDeclAST> parseDecl();      // Decl -> Type Identifier [ = Expr ] ;
     
     std::unique_ptr<ExprAST> parseExpr();         // Expr -> AddExpr
+    std::unique_ptr<ExprAST> parseLogicOrExpr(); // ||
+    std::unique_ptr<ExprAST> parseLogicAndExpr(); // &&
+    std::unique_ptr<ExprAST> parseEqExpr(); // == | !=
+    std::unique_ptr<ExprAST> parseRelExpr();      // < | > | <= | >=
     std::unique_ptr<ExprAST> parseAddExpr();      // AddExpr -> MulExpr { (+|-) MulExpr }
     std::unique_ptr<ExprAST> parseMulExpr();      // MulExpr -> PrimaryExpr { (*|/|%) PrimaryExpr }
+    std::unique_ptr<ExprAST> parseUnaryExpr();   // UnaryExpr -> (+|-) UnaryExpr | PrimaryExpr
     std::unique_ptr<ExprAST> parsePrimaryExpr();  // PrimaryExpr -> Number | (Expr)
 };
 

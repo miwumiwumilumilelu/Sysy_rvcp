@@ -8,11 +8,22 @@ using namespace sysy;
 int main() {
     std::string code = 
         "int main() {\n"
-        "    float compute() {};\n"
-        "    return 0;\n"
-        "}\n"
-        "float compute() {}";
-    
+        "    int a = 10;\n"
+        "    int b = 5;\n"
+        "\n"
+        "    if (a > b) {\n"
+        "        a = a - 1;\n"
+        "    } else {\n"
+        "        b = b + 1;\n"
+        "    }\n"
+        "\n"
+        "    while (b > 0) {\n"
+        "        b = b - 1;\n"
+        "    }\n"
+        "\n"
+        "    return a;\n"
+        "}\n";
+
 
     std::cout << "--- Starting Syntax Analysis ---" << std::endl;
 
