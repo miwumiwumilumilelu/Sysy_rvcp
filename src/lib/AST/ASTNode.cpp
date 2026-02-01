@@ -1,5 +1,20 @@
 #include "AST/ASTNode.h"
+#include "AST/ASTVisitor.h"
 using namespace sysy;
+
+void NumberAST::accept(ASTVisitor &v) { v.visit(*this); }
+void LValAST::accept(ASTVisitor &v) { v.visit(*this); }
+void BinaryExprAST::accept(ASTVisitor &v) { v.visit(*this); }
+void UnaryExprAST::accept(ASTVisitor &v) { v.visit(*this); }
+void ReturnStmtAST::accept(ASTVisitor &v) { v.visit(*this); }
+void AssignStmtAST::accept(ASTVisitor &v) { v.visit(*this); }
+void IfStmtAST::accept(ASTVisitor &v) { v.visit(*this); }
+void WhileStmtAST::accept(ASTVisitor &v) { v.visit(*this); }
+void ExprStmtAST::accept(ASTVisitor &v) { v.visit(*this); }
+void BlockAST::accept(ASTVisitor &v) { v.visit(*this); }
+void VarDeclAST::accept(ASTVisitor &v) { v.visit(*this); }
+void FuncDefAST::accept(ASTVisitor &v) { v.visit(*this); }
+void CompUnitAST::accept(ASTVisitor &v) { v.visit(*this); }
 
 void NumberAST::dump(int indent) const {
     std::cout << std::string(indent, ' ') << "NumberAST: " 

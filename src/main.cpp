@@ -1,5 +1,6 @@
 #include "Lex/Lexer.h"
 #include "Parse/Parser.h"
+#include "Semant/Semant.h"
 #include <iostream>
 #include <string>
 
@@ -10,34 +11,34 @@ int main() {
         "int main() {\n"
         "    int a = 10;\n"
         "    int b = 5;\n"
-        "\n"
         "    if (a > b) {\n"
-        "        a = a - 1;\n"
-        "    } else {\n"
-        "        b = b + 1;\n"
+        "        int temp = a;\n"
+        "        a = b;\n"
+        "        b = temp;\n"
         "    }\n"
-        "\n"
-        "    while (b > 0) {\n"
-        "        b = b - 1;\n"
-        "    }\n"
-        "\n"
-        "    return a;\n"
+        "    b = a + 1;\n"
+        "    return 0;\n"
         "}\n";
 
-
-    std::cout << "--- Starting Syntax Analysis ---" << std::endl;
+    std::cout << "--- Starting Compilation ---" << std::endl;
 
     Lexer lexer(code);
     Parser parser(lexer);
 
+    // 1. Parsing
     auto ast = parser.parseCompUnit();
-
-    if (ast) {
-        std::cout << "\n--- Generated AST Dump ---" << std::endl;
-        ast->dump(0);
-    } else {
+    if (!ast) {
         std::cerr << "Parsing failed!" << std::endl;
+        return 1;
     }
+
+    std::cout << "\n[AST Dump]" << std::endl;
+    ast->dump(0);
+
+    // 2. Semantic Analysis
+    std::cout << "\n[Semantic Analysis]" << std::endl;
+    Semant semant;
+    ast->accept(semant);
 
     std::cout << "\n--- TEST COMPLETED ---" << std::endl;
     return 0;
