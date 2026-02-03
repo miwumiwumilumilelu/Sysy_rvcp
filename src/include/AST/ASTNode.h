@@ -28,6 +28,11 @@ class NumberAST : public ExprAST {
 public:
     NumberAST(int val) : Kind(IntKind), IntVal(val) {}
     NumberAST(float val) : Kind(FloatKind), FloatVal(val) {}
+
+    int getIntVal() const { return IntVal; }
+    float getFloatVal() const { return FloatVal; }
+    bool isInt() const { return Kind == IntKind; }
+
     void dump(int indent) const override;
     void accept(ASTVisitor &visitor) override;
 };

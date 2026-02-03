@@ -1,6 +1,7 @@
 #include "Lex/Lexer.h"
 #include "Parse/Parser.h"
 #include "Semant/Semant.h"
+#include "IR/IRGen.h"
 #include <iostream>
 #include <string>
 
@@ -11,13 +12,18 @@ int main() {
         "int main() {\n"
         "    int a = 10;\n"
         "    int b = 5;\n"
+        "\n"
         "    if (a > b) {\n"
-        "        int temp = a;\n"
-        "        a = b;\n"
-        "        b = temp;\n"
+        "        a = a - 1;\n"
+        "    } else {\n"
+        "        b = b + 1;\n"
         "    }\n"
-        "    b = a + 1;\n"
-        "    return 0;\n"
+        "\n"
+        "    while (b > 0) {\n"
+        "        b = b - 1;\n"
+        "    }\n"
+        "\n"
+        "    return a;\n"
         "}\n";
 
     std::cout << "--- Starting Compilation ---" << std::endl;
@@ -32,13 +38,24 @@ int main() {
         return 1;
     }
 
-    std::cout << "\n[AST Dump]" << std::endl;
-    ast->dump(0);
-
     // 2. Semantic Analysis
-    std::cout << "\n[Semantic Analysis]" << std::endl;
+    std::cout << "\n[Semantic Analysis]..." << std::endl;
     Semant semant;
     ast->accept(semant);
+
+    // 3. IR Generation (Object-based)
+    std::cout << "\n[IR Generation]..." << std::endl;
+    IRGen irGen;
+    ast->accept(irGen);
+    
+    // Get Module
+    auto module = irGen.getModule();
+    
+    // Print IR
+    std::cout << "\n=== Generated IR ===\n" << std::endl;
+    if (module) {
+        std::cout << module->print() << std::endl;
+    }
 
     std::cout << "\n--- TEST COMPLETED ---" << std::endl;
     return 0;
