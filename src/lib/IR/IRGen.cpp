@@ -1,7 +1,5 @@
 #include "IR/IRGen.h"
 #include "IR/Type.h"
-#include "IR/Instruction.h"
-#include "IR/Module.h" 
 #include <iostream>
 
 using namespace sysy;
@@ -23,7 +21,7 @@ Value* IRGen::lookupVar(const std::string &name) {
 }
 
 void IRGen::visit(CompUnitAST &node) {
-    enterScope(); // Global scope
+    enterScope();
     for (auto &child : node.getChildren()) {
         child->accept(*this);
     }
@@ -31,7 +29,6 @@ void IRGen::visit(CompUnitAST &node) {
 }
 
 void IRGen::visit(FuncDefAST &node) {
-    // Assume temporarily that all return values are int.
     auto func = new Function(node.getName(), Type::getIntTy());
     TheModule->addFunction(func);
     
@@ -39,17 +36,17 @@ void IRGen::visit(FuncDefAST &node) {
     TempCounter = 0;
     LabelCounter = 0;
 
-    // Create Entry Block.
-    CurrentBlock = new BasicBlock("entry", func);
+    BasicBlock *entryBlock = new BasicBlock("entry", func);
+    builder.SetInsertPoint(entryBlock);
 
     enterScope();
     if (node.getBody()) node.getBody()->accept(*this); 
     exitScope();
 
-    // If there is no terminator (ret/br) at the end of the block, add a ret 0.
-    if (CurrentBlock->getInstructions().empty() || 
-        !CurrentBlock->getInstructions().back()->isTerminator()) {
-        new ReturnInst(new ConstantInt(0), CurrentBlock);
+    BasicBlock *curr = builder.GetInsertPoint();
+    if (curr->getInstructions().empty() || 
+        !curr->getInstructions().back()->isTerminator()) {
+        builder.CreateRet(new ConstantInt(0));
     }
 }
 
@@ -62,7 +59,7 @@ void IRGen::visit(BlockAST &node) {
 }
 
 void IRGen::visit(VarDeclAST &node) {
-    auto alloca = new AllocaInst(Type::getIntTy(), CurrentBlock);
+    auto alloca = builder.Create<AllocaInst>(Type::getIntTy());
     alloca->setName("%" + node.getName() + "_" + std::to_string(TempCounter++));
     
     defineVar(node.getName(), alloca);
@@ -70,7 +67,7 @@ void IRGen::visit(VarDeclAST &node) {
     if (node.getInit()) {
         node.getInit()->accept(*this);
         if (LastVal) {
-            new StoreInst(LastVal, alloca, CurrentBlock);
+            builder.Create<StoreInst>(LastVal, alloca);
         }
     }
 }
@@ -81,14 +78,14 @@ void IRGen::visit(AssignStmtAST &node) {
 
     Value *addr = lookupVar(node.getLVal()->getName());
     if (addr && val) {
-        new StoreInst(val, addr, CurrentBlock);
+        builder.Create<StoreInst>(val, addr);
     }
 }
 
 void IRGen::visit(LValAST &node) {
     Value *addr = lookupVar(node.getName());
     if (addr) {
-        auto load = new LoadInst(addr, CurrentBlock);
+        auto load = builder.Create<LoadInst>(addr);
         load->setName(newTempName());
         LastVal = load;
     }
@@ -98,8 +95,6 @@ void IRGen::visit(NumberAST &node) {
     if (node.isInt()) {
         LastVal = new ConstantInt(node.getIntVal()); 
     } else {
-        // Floating point is not supported at the moment, or ConstantFloat is extended in the future.
-        // LastVal = new ConstantFloat(node.getFloatVal());
         LastVal = new ConstantInt((int)node.getFloatVal());
     }
 }
@@ -112,18 +107,12 @@ void IRGen::visit(BinaryExprAST &node) {
 
     if (!L || !R) return;
 
-    Instruction::OpID op;
     std::string opStr = node.getOp();
-    
-    if (opStr == "+") op = Instruction::Add;
-    else if (opStr == "-") op = Instruction::Sub;
-    else if (opStr == "*") op = Instruction::Mul;
-    else if (opStr == "/") op = Instruction::Div;
-    else if (opStr == ">" || opStr == "<" || opStr == "==" || 
-             opStr == ">=" || opStr == "<=" || opStr == "!=") op = Instruction::ICmp;
-    else op = Instruction::Add; 
+    Instruction *inst = nullptr;
 
-    if (op == Instruction::ICmp) {
+    if (opStr == ">" || opStr == "<" || opStr == "==" || 
+        opStr == ">=" || opStr == "<=" || opStr == "!=") {
+        
         ICmpInst::CmpOp pred = ICmpInst::EQ;
         if (opStr == ">") pred = ICmpInst::SGT;
         else if (opStr == "<") pred = ICmpInst::SLT;
@@ -132,11 +121,19 @@ void IRGen::visit(BinaryExprAST &node) {
         else if (opStr == ">=") pred = ICmpInst::SGE;
         else if (opStr == "<=") pred = ICmpInst::SLE;
 
-        auto inst = new ICmpInst(pred, L, R, CurrentBlock);
-        inst->setName(newTempName());
-        LastVal = inst;
+        inst = builder.Create<ICmpInst>(pred, L, R);
+
     } else {
-        auto inst = new BinaryInst(op, L, R, CurrentBlock);
+        Instruction::OpID op = Instruction::Add;
+        if (opStr == "+") op = Instruction::Add;
+        else if (opStr == "-") op = Instruction::Sub;
+        else if (opStr == "*") op = Instruction::Mul;
+        else if (opStr == "/") op = Instruction::Div;
+
+        inst = builder.Create<BinaryInst>(op, L, R);
+    }
+
+    if (inst) {
         inst->setName(newTempName());
         LastVal = inst;
     }
@@ -150,25 +147,26 @@ void IRGen::visit(IfStmtAST &node) {
     auto elseBB = node.getElse() ? new BasicBlock(newLabelName(), CurrentFunc) : nullptr;
     auto mergeBB = new BasicBlock(newLabelName(), CurrentFunc);
 
-    // Br cond, Then, Else(or Merge)
-    new BranchInst(cond, thenBB, elseBB ? elseBB : mergeBB, CurrentBlock);
+    builder.Create<BranchInst>(cond, thenBB, elseBB ? elseBB : mergeBB);
 
-    // Then Block
-    CurrentBlock = thenBB;
+    builder.SetInsertPoint(thenBB);
     node.getThen()->accept(*this);
-    if (CurrentBlock->getInstructions().empty() || !CurrentBlock->getInstructions().back()->isTerminator())
-        new BranchInst(mergeBB, CurrentBlock);
-
-    // Else Block
-    if (elseBB) {
-        CurrentBlock = elseBB;
-        node.getElse()->accept(*this);
-        if (CurrentBlock->getInstructions().empty() || !CurrentBlock->getInstructions().back()->isTerminator())
-            new BranchInst(mergeBB, CurrentBlock);
+    
+    if (builder.GetInsertPoint()->getInstructions().empty() || 
+        !builder.GetInsertPoint()->getInstructions().back()->isTerminator()) {
+        builder.CreateBr(mergeBB);
     }
 
-    // Merge Block
-    CurrentBlock = mergeBB;
+    if (elseBB) {
+        builder.SetInsertPoint(elseBB);
+        node.getElse()->accept(*this);
+        if (builder.GetInsertPoint()->getInstructions().empty() || 
+            !builder.GetInsertPoint()->getInstructions().back()->isTerminator()) {
+            builder.CreateBr(mergeBB);
+        }
+    }
+
+    builder.SetInsertPoint(mergeBB);
 }
 
 void IRGen::visit(WhileStmtAST &node) {
@@ -176,20 +174,20 @@ void IRGen::visit(WhileStmtAST &node) {
     auto bodyBB = new BasicBlock(newLabelName(), CurrentFunc);
     auto endBB  = new BasicBlock(newLabelName(), CurrentFunc);
 
-    new BranchInst(condBB, CurrentBlock);
+    builder.CreateBr(condBB);
 
     // Cond
-    CurrentBlock = condBB;
+    builder.SetInsertPoint(condBB);
     node.getCond()->accept(*this);
-    new BranchInst(LastVal, bodyBB, endBB, CurrentBlock);
+    builder.Create<BranchInst>(LastVal, bodyBB, endBB);
 
     // Body
-    CurrentBlock = bodyBB;
+    builder.SetInsertPoint(bodyBB);
     node.getBody()->accept(*this);
-    new BranchInst(condBB, CurrentBlock);
+    builder.CreateBr(condBB); // 循环回去
 
     // End
-    CurrentBlock = endBB;
+    builder.SetInsertPoint(endBB);
 }
 
 void IRGen::visit(ReturnStmtAST &node) {
@@ -197,10 +195,10 @@ void IRGen::visit(ReturnStmtAST &node) {
     if (node.getRetVal()) {
         node.getRetVal()->accept(*this);
         retVal = LastVal;
+        builder.CreateRet(retVal);
     } else {
-        retVal = new ConstantInt(0); 
+        builder.CreateRet(new ConstantInt(0));
     }
-    new ReturnInst(retVal, CurrentBlock);
 }
 
 void IRGen::visit(ExprStmtAST &node) {
@@ -212,7 +210,8 @@ void IRGen::visit(UnaryExprAST &node) {
         node.getOperand()->accept(*this);
         Value *operand = LastVal;
         auto zero = new ConstantInt(0);
-        auto inst = new BinaryInst(Instruction::Sub, zero, operand, CurrentBlock);
+        
+        auto inst = builder.Create<BinaryInst>(Instruction::Sub, zero, operand);
         inst->setName(newTempName());
         LastVal = inst;
     }

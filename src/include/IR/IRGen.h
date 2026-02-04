@@ -3,6 +3,7 @@
 
 #include "AST/ASTVisitor.h"
 #include "IR/Module.h"
+#include "IR/IRBuilder.h"
 #include <map>
 #include <vector>
 #include <string>
@@ -32,10 +33,9 @@ public:
 
 private:
     std::unique_ptr<Module> TheModule;
+    IRBuilder builder;
     
     Function *CurrentFunc = nullptr;
-    BasicBlock *CurrentBlock = nullptr;
-    
     Value *LastVal = nullptr;
 
     // Symbol stack: Variable name -> Value* in IR.

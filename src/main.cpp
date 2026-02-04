@@ -2,31 +2,31 @@
 #include "Parse/Parser.h"
 #include "Semant/Semant.h"
 #include "IR/IRGen.h"
+// #include "CodeGen/RISCVGen.h"
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 using namespace sysy;
 
-int main() {
-    std::string code = 
-        "int main() {\n"
-        "    int a = 10;\n"
-        "    int b = 5;\n"
-        "\n"
-        "    if (a > b) {\n"
-        "        a = a - 1;\n"
-        "    } else {\n"
-        "        b = b + 1;\n"
-        "    }\n"
-        "\n"
-        "    while (b > 0) {\n"
-        "        b = b - 1;\n"
-        "    }\n"
-        "\n"
-        "    return a;\n"
-        "}\n";
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <filename.sy>" << std::endl;
+        return 1;
+    }
 
-    std::cout << "--- Starting Compilation ---" << std::endl;
+    std::string filename = argv[1];
+    std::ifstream t(filename);
+    if (!t.is_open()) {
+        std::cerr << "Error: Cannot open file " << filename << std::endl;
+        return 1;
+    }
+    std::stringstream buffer;
+    buffer << t.rdbuf();
+    std::string code = buffer.str();
+
+    std::cout << "--- Compiling " << filename << " ---" << std::endl;
 
     Lexer lexer(code);
     Parser parser(lexer);
@@ -39,24 +39,31 @@ int main() {
     }
 
     // 2. Semantic Analysis
-    std::cout << "\n[Semantic Analysis]..." << std::endl;
     Semant semant;
     ast->accept(semant);
 
-    // 3. IR Generation (Object-based)
-    std::cout << "\n[IR Generation]..." << std::endl;
+    // 3. IR Generation
     IRGen irGen;
     ast->accept(irGen);
-    
-    // Get Module
     auto module = irGen.getModule();
-    
-    // Print IR
-    std::cout << "\n=== Generated IR ===\n" << std::endl;
+
+    std::cout << "\n=== Generated IR ===" << std::endl;
     if (module) {
         std::cout << module->print() << std::endl;
     }
 
-    std::cout << "\n--- TEST COMPLETED ---" << std::endl;
+    // // 4. RISC-V Generation
+    // std::cout << "\n=== Generated RISC-V Assembly ===" << std::endl;
+    // if (module) {
+    //     RISCVGen riscvGen(module.get());
+    //     riscvGen.generate();
+    //     std::cout << riscvGen.getAssembly() << std::endl;
+        
+    //     std::string asmFilename = filename + ".s";
+    //     std::ofstream asmFile(asmFilename);
+    //     asmFile << riscvGen.getAssembly();
+    //     std::cout << "\n[Info] Assembly saved to " << asmFilename << std::endl;
+    // }
+
     return 0;
 }
