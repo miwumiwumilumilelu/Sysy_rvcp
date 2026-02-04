@@ -1,2 +1,2 @@
 # Sysy_rvcp
-The clang-like Sysy compiler for competition
+The MLIR-inspired HIR and LLVM-inspired CFGIR Sysy compiler for competition
