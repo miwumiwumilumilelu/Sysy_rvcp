@@ -3,6 +3,7 @@
 
 #include "IR/Value.h"
 #include "IR/Instruction.h"
+#include "IR/Region.h"
 #include <list>
 #include <vector>
 #include <sstream>
@@ -14,39 +15,42 @@ class BasicBlock;
 
 class BasicBlock : public Value {
 public:
-    BasicBlock(const std::string &name, Function *parent);
+    BasicBlock(const std::string &name, Region *parent);
     
     std::list<Instruction*>& getInstructions() { return InstList; }
     void addInstruction(Instruction *inst) { InstList.push_back(inst); }
+
+    Region* getParent() const { return Parent; }
+    Function* getParentFunc() const;
 
     std::string toString() const override;
 
 private:
     std::list<Instruction*> InstList;
-    Function *Parent;
+    Region *Parent;
 };
 
 class Function : public Value {
 public:
-    Function(const std::string &name, Type* retTy)
-        : Value(retTy, name) {}
+    Function(const std::string &name, Type* retTy);
 
-    std::list<BasicBlock*>& getBlocks() { return Blocks; }
-    void addBlock(BasicBlock *bb) { Blocks.push_back(bb); }
+    Region* getBody() { return Body.get(); }
+    BasicBlock* getEntryBlock();
 
     std::string toString() const override;
 
 private:
-    std::list<BasicBlock*> Blocks;
+    std::unique_ptr<Region> Body;
 };
 
 class Module {
 public:
     void addFunction(Function *func) { Functions.push_back(func); }
+    const std::vector<Function*>& getFunctions() const { return Functions; }
     std::string print();
 
 private:
-    std::list<Function*> Functions;
+    std::vector<Function*> Functions;
 };
 
 }

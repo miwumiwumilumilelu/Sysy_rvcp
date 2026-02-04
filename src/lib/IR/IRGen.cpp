@@ -36,7 +36,7 @@ void IRGen::visit(FuncDefAST &node) {
     TempCounter = 0;
     LabelCounter = 0;
 
-    BasicBlock *entryBlock = new BasicBlock("entry", func);
+    BasicBlock *entryBlock = new BasicBlock("entry", func->getBody());
     builder.SetInsertPoint(entryBlock);
 
     enterScope();
@@ -54,6 +54,12 @@ void IRGen::visit(BlockAST &node) {
     enterScope();
     for (auto &item : node.getItems()) {
         item->accept(*this);
+        // If the current block has ended (e.g. encountering return/break), subsequent code is no longer generated.
+        // Prevent multiple terminators from being generated in a BasicBlock.
+        if (builder.GetInsertPoint()->getInstructions().size() > 0 &&
+            builder.GetInsertPoint()->getInstructions().back()->isTerminator()) {
+            break;
+        }
     }
     exitScope();
 }
@@ -122,7 +128,6 @@ void IRGen::visit(BinaryExprAST &node) {
         else if (opStr == "<=") pred = ICmpInst::SLE;
 
         inst = builder.Create<ICmpInst>(pred, L, R);
-
     } else {
         Instruction::OpID op = Instruction::Add;
         if (opStr == "+") op = Instruction::Add;
@@ -143,51 +148,58 @@ void IRGen::visit(IfStmtAST &node) {
     node.getCond()->accept(*this);
     Value *cond = LastVal;
 
-    auto thenBB = new BasicBlock(newLabelName(), CurrentFunc);
-    auto elseBB = node.getElse() ? new BasicBlock(newLabelName(), CurrentFunc) : nullptr;
-    auto mergeBB = new BasicBlock(newLabelName(), CurrentFunc);
+    auto ifInst = builder.Create<IfInst>(cond);
 
-    builder.Create<BranchInst>(cond, thenBB, elseBB ? elseBB : mergeBB);
+    {
+        BasicBlock *thenBlock = new BasicBlock("then", ifInst->getThenRegion());
+        BasicBlock *originalBlock = builder.GetInsertPoint();
+        
+        builder.SetInsertPoint(thenBlock);
+        node.getThen()->accept(*this);
 
-    builder.SetInsertPoint(thenBB);
-    node.getThen()->accept(*this);
-    
-    if (builder.GetInsertPoint()->getInstructions().empty() || 
-        !builder.GetInsertPoint()->getInstructions().back()->isTerminator()) {
-        builder.CreateBr(mergeBB);
+        builder.SetInsertPoint(originalBlock);
     }
 
-    if (elseBB) {
-        builder.SetInsertPoint(elseBB);
+    if (node.getElse()) {
+        ifInst->addElseRegion();
+        BasicBlock *elseBlock = new BasicBlock("else", ifInst->getElseRegion());
+        
+        BasicBlock *originalBlock = builder.GetInsertPoint();
+        builder.SetInsertPoint(elseBlock);
         node.getElse()->accept(*this);
-        if (builder.GetInsertPoint()->getInstructions().empty() || 
-            !builder.GetInsertPoint()->getInstructions().back()->isTerminator()) {
-            builder.CreateBr(mergeBB);
-        }
+        builder.SetInsertPoint(originalBlock);
     }
-
-    builder.SetInsertPoint(mergeBB);
 }
 
 void IRGen::visit(WhileStmtAST &node) {
-    auto condBB = new BasicBlock(newLabelName(), CurrentFunc);
-    auto bodyBB = new BasicBlock(newLabelName(), CurrentFunc);
-    auto endBB  = new BasicBlock(newLabelName(), CurrentFunc);
+    auto whileInst = builder.Create<WhileInst>();
 
-    builder.CreateBr(condBB);
+    {
+        BasicBlock *condBlock = new BasicBlock("cond", whileInst->getCondRegion());
+        BasicBlock *originalBlock = builder.GetInsertPoint();
+        
+        builder.SetInsertPoint(condBlock);
+        node.getCond()->accept(*this);
+// Note: Cond Region should "return" the condition value in some way
+// Here we temporarily assume LastVal is the condition, and LowerPass will handle it later
+// For convenience in Flatten, we can insert a special Yield instruction here or leave it untreated
+// As long as the AST traversal generates icmp or similar instructions within condBlock
 
-    // Cond
-    builder.SetInsertPoint(condBB);
-    node.getCond()->accept(*this);
-    builder.Create<BranchInst>(LastVal, bodyBB, endBB);
+// need to store or mark LastVal (i.e., the result of the condition)
+// In advanced IR, we typically 约定 the result of the last computation instruction in the Cond Region is the condition
+        
+        builder.SetInsertPoint(originalBlock);
+    }
 
-    // Body
-    builder.SetInsertPoint(bodyBB);
-    node.getBody()->accept(*this);
-    builder.CreateBr(condBB); // 循环回去
-
-    // End
-    builder.SetInsertPoint(endBB);
+    {
+        BasicBlock *bodyBlock = new BasicBlock("body", whileInst->getBodyRegion());
+        BasicBlock *originalBlock = builder.GetInsertPoint();
+        
+        builder.SetInsertPoint(bodyBlock);
+        node.getBody()->accept(*this);
+        
+        builder.SetInsertPoint(originalBlock);
+    }
 }
 
 void IRGen::visit(ReturnStmtAST &node) {
@@ -210,7 +222,6 @@ void IRGen::visit(UnaryExprAST &node) {
         node.getOperand()->accept(*this);
         Value *operand = LastVal;
         auto zero = new ConstantInt(0);
-        
         auto inst = builder.Create<BinaryInst>(Instruction::Sub, zero, operand);
         inst->setName(newTempName());
         LastVal = inst;

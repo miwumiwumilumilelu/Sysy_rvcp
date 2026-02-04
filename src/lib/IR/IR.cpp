@@ -1,19 +1,63 @@
 #include "IR/Module.h"
-#include "IR/Type.h"
 #include "IR/Instruction.h"
+#include "IR/Region.h"
+#include "IR/Type.h"
+#include <iostream>
+#include <sstream>
 
 using namespace sysy;
 
-// Types
 Type* Type::getIntTy() { static IntegerType t; return &t; }
 Type* Type::getVoidTy() { static VoidType t; return &t; }
 Type* Type::getFloatTy() { static FloatType t; return &t; }
 Type* Type::getLabelTy() { static LabelType t; return &t; }
 
-// Instructions
+BasicBlock* Region::getEntryBlock() {
+    if (Blocks.empty()) return nullptr;
+    return Blocks.front();
+}
+
+void Region::addBlock(BasicBlock* bb) {
+    Blocks.push_back(bb);
+}
+
+void Region::removeBlock(BasicBlock* bb) {
+    Blocks.remove(bb);
+}
+
+BasicBlock::BasicBlock(const std::string &name, Region *parent) 
+    : Value(Type::getLabelTy(), name), Parent(parent) {
+    if (parent) parent->addBlock(this);
+}
+
+Function* BasicBlock::getParentFunc() const {
+    if (!Parent) return nullptr;
+    if (auto f = Parent->getParentFunc()) return f;
+    if (auto i = Parent->getParentInst()) {
+        if (i->getParent()) return i->getParent()->getParentFunc();
+    }
+    return nullptr;
+}
+
+std::string BasicBlock::toString() const {
+    std::stringstream ss;
+    ss << Name << ":\n"; // label:
+    for (auto inst : InstList) {
+        ss << "  " << inst->toString() << "\n";
+    }
+    return ss.str();
+}
+
 Instruction::Instruction(Type *ty, OpID id, BasicBlock *parent) 
     : User(ty, ""), OpCode(id), Parent(parent) {
     if (parent) parent->addInstruction(this);
+}
+
+// unique_ptr automatically cleans up Regions.
+Instruction::~Instruction() {}
+
+bool Instruction::isTerminator() const {
+    return OpCode == Br || OpCode == Ret || OpCode == Break || OpCode == Continue;
 }
 
 BinaryInst::BinaryInst(OpID id, Value *lhs, Value *rhs, BasicBlock *parent) 
@@ -24,8 +68,8 @@ BinaryInst::BinaryInst(OpID id, Value *lhs, Value *rhs, BasicBlock *parent)
         case Add: OpStr = "add"; break;
         case Sub: OpStr = "sub"; break;
         case Mul: OpStr = "mul"; break;
-        case Div: OpStr = "sdiv"; break;
-        default: OpStr = "?"; break;
+        case Div: OpStr = "sdiv"; break; // signed div
+        default: OpStr = "unknown"; break;
     }
 }
 
@@ -41,7 +85,7 @@ std::string AllocaInst::toString() const {
 }
 
 LoadInst::LoadInst(Value *ptr, BasicBlock *parent) 
-    : Instruction(Type::getIntTy(), Load, parent) {
+    : Instruction(Type::getIntTy(), Load, parent) { // Assume load i32 for the time being
     addOperand(ptr);
 }
 
@@ -87,7 +131,7 @@ std::string BranchInst::toString() const {
 }
 
 ICmpInst::ICmpInst(CmpOp op, Value *lhs, Value *rhs, BasicBlock *parent)
-    : Instruction(Type::getIntTy(), ICmp, parent), Pred(op) {
+    : Instruction(Type::getIntTy(), ICmp, parent), Pred(op) { // 注意: 实际上应该是 i1
     addOperand(lhs);
     addOperand(rhs);
 }
@@ -105,29 +149,84 @@ std::string ICmpInst::toString() const {
     return Name + " = icmp " + getPredStr() + " i32 " + getOperand(0)->getName() + ", " + getOperand(1)->getName();
 }
 
-// Module Structure
-BasicBlock::BasicBlock(const std::string &name, Function *parent) 
-    : Value(Type::getLabelTy(), name), Parent(parent) {
-    if (parent) parent->addBlock(this);
+IfInst::IfInst(Value* cond, BasicBlock* parent) 
+    : Instruction(Type::getVoidTy(), If, parent) {
+    addOperand(cond);
+    addRegion(std::make_unique<Region>(this));
 }
 
-std::string BasicBlock::toString() const {
+void IfInst::addElseRegion() {
+    if (getRegions().size() < 2) {
+        addRegion(std::make_unique<Region>(this));
+    }
+}
+
+std::string IfInst::toString() const {
     std::stringstream ss;
-    ss << Name << ":\n";
-    for (auto inst : InstList) ss << "  " << inst->toString() << "\n";
+    ss << "if (" << getOperand(0)->getName() << ") {\n";
+    for (auto bb : getRegion(0)->getBlocks()) {
+        ss << bb->toString();
+    }
+    ss << "  }";
+    if (getRegions().size() > 1) {
+        ss << " else {\n";
+        for (auto bb : getRegion(1)->getBlocks()) {
+            ss << bb->toString();
+        }
+        ss << "  }";
+    }
     return ss.str();
+}
+
+WhileInst::WhileInst(BasicBlock* parent) 
+    : Instruction(Type::getVoidTy(), While, parent) {
+    addRegion(std::make_unique<Region>(this)); // Region 0: Cond
+    addRegion(std::make_unique<Region>(this)); // Region 1: Body
+}
+
+std::string WhileInst::toString() const {
+    std::stringstream ss;
+    ss << "while {\n";
+    for (auto bb : getRegion(0)->getBlocks()) ss << bb->toString();
+    ss << "} do {\n";
+    for (auto bb : getRegion(1)->getBlocks()) ss << bb->toString();
+    ss << "}";
+    return ss.str();
+}
+
+BreakInst::BreakInst(BasicBlock* parent) 
+    : Instruction(Type::getVoidTy(), Break, parent) {}
+
+std::string BreakInst::toString() const { 
+    return "break"; 
+}
+
+ContinueInst::ContinueInst(BasicBlock* parent) 
+    : Instruction(Type::getVoidTy(), Continue, parent) {}
+
+std::string ContinueInst::toString() const { 
+    return "continue"; 
+}
+
+Function::Function(const std::string &name, Type *retTy) 
+    : Value(retTy, name) {
+    Body = std::make_unique<Region>(this);
 }
 
 std::string Function::toString() const {
     std::stringstream ss;
-    ss << "define i32 @" << Name << "() {\n";
-    for (auto bb : Blocks) ss << bb->toString();
+    ss << "define " << Ty->toString() << " @" << Name << "() {\n";
+    for (auto bb : Body->getBlocks()) {
+        ss << bb->toString();
+    }
     ss << "}\n";
     return ss.str();
 }
 
 std::string Module::print() {
     std::stringstream ss;
-    for (auto func : Functions) ss << func->toString() << "\n";
+    for (auto func : Functions) {
+        ss << func->toString() << "\n";
+    }
     return ss.str();
 }

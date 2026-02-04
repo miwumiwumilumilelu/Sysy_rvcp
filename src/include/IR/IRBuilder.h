@@ -3,20 +3,30 @@
 
 #include "IR/Instruction.h"
 #include "IR/Module.h"
+#include "IR/Value.h"
+#include "IR/Type.h"
+#include "IR/Region.h" 
 
 namespace sysy {
 
 class IRBuilder {
+private:
     BasicBlock *InsertPoint = nullptr;
 
 public:
-    void SetInsertPoint(BasicBlock *bb) { InsertPoint = bb; }
-    BasicBlock *GetInsertPoint() { return InsertPoint; }
+    IRBuilder() = default;
+
+    void SetInsertPoint(BasicBlock *bb) {
+        InsertPoint = bb;
+    }
+
+    BasicBlock *GetInsertPoint() const {
+        return InsertPoint;
+    }
 
     template <typename InstT, typename... Args>
     InstT *Create(Args&&... args) {
-        auto inst = new InstT(std::forward<Args>(args)..., InsertPoint);
-        return inst;
+        return new InstT(std::forward<Args>(args)..., InsertPoint);
     }
 
     ReturnInst *CreateRetVoid() {
@@ -26,11 +36,12 @@ public:
     ReturnInst *CreateRet(Value *val) {
         return Create<ReturnInst>(val);
     }
-    
+
     BranchInst *CreateBr(BasicBlock *dest) {
         return Create<BranchInst>(dest);
     }
 };
 
-}
+} // namespace sysy
+
 #endif
