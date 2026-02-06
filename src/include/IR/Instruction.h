@@ -83,6 +83,7 @@ class ICmpInst : public Instruction {
 public:
     enum CmpOp { EQ, NE, SGT, SGE, SLT, SLE };
     ICmpInst(CmpOp op, Value* lhs, Value* rhs, BasicBlock* parent);
+    CmpOp getPredicate() const { return Pred; }
     std::string toString() const override;
 private:
     CmpOp Pred;

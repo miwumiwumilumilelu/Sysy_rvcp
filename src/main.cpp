@@ -2,39 +2,41 @@
 #include "Parse/Parser.h"
 #include "Semant/Semant.h"
 #include "IR/IRGen.h"
-// #include "CodeGen/RISCVGen.h"
+#include "Optimize/FlattenCFG.h"
+#include "CodeGen/RVGen.h"
 #include <iostream>
 #include <fstream>
-#include <sstream>
-#include <string>
+#include <vector>
 
 using namespace sysy;
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <filename.sy>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <filename>" << std::endl;
         return 1;
     }
 
     std::string filename = argv[1];
-    std::ifstream t(filename);
-    if (!t.is_open()) {
-        std::cerr << "Error: Cannot open file " << filename << std::endl;
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open file " << filename << std::endl;
         return 1;
     }
-    std::stringstream buffer;
-    buffer << t.rdbuf();
-    std::string code = buffer.str();
+
+    // Read file content
+    std::string sourceCode((std::istreambuf_iterator<char>(file)),
+                           std::istreambuf_iterator<char>());
+    file.close();
 
     std::cout << "--- Compiling " << filename << " ---" << std::endl;
 
-    Lexer lexer(code);
+    // 1. Frontend: Lexer & Parser
+    Lexer lexer(sourceCode);
     Parser parser(lexer);
-
-    // 1. Parsing
     auto ast = parser.parseCompUnit();
+
     if (!ast) {
-        std::cerr << "Parsing failed!" << std::endl;
+        std::cerr << "Parser Error: Failed to generate AST." << std::endl;
         return 1;
     }
 
@@ -42,28 +44,46 @@ int main(int argc, char** argv) {
     Semant semant;
     ast->accept(semant);
 
-    // 3. IR Generation
+    // 3. IR Generation (High-Level IR)
     IRGen irGen;
     ast->accept(irGen);
     auto module = irGen.getModule();
 
-    std::cout << "\n=== Generated IR ===" << std::endl;
+    std::cout << "\n=== Generated High-Level IR ===\n" << std::endl;
     if (module) {
         std::cout << module->print() << std::endl;
     }
 
-    // // 4. RISC-V Generation
-    // std::cout << "\n=== Generated RISC-V Assembly ===" << std::endl;
-    // if (module) {
-    //     RISCVGen riscvGen(module.get());
-    //     riscvGen.generate();
-    //     std::cout << riscvGen.getAssembly() << std::endl;
+    // 4. Optimization: FlattenCFG Pass (High-Level -> Low-Level)
+    if (module) {
+        std::cout << "\n[Running Pass] FlattenCFG..." << std::endl;
+        FlattenCFG flatten(module.get());
+        flatten.run();
         
-    //     std::string asmFilename = filename + ".s";
-    //     std::ofstream asmFile(asmFilename);
-    //     asmFile << riscvGen.getAssembly();
-    //     std::cout << "\n[Info] Assembly saved to " << asmFilename << std::endl;
-    // }
+        std::cout << "\n=== Flattened IR (Low-Level) ===\n" << std::endl;
+        std::cout << module->print() << std::endl;
+    }
+
+    // 5. Backend: RISC-V Generation
+    std::cout << "\n=== Generated RISC-V Assembly ===\n" << std::endl;
+    if (module) {
+        RVGen rvGen(module.get());
+        rvGen.generate();
+        
+        // Print to console
+        std::cout << rvGen.getAssembly() << std::endl;
+        
+        // Save to .s file
+        std::string outFilename = filename + ".s";
+        std::ofstream outFile(outFilename);
+        if (outFile.is_open()) {
+            outFile << rvGen.getAssembly();
+            outFile.close();
+            std::cout << "[Info] Assembly saved to: " << outFilename << std::endl;
+        } else {
+            std::cerr << "[Error] Could not save assembly file." << std::endl;
+        }
+    }
 
     return 0;
 }

@@ -7,6 +7,23 @@
 
 using namespace sysy;
 
+static std::string addIndent(const std::string &str, int spaceCount) {
+    std::stringstream ss(str);
+    std::string line;
+    std::stringstream out;
+    std::string indent(spaceCount, ' ');
+    
+    while (std::getline(ss, line)) {
+        out << indent << line << "\n";
+    }
+    
+    std::string res = out.str();
+    if (!res.empty() && str.back() != '\n') { 
+        res.pop_back(); 
+    }
+    return res;
+}
+
 Type* Type::getIntTy() { static IntegerType t; return &t; }
 Type* Type::getVoidTy() { static VoidType t; return &t; }
 Type* Type::getFloatTy() { static FloatType t; return &t; }
@@ -43,7 +60,7 @@ std::string BasicBlock::toString() const {
     std::stringstream ss;
     ss << Name << ":\n"; // label:
     for (auto inst : InstList) {
-        ss << "  " << inst->toString() << "\n";
+        ss << addIndent(inst->toString(), 4) << "\n";
     }
     return ss.str();
 }
@@ -165,13 +182,13 @@ std::string IfInst::toString() const {
     std::stringstream ss;
     ss << "if (" << getOperand(0)->getName() << ") {\n";
     for (auto bb : getRegion(0)->getBlocks()) {
-        ss << bb->toString();
+        ss << addIndent(bb->toString(), 2);
     }
     ss << "  }";
     if (getRegions().size() > 1) {
         ss << " else {\n";
         for (auto bb : getRegion(1)->getBlocks()) {
-            ss << bb->toString();
+            ss << addIndent(bb->toString(), 2);
         }
         ss << "  }";
     }
