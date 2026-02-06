@@ -15,6 +15,15 @@ void BlockAST::accept(ASTVisitor &v) { v.visit(*this); }
 void VarDeclAST::accept(ASTVisitor &v) { v.visit(*this); }
 void FuncDefAST::accept(ASTVisitor &v) { v.visit(*this); }
 void CompUnitAST::accept(ASTVisitor &v) { v.visit(*this); }
+void FuncCallAST::accept(ASTVisitor &v) { v.visit(*this); }
+
+void FuncCallAST::dump(int indent) const {
+    std::string space(indent, ' ');
+    std::cout << space << "FuncCallAST: " << Name << std::endl;
+    for (const auto &arg : Args) {
+        arg->dump(indent + 2);
+    }
+}
 
 void NumberAST::dump(int indent) const {
     std::cout << std::string(indent, ' ') << "NumberAST: " 

@@ -29,6 +29,12 @@ void Semant::visit(CompUnitAST &node) {
     }
 }
 
+void Semant::visit(FuncCallAST &node) {
+    for (auto &arg : node.getArgs()) {
+        arg->accept(*this);
+    }
+}
+
 void Semant::visit(FuncDefAST &node) {
     defineSymbol(node.getName(), "func");
     if (node.getBody()) node.getBody()->accept(*this);

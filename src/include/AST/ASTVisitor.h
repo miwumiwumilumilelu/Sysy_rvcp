@@ -9,6 +9,7 @@ public:
     virtual ~ASTVisitor() = default;
 
     virtual void visit(CompUnitAST &node) = 0;
+    virtual void visit(FuncCallAST &node) = 0;
     virtual void visit(FuncDefAST &node) = 0;
     virtual void visit(BlockAST &node) = 0;
     virtual void visit(VarDeclAST &node) = 0;

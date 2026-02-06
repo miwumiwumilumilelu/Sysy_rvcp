@@ -1,0 +1,9 @@
+int main() {
+    int a = 10;
+    int b = 20;
+    putint(a);
+    putch(10);
+    putint(a + b);
+    putch(10); 
+    return 0;
+}

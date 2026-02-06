@@ -20,6 +20,9 @@ void RVGen::emitLabel(const std::string &label) {
 void RVGen::generate() {
     AsmStream << "\t.text\n";
     for (auto func : TheModule->getFunctions()) {
+        if (func->getBody()->getBlocks().empty()) {
+            continue; 
+        }
         genFunction(func);
     }
 }
@@ -35,7 +38,7 @@ void RVGen::allocateStackSlots(Function *func) {
             // Allocate stack space for any instruction that produces a value (non-void)
             if (!inst->getType()->isVoid()) {
                 CurrentStackSize += 4; // Assume 4 bytes for all types (i32)
-                StackSlots[inst] = -CurrentStackSize; 
+                StackSlots[inst] = -(CurrentStackSize + 16); 
             }
         }
     }
@@ -117,6 +120,24 @@ void RVGen::genBasicBlock(BasicBlock *bb) {
 
 void RVGen::genInstruction(Instruction *inst) {
     switch (inst->getOpID()) {
+        case Instruction::Call: {
+            auto callInst = dynamic_cast<CallInst*>(inst);
+            int argCount = inst->getNumOperands() - 1;
+            for (int i = 0; i < argCount && i < 8; ++i) {
+                Value* argVal = inst->getOperand(i + 1);
+                std::string regName = "a" + std::to_string(i);
+                
+                loadValueToReg(argVal, "t0");
+                emit("mv " + regName + ", t0");
+            }
+
+            emit("call " + callInst->getFunction()->getName());
+
+            if (!inst->getType()->isVoid()) {
+                storeRegToStack("a0", inst);
+            }
+            break;
+        }
         case Instruction::Ret: {
             // Handle return value
             if (inst->getNumOperands() > 0) {

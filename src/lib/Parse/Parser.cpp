@@ -25,6 +25,30 @@ std::string Parser::parseType() {
     return typeStr;
 }
 
+std::unique_ptr<ExprAST> Parser::parseFuncCall(const std::string &name) {
+    if (!expect(tok::l_paren)) return nullptr;
+
+    std::vector<std::unique_ptr<ExprAST>> args;
+
+    if (CurTok.isNot(tok::r_paren)) {
+        while (true) {
+            auto arg = parseExpr();
+            if (!arg) return nullptr;
+            args.push_back(std::move(arg));
+
+            if (CurTok.is(tok::comma)) {
+                getNextToken();
+            } else {
+                break;
+            }
+        }
+    }
+
+    if (!expect(tok::r_paren)) return nullptr;
+    
+    return std::make_unique<FuncCallAST>(name, std::move(args));
+}
+
 std::unique_ptr<VarDeclAST> Parser::parseDecl() {
     std::string type = parseType();
     if (type.empty()) return nullptr;
@@ -67,6 +91,10 @@ std::unique_ptr<ExprAST> Parser:: parsePrimaryExpr() {
     else if (CurTok.is(tok::identifier)) {
         std::string name(CurTok.getText());
         getNextToken();
+        if (CurTok.is(tok::l_paren)) {
+            return parseFuncCall(name);
+        } 
+        
         return std::make_unique<LValAST>(name);
     }
 

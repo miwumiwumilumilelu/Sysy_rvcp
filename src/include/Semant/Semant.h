@@ -29,6 +29,7 @@ public:
     bool checkSymbol(const std::string &name);
 
     void visit(CompUnitAST &node) override;
+    void visit(FuncCallAST &node) override;
     void visit(FuncDefAST &node) override;
     void visit(BlockAST &node) override;
     void visit(VarDeclAST &node) override;

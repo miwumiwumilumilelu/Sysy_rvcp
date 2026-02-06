@@ -47,6 +47,14 @@ class Module {
 public:
     void addFunction(Function *func) { Functions.push_back(func); }
     const std::vector<Function*>& getFunctions() const { return Functions; }
+
+    Function* getFunction(const std::string &name) const {
+        for (auto func : Functions) {
+            if (func->getName() == name) return func;
+        }
+        return nullptr;
+    }
+
     std::string print();
 
 private:

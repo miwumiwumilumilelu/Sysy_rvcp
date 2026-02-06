@@ -7,6 +7,7 @@
 namespace sysy {
 
 class BasicBlock;
+class Function;
 
 class Instruction : public User {
 public:
@@ -35,6 +36,13 @@ private:
     OpID OpCode;
     BasicBlock* Parent;
     std::vector<std::unique_ptr<Region>> Regions;
+};
+
+class CallInst : public Instruction {
+public:
+    CallInst(Function* func, std::vector<Value*> args, BasicBlock* parent);
+    Function* getFunction() const;
+    std::string toString() const override;
 };
 
 class BinaryInst : public Instruction {

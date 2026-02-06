@@ -28,6 +28,34 @@ void IRGen::visit(CompUnitAST &node) {
     exitScope();
 }
 
+void IRGen::visit(FuncCallAST &node) {
+    std::string funcName = node.getName();
+    Function *callee = TheModule->getFunction(funcName);
+
+    if (!callee) {
+        Type* retType = Type::getIntTy(); 
+        if (funcName == "putint" || funcName == "putch" || funcName == "putarray") 
+            retType = Type::getVoidTy();
+            
+        callee = new Function(funcName, retType);
+        TheModule->addFunction(callee);
+    }
+
+    std::vector<Value*> args;
+    for (auto &argNode : node.getArgs()) {
+        argNode->accept(*this);
+        args.push_back(LastVal);
+    }
+
+    auto call = builder.Create<CallInst>(callee, args);
+    if (!callee->getType()->isVoid()) {
+        call->setName(newTempName());
+        LastVal = call;
+    } else {
+        LastVal = nullptr;
+    }
+}
+
 void IRGen::visit(FuncDefAST &node) {
     auto func = new Function(node.getName(), Type::getIntTy());
     TheModule->addFunction(func);

@@ -37,6 +37,20 @@ public:
     void accept(ASTVisitor &visitor) override;
 };
 
+class FuncCallAST : public ExprAST {
+    std::string Name;
+    std::vector<std::unique_ptr<ExprAST>> Args;
+public:
+    FuncCallAST(const std::string &name, std::vector<std::unique_ptr<ExprAST>> args)
+        : Name(name), Args(std::move(args)) {}
+
+    const std::string& getName() const { return Name; }
+    const std::vector<std::unique_ptr<ExprAST>>& getArgs() const { return Args; }
+
+    void dump(int indent) const override;
+    void accept(ASTVisitor &visitor) override;
+};
+
 class LValAST : public ExprAST {
     std::string Name;
 public:

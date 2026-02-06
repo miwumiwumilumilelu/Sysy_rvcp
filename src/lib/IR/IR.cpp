@@ -77,6 +77,32 @@ bool Instruction::isTerminator() const {
     return OpCode == Br || OpCode == Ret || OpCode == Break || OpCode == Continue;
 }
 
+CallInst::CallInst(Function* func, std::vector<Value*> args, BasicBlock* parent)
+    : Instruction(func->getType(), Call, parent) {
+    addOperand(func);
+    for (auto arg : args) {
+        addOperand(arg);
+    }
+}
+
+Function* CallInst::getFunction() const {
+    return dynamic_cast<Function*>(getOperand(0));
+}
+
+std::string CallInst::toString() const {
+    std::string str = "";
+    if (!getType()->isVoid()) {
+        str += Name + " = ";
+    }
+    str += "call " + getFunction()->getName() + "(";
+    for (int i = 1; i < getNumOperands(); ++i) {
+        if (i > 1) str += ", ";
+        str += "i32 " + getOperand(i)->getName();
+    }
+    str += ")";
+    return str;
+}
+
 BinaryInst::BinaryInst(OpID id, Value *lhs, Value *rhs, BasicBlock *parent) 
     : Instruction(Type::getIntTy(), id, parent) {
     addOperand(lhs);
