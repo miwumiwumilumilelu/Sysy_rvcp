@@ -42,6 +42,7 @@ public:
     void visit(UnaryExprAST &node) override;
     void visit(LValAST &node) override;
     void visit(NumberAST &node) override;
+    void visit(FuncFParamAST &node) override;
 };
 
 }

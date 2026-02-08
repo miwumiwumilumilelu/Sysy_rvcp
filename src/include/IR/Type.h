@@ -13,7 +13,8 @@ public:
         FloatTy,
         PointerTy,
         LabelTy,
-        FunctionTy
+        FunctionTy,
+        ArrayTy
     };
 
     explicit Type(TypeID id) : ID(id) {}
@@ -22,6 +23,7 @@ public:
     bool isInt() const { return ID == IntTy; }
     bool isVoid() const { return ID == VoidTy; }
     bool isPointer() const { return ID == PointerTy; }
+    bool isArray() const { return ID == ArrayTy; }
 
     virtual std::string toString() const = 0;
 
@@ -59,6 +61,7 @@ class PointerType : public Type {
 public:
     PointerType(Type* pointee) : Type(PointerTy), PointeeTy(pointee) {}
 
+    Type* getPointeeType() const { return PointeeTy; }
     std::string toString() const override { return PointeeTy->toString() + "*"; }
 };
 
@@ -67,6 +70,20 @@ public:
     LabelType() : Type(LabelTy) {}
 
     std::string toString() const override { return "label"; }
+};
+
+class ArrayType : public Type {
+    Type* ElemTy;
+    int NumElements;
+public:
+    ArrayType(Type* elem, int num) : Type(ArrayTy), ElemTy(elem), NumElements(num) {}
+
+    Type* getElementType() const { return ElemTy; }
+    int getNumElements() const { return NumElements; }
+
+    std::string toString() const override {
+        return "[" + std::to_string(NumElements) + " x " + ElemTy->toString() + "]";
+    }
 };
 
 }

@@ -13,6 +13,20 @@ namespace sysy {
 class Function;
 class BasicBlock;
 
+class Argument : public Value {
+public:
+    Argument(Type *ty, const std::string &name, Function *f, int argNo)
+        : Value(ty, name), Parent(f), ArgNo(argNo) {}
+    std::string toString() const override { return Name; }
+
+    Function* getParent() const { return Parent; }
+    int getArgNo() const { return ArgNo; }
+
+private:
+    Function *Parent;
+    int ArgNo;
+};
+
 class BasicBlock : public Value {
 public:
     BasicBlock(const std::string &name, Region *parent);
@@ -36,11 +50,14 @@ public:
 
     Region* getBody() { return Body.get(); }
     BasicBlock* getEntryBlock();
+    const std::vector<Argument*>& getArgs() const { return Args; }
+    void addArgument(Argument *arg) { Args.push_back(arg); }
 
     std::string toString() const override;
 
 private:
     std::unique_ptr<Region> Body;
+    std::vector<Argument*> Args;
 };
 
 class Module {
@@ -54,11 +71,17 @@ public:
         }
         return nullptr;
     }
-
+    void addGlobalVariable(GlobalVariable *g) { Globals.push_back(g); }
+    const std::vector<GlobalVariable*>& getGlobals() const { return Globals; }
+    GlobalVariable* getGlobalVariable(const std::string &name) {
+        for (auto g : Globals) if (g->getName() == name) return g;
+        return nullptr;
+    }
     std::string print();
 
 private:
     std::vector<Function*> Functions;
+    std::vector<GlobalVariable*> Globals;
 };
 
 }

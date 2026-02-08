@@ -21,7 +21,8 @@ public:
     virtual void visit(BinaryExprAST &node) = 0;
     virtual void visit(UnaryExprAST &node) = 0;
     virtual void visit(LValAST &node) = 0;
-    virtual void visit(NumberAST &node) = 0;   
+    virtual void visit(NumberAST &node) = 0; 
+    virtual void visit(FuncFParamAST &node) = 0;  
 }; 
 
 }

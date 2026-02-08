@@ -23,6 +23,18 @@ bool Semant::checkSymbol(const std::string &name) {
     return false;
 }
 
+static void checkInitVal(InitValAST *init, Semant &semant) {
+    if (init->isLeaf()) {
+        if (init->getExpr()) {
+            init->getExpr()->accept(semant);
+        }
+    } else {
+        for (const auto &elem : init->getElements()) {
+            checkInitVal(elem.get(), semant);
+        }
+    }
+}
+
 void Semant::visit(CompUnitAST &node) {
     for (auto &child : node.getChildren()) {
         child->accept(*this);
@@ -37,7 +49,21 @@ void Semant::visit(FuncCallAST &node) {
 
 void Semant::visit(FuncDefAST &node) {
     defineSymbol(node.getName(), "func");
-    if (node.getBody()) node.getBody()->accept(*this);
+    enterScope();
+    
+    for (auto &param : node.getParams()) {
+        param->accept(*this);
+    }
+
+    if (node.getBody()) {
+        node.getBody()->accept(*this);
+    }
+
+    exitScope();
+}
+
+void Semant::visit(FuncFParamAST &node) {
+    defineSymbol(node.getName(), node.getType());
 }
 
 void Semant::visit(BlockAST &node) {
@@ -50,7 +76,7 @@ void Semant::visit(BlockAST &node) {
 
 void Semant::visit(VarDeclAST &node) {
     if (node.getInit()) {
-        node.getInit()->accept(*this);
+        checkInitVal(node.getInit(), *this);
     }
     defineSymbol(node.getName(), node.getType());
 }
@@ -62,6 +88,9 @@ void Semant::visit(AssignStmtAST &node) {
 
 void Semant::visit(LValAST &node) {
     checkSymbol(node.getName());
+    for (auto &idx : node.getIndices()) {
+        idx->accept(*this);
+    }
 }
 
 void Semant::visit(IfStmtAST &node) {

@@ -128,12 +128,17 @@ std::string AllocaInst::toString() const {
 }
 
 LoadInst::LoadInst(Value *ptr, BasicBlock *parent) 
-    : Instruction(Type::getIntTy(), Load, parent) { // Assume load i32 for the time being
+    : Instruction(
+        dynamic_cast<PointerType*>(ptr->getType())->getPointeeType(),
+        Load, 
+        parent
+      ) {
     addOperand(ptr);
 }
 
 std::string LoadInst::toString() const {
-    return Name + " = load i32, i32* " + getOperand(0)->getName();
+    // <result> = load <ty>, <ty>* <ptr>
+    return Name + " = load " + getType()->toString() + ", " + getOperand(0)->getType()->toString() + " " + getOperand(0)->getName();
 }
 
 StoreInst::StoreInst(Value *val, Value *ptr, BasicBlock *parent) 
@@ -143,7 +148,9 @@ StoreInst::StoreInst(Value *val, Value *ptr, BasicBlock *parent)
 }
 
 std::string StoreInst::toString() const {
-    return "store i32 " + getOperand(0)->getName() + ", i32* " + getOperand(1)->getName();
+    // store <ty> <val>, <ty>* <ptr>
+    return "store " + getOperand(0)->getType()->toString() + " " + getOperand(0)->getName() + 
+        ", " + getOperand(1)->getType()->toString() + " " + getOperand(1)->getName();
 }
 
 ReturnInst::ReturnInst(Value *val, BasicBlock *parent) 
@@ -251,6 +258,22 @@ std::string ContinueInst::toString() const {
     return "continue"; 
 }
 
+GetElementPtrInst::GetElementPtrInst(Value* base, Value* index, BasicBlock* parent)
+    : Instruction(base->getType(), GetElementPtr, parent) {
+    addOperand(base);
+    addOperand(index);
+
+    if (auto ptrTy = dynamic_cast<PointerType*>(base->getType())) {
+        if (auto arrTy = dynamic_cast<ArrayType*>(ptrTy->getPointeeType())) {
+            Ty = new PointerType(arrTy->getElementType());
+        }
+    }
+}
+
+std::string GetElementPtrInst::toString() const {
+    return Name + " = getelementptr " + getOperand(0)->getName() + ", " + getOperand(1)->getName();
+}
+
 Function::Function(const std::string &name, Type *retTy) 
     : Value(retTy, name) {
     Body = std::make_unique<Region>(this);
@@ -258,7 +281,14 @@ Function::Function(const std::string &name, Type *retTy)
 
 std::string Function::toString() const {
     std::stringstream ss;
-    ss << "define " << Ty->toString() << " @" << Name << "() {\n";
+    ss << "define " << Ty->toString() << " @" << Name << "(";
+
+    for (size_t i = 0; i < Args.size(); ++i) {
+        if (i > 0) ss << ", ";
+        ss << Args[i]->getType()->toString() << " " << Args[i]->getName();
+    }
+    
+    ss << ") {\n";
     for (auto bb : Body->getBlocks()) {
         ss << bb->toString();
     }
@@ -266,8 +296,44 @@ std::string Function::toString() const {
     return ss.str();
 }
 
+std::string ConstantArray::toString() const {
+    std::stringstream ss;
+    // [i32 1, i32 2]
+    ss << "[";
+    for (size_t i = 0; i < Consts.size(); ++i) {
+        if (i > 0) ss << ", ";
+        ss << Consts[i]->getType()->toString() << " " << Consts[i]->toString();
+    }
+    ss << "]";
+    return ss.str();
+}
+
+GlobalVariable::GlobalVariable(const std::string &name, Type *ty, Constant *initVal)
+    : User(new PointerType(ty), name), InitVal(initVal) {
+}
+
+std::string GlobalVariable::toString() const {
+    std::stringstream ss;
+    ss << "@" << Name << " = ";
+    if (IsConst) ss << "constant "; else ss << "global ";
+    
+    Type* baseTy = dynamic_cast<PointerType*>(Ty)->getPointeeType();
+    ss << baseTy->toString() << " ";
+    
+    if (InitVal) {
+        ss << InitVal->toString();
+    } else {
+        ss << "zeroinitializer";
+    }
+    return ss.str();
+}
+
 std::string Module::print() {
     std::stringstream ss;
+    for (auto g : Globals) {
+        ss << g->toString() << "\n";
+    }
+    if (!Globals.empty()) ss << "\n";
     for (auto func : Functions) {
         ss << func->toString() << "\n";
     }

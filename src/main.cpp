@@ -3,7 +3,6 @@
 #include "Semant/Semant.h"
 #include "IR/IRGen.h"
 #include "Optimize/FlattenCFG.h"
-#include "CodeGen/RVGen.h"
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -63,27 +62,4 @@ int main(int argc, char** argv) {
         std::cout << "\n=== Flattened IR (Low-Level) ===\n" << std::endl;
         std::cout << module->print() << std::endl;
     }
-
-    // 5. Backend: RISC-V Generation
-    std::cout << "\n=== Generated RISC-V Assembly ===\n" << std::endl;
-    if (module) {
-        RVGen rvGen(module.get());
-        rvGen.generate();
-        
-        // Print to console
-        std::cout << rvGen.getAssembly() << std::endl;
-        
-        // Save to .s file
-        std::string outFilename = filename + ".s";
-        std::ofstream outFile(outFilename);
-        if (outFile.is_open()) {
-            outFile << rvGen.getAssembly();
-            outFile.close();
-            std::cout << "[Info] Assembly saved to: " << outFilename << std::endl;
-        } else {
-            std::cerr << "[Error] Could not save assembly file." << std::endl;
-        }
-    }
-
-    return 0;
 }

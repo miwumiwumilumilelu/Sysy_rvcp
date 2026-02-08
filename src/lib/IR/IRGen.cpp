@@ -1,11 +1,13 @@
 #include "IR/IRGen.h"
 #include "IR/Type.h"
+#include "IR/Module.h"
 #include <iostream>
 
 using namespace sysy;
 
 IRGen::IRGen() {
     TheModule = std::make_unique<Module>();
+    CurrentFunc = nullptr;
 }
 
 void IRGen::defineVar(const std::string &name, Value *val) {
@@ -18,6 +20,91 @@ Value* IRGen::lookupVar(const std::string &name) {
         if (it->find(name) != it->end()) return it->at(name);
     }
     return nullptr; 
+}
+
+Constant* IRGen::getGlobalInitVal(InitValAST* init, Type* type) {
+    if (init->isLeaf()) {
+        init->getExpr()->accept(*this);
+        if (auto constInt = dynamic_cast<ConstantInt*>(LastVal)) {
+            return constInt;
+        }
+        return new ConstantInt(0); 
+    }
+
+    if (auto arrTy = dynamic_cast<ArrayType*>(type)) {
+        std::vector<Constant*> elements;
+        Type* elemTy = arrTy->getElementType();
+        int numElements = arrTy->getNumElements();
+        
+        const auto& initElements = init->getElements();
+        for (int i = 0; i < numElements; ++i) {
+            if (i < initElements.size()) {
+                elements.push_back(getGlobalInitVal(initElements[i].get(), elemTy));
+            } else {
+                // 填充 0
+                elements.push_back(new ConstantZero(elemTy));
+            }
+        }
+        return new ConstantArray(arrTy, elements);
+    }
+    return new ConstantZero(type);
+}
+
+void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std::vector<int>& indices) {
+    if (init->isLeaf()) {
+        init->getExpr()->accept(*this);
+        Value* val = LastVal;
+        
+        Value* ptr = baseAddr;
+        for (int idx : indices) {
+            auto gep = builder.Create<GetElementPtrInst>(ptr, new ConstantInt(idx));
+            gep->setName(newTempName());
+            ptr = gep;
+        }
+        
+        builder.Create<StoreInst>(val, ptr);
+        return;
+    }
+
+    if (auto arrTy = dynamic_cast<ArrayType*>(type)) {
+        Type* elemTy = arrTy->getElementType();
+        const auto& elems = init->getElements();
+        
+        for (size_t i = 0; i < elems.size(); ++i) {
+            indices.push_back(i);
+            processLocalInit(elems[i].get(), baseAddr, elemTy, indices);
+            indices.pop_back();
+        }
+
+        int size = arrTy->getNumElements();
+        for (size_t i = elems.size(); i < size; ++i) {
+             indices.push_back(i);
+
+             fillZero(baseAddr, elemTy, indices);
+             indices.pop_back();
+        }
+    }
+}
+
+void IRGen::fillZero(Value* baseAddr, Type* type, std::vector<int>& indices) {
+    if (type->isInt()) {
+        Value* ptr = baseAddr;
+        for (int idx : indices) {
+            auto gep = builder.Create<GetElementPtrInst>(ptr, new ConstantInt(idx));
+            gep->setName(newTempName());
+            ptr = gep;
+        }
+        builder.Create<StoreInst>(new ConstantInt(0), ptr);
+    } 
+    else if (auto arrTy = dynamic_cast<ArrayType*>(type)) {
+        Type* elemTy = arrTy->getElementType();
+        int size = arrTy->getNumElements();
+        for (int i = 0; i < size; ++i) {
+            indices.push_back(i);
+            fillZero(baseAddr, elemTy, indices);
+            indices.pop_back();
+        }
+    }
 }
 
 void IRGen::visit(CompUnitAST &node) {
@@ -36,6 +123,10 @@ void IRGen::visit(FuncCallAST &node) {
         Type* retType = Type::getIntTy(); 
         if (funcName == "putint" || funcName == "putch" || funcName == "putarray") 
             retType = Type::getVoidTy();
+        else if (funcName == "getint" || funcName == "getch")
+            retType = Type::getIntTy();
+        else if (funcName == "getarray" || funcName == "getfarray")
+            retType = Type::getIntTy();
             
         callee = new Function(funcName, retType);
         TheModule->addFunction(callee);
@@ -43,8 +134,26 @@ void IRGen::visit(FuncCallAST &node) {
 
     std::vector<Value*> args;
     for (auto &argNode : node.getArgs()) {
-        argNode->accept(*this);
-        args.push_back(LastVal);
+        if (dynamic_cast<LValAST*>(argNode.get())) {
+            isLValMode = false;
+            argNode->accept(*this);
+            Value *val = LastVal;
+
+            if (val->getType()->isPointer()) {
+                Type* pointee = dynamic_cast<PointerType*>(val->getType())->getPointeeType();
+                if (pointee->isArray()) {
+                    auto zero = new ConstantInt(0);
+                    auto gep = builder.Create<GetElementPtrInst>(val, zero);
+
+                    gep->setName(newTempName());
+                    val = gep;
+                }
+            }
+            args.push_back(val);
+        } else {
+            argNode->accept(*this);
+            args.push_back(LastVal);
+        }
     }
 
     auto call = builder.Create<CallInst>(callee, args);
@@ -57,26 +166,75 @@ void IRGen::visit(FuncCallAST &node) {
 }
 
 void IRGen::visit(FuncDefAST &node) {
-    auto func = new Function(node.getName(), Type::getIntTy());
+    Type* retType = Type::getIntTy();
+    if (node.getRetType() == "void") retType = Type::getVoidTy();
+    else if (node.getRetType() == "float") retType = Type::getFloatTy();
+
+    auto func = new Function(node.getName(), retType);
     TheModule->addFunction(func);
-    
     CurrentFunc = func;
     TempCounter = 0;
-    LabelCounter = 0;
+
+    std::vector<Value*> argAllocas;
+
+    for (size_t i = 0; i < node.getParams().size(); ++i) {
+        auto &paramNode = node.getParams()[i];
+        Type* argTy = Type::getIntTy();
+
+        if (paramNode->getDims().empty()) {
+            argTy = Type::getIntTy();            
+        } else {
+            Type* baseTy = Type::getIntTy();
+            const auto &dims = paramNode->getDims();
+            for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
+                if (it == dims.rend() - 1) continue;
+                int size = 0;
+                if (*it) {
+                    if (auto num = dynamic_cast<NumberAST*>(it->get())) {
+                        size = num->getIntVal();
+                    }
+                }
+                baseTy = new ArrayType(baseTy, size);
+            }
+            argTy = new PointerType(baseTy);
+        }
+        std::string argName = "%arg" + std::to_string(i);
+        auto arg = new Argument(argTy, argName, func, i);
+        func->addArgument(arg);
+    }
 
     BasicBlock *entryBlock = new BasicBlock("entry", func->getBody());
     builder.SetInsertPoint(entryBlock);
 
     enterScope();
-    if (node.getBody()) node.getBody()->accept(*this); 
+
+    const auto &args = func->getArgs();
+    for (size_t i = 0; i < args.size(); ++i) {
+        auto arg = args[i];
+        auto &paramNode = node.getParams()[i];
+
+        auto alloca = builder.Create<AllocaInst>(arg->getType());
+        alloca->setName("%" + paramNode->getName() + "_addr");
+
+        builder.Create<StoreInst>(arg, alloca);
+
+        defineVar(paramNode->getName(), alloca);
+    }
+
+    if (node.getBody()) node.getBody()->accept(*this);
+    
     exitScope();
 
     BasicBlock *curr = builder.GetInsertPoint();
-    if (curr->getInstructions().empty() || 
-        !curr->getInstructions().back()->isTerminator()) {
-        builder.CreateRet(new ConstantInt(0));
+    if (curr->getInstructions().empty() || !curr->getInstructions().back()->isTerminator()) {
+        if (retType->isVoid()) builder.CreateRet(nullptr);
+        else builder.CreateRet(new ConstantInt(0));
     }
+
+    CurrentFunc = nullptr;
 }
+
+void IRGen::visit(FuncFParamAST &node) {}
 
 void IRGen::visit(BlockAST &node) {
     enterScope();
@@ -93,24 +251,50 @@ void IRGen::visit(BlockAST &node) {
 }
 
 void IRGen::visit(VarDeclAST &node) {
-    auto alloca = builder.Create<AllocaInst>(Type::getIntTy());
+    Type* varType = Type::getIntTy();
+    const auto &dims = node.getDims();
+    for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
+        int size = 0;
+        if (auto num = dynamic_cast<NumberAST*>(it->get())) {
+            size = num->getIntVal();
+        }
+        varType = new ArrayType(varType, size);
+    }
+
+    if (CurrentFunc == nullptr) {
+        Constant *initVal = nullptr;
+        if (node.getInit()) {
+            initVal = getGlobalInitVal(node.getInit(), varType);
+        } else {
+            initVal = new ConstantZero(varType);
+        }
+        
+        auto globalVar = new GlobalVariable(node.getName(), varType, initVal);
+        TheModule->addGlobalVariable(globalVar);
+        defineVar(node.getName(), globalVar);
+        return;
+    }
+
+    auto alloca = builder.Create<AllocaInst>(varType);
     alloca->setName("%" + node.getName() + "_" + std::to_string(TempCounter++));
     
     defineVar(node.getName(), alloca);
 
     if (node.getInit()) {
-        node.getInit()->accept(*this);
-        if (LastVal) {
-            builder.Create<StoreInst>(LastVal, alloca);
-        }
+        std::vector<int> indices;
+        processLocalInit(node.getInit(), alloca, varType, indices);
     }
 }
 
 void IRGen::visit(AssignStmtAST &node) {
+    isLValMode = true;
+    node.getLVal()->accept(*this);
+    isLValMode = false;
+    Value *addr = LastVal;
+
     node.getValue()->accept(*this);
     Value *val = LastVal;
 
-    Value *addr = lookupVar(node.getLVal()->getName());
     if (addr && val) {
         builder.Create<StoreInst>(val, addr);
     }
@@ -118,10 +302,38 @@ void IRGen::visit(AssignStmtAST &node) {
 
 void IRGen::visit(LValAST &node) {
     Value *addr = lookupVar(node.getName());
-    if (addr) {
-        auto load = builder.Create<LoadInst>(addr);
-        load->setName(newTempName());
-        LastVal = load;
+    if (!addr) {
+        LastVal = nullptr;
+        return;
+    }
+
+    if (auto ptrTy = dynamic_cast<PointerType*>(addr->getType())) {
+        if (ptrTy->getPointeeType()->isPointer()) {
+            auto load = builder.Create<LoadInst>(addr);
+            load->setName(newTempName());
+            addr = load;
+        }
+    }
+
+    for (auto &indexExpr : node.getIndices()) {
+        indexExpr->accept(*this);
+        Value *indexVal = LastVal;
+
+        auto gep = builder.Create<GetElementPtrInst>(addr, indexVal);
+        gep->setName(newTempName());
+        addr = gep;
+    }
+
+    if (isLValMode) {
+        LastVal = addr;
+    } else {
+        if (addr->getType()->isPointer() && dynamic_cast<PointerType*>(addr->getType())->getPointeeType()->isArray()) {
+            LastVal = addr;
+        } else {
+            auto load = builder.Create<LoadInst>(addr);
+            load->setName(newTempName());
+            LastVal = load;
+        }
     }
 }
 

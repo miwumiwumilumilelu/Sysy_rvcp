@@ -15,7 +15,8 @@ public:
         Alloca, Load, Store,
         Add, Sub, Mul, Div,
         ICmp, Br, Ret, Call,
-        If, While, Break, Continue
+        If, While, Break, Continue,
+        GetElementPtr
     };
 
     Instruction(Type* ty, OpID id, BasicBlock* parent);
@@ -125,6 +126,12 @@ public:
 class ContinueInst : public Instruction {
 public:
     ContinueInst(BasicBlock* parent);
+    std::string toString() const override;
+};
+
+class GetElementPtrInst : public Instruction {
+public:
+    GetElementPtrInst(Value* base, Value* index, BasicBlock* parent);
     std::string toString() const override;
 };
 

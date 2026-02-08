@@ -1,0 +1,10 @@
+int get_val(int arr[][3], int r, int c) {
+    return arr[r][c];
+}
+
+int main() {
+    int a[2][3];
+    a[1][2] = 88;
+    
+    return get_val(a, 1, 2);
+}

@@ -42,6 +42,7 @@ private:
     std::unique_ptr<ExprAST> parseUnaryExpr();   // UnaryExpr -> (+|-) UnaryExpr | PrimaryExpr
     std::unique_ptr<ExprAST> parsePrimaryExpr();  // PrimaryExpr -> Number | (Expr)
     std::unique_ptr<ExprAST> parseFuncCall(const std::string &name);
+    std::unique_ptr<InitValAST> parseInitVal();
 };
 
 }

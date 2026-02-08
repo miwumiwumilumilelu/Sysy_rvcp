@@ -31,6 +31,7 @@ public:
     void visit(UnaryExprAST &node) override;
     void visit(LValAST &node) override;
     void visit(NumberAST &node) override;
+    void visit(FuncFParamAST &node) override;
 
 private:
     std::unique_ptr<Module> TheModule;
@@ -38,6 +39,14 @@ private:
     
     Function *CurrentFunc = nullptr;
     Value *LastVal = nullptr;
+
+    // Distinguish whether an address or a value is obtained when accessing an LValAST.
+    bool isLValMode = false;
+
+    Constant* getGlobalInitVal(InitValAST* init, Type* type);
+    void processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std::vector<int>& indices);
+
+    void fillZero(Value *baseAddr, Type *type, std::vector<int> &indices);
 
     // Symbol stack: Variable name -> Value* in IR.
     // (usually AllocaInst* address)

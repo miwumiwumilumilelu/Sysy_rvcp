@@ -53,8 +53,12 @@ public:
 
 class LValAST : public ExprAST {
     std::string Name;
+    // Support for array access.
+    std::vector<std::unique_ptr<ExprAST>> Indices;
 public:
-    LValAST(const std::string &name) : Name(name) {}
+    LValAST(const std::string &name, std::vector<std::unique_ptr<ExprAST>> indices = {})
+        : Name(name), Indices(std::move(indices)) {}
+    std::vector<std::unique_ptr<ExprAST>>& getIndices() { return Indices; }
     std::string getName() const { return Name; }
     void dump(int indent) const override;
     void accept(ASTVisitor &visitor) override;
@@ -89,17 +93,35 @@ public:
     void accept(ASTVisitor &visitor) override;
 };
 
+class InitValAST : public ASTNode {
+    std::unique_ptr<ExprAST> Expr;
+    std::vector<std::unique_ptr<InitValAST>> Elements;
+    bool IsLeaf;
+public:
+    InitValAST(std::unique_ptr<ExprAST> expr) : Expr(std::move(expr)), IsLeaf(true) {}
+    InitValAST(std::vector<std::unique_ptr<InitValAST>> elements) : Elements(std::move(elements)), IsLeaf(false) {}
+
+    bool isLeaf() const { return IsLeaf; }
+    ExprAST* getExpr() const { return Expr.get(); }
+    const std::vector<std::unique_ptr<InitValAST>>& getElements() const { return Elements; }
+
+    void dump(int indent) const override;
+    void accept(ASTVisitor &visitor) override {}
+};
+
 class VarDeclAST : public ASTNode {
     std::string Type;
     std::string Name;
-    std::unique_ptr<ExprAST> InitExpr;
+    std::vector<std::unique_ptr<ExprAST>> Dims;
+    std::unique_ptr<InitValAST> Init;
 public:
-    VarDeclAST(const std::string &type, const std::string &name, std::unique_ptr<ExprAST> init)
-        : Type(type), Name(name), InitExpr(std::move(init)) {}
+    VarDeclAST(const std::string &type, const std::string &name, std::vector<std::unique_ptr<ExprAST>> dims, std::unique_ptr<InitValAST> init)
+        : Type(type), Name(name), Dims(std::move(dims)), Init(std::move(init)) {}
 
     const std::string& getType() const { return Type; }
     const std::string& getName() const { return Name; }
-    ExprAST* getInit() const { return InitExpr.get(); }
+    const std::vector<std::unique_ptr<ExprAST>>& getDims() const { return Dims; }
+    InitValAST* getInit() const { return Init.get(); }
 
     void dump(int indent) const override;
     void accept(ASTVisitor &visitor) override;
@@ -183,16 +205,35 @@ public:
     void accept(ASTVisitor &visitor) override;
 };
 
+class FuncFParamAST : public ASTNode {
+    std::string Type;
+    std::string Name;
+    std::vector<std::unique_ptr<ExprAST>> Dims;
+public:
+    FuncFParamAST(const std::string &type, const std::string &name, std::vector<std::unique_ptr<ExprAST>> dims)
+        : Type(type), Name(name), Dims(std::move(dims)) {}
+
+    const std::string& getType() const { return Type; }
+    const std::string& getName() const { return Name; }
+    const std::vector<std::unique_ptr<ExprAST>>& getDims() const { return Dims; }
+
+    void dump(int indent) const override;
+    void accept(ASTVisitor &visitor) override;
+};
+
 class FuncDefAST : public ASTNode {
     std::string Name;
     std::string RetType; // int, float, void
+    std::vector<std::unique_ptr<FuncFParamAST>> Params; 
     std::unique_ptr<BlockAST> Body;
-    // std::vector<std::unique_ptr<FuncFParamAST>> Params; 
 public:
-    FuncDefAST(const std::string &name, const std::string &retType, std::unique_ptr<BlockAST> body)
-        : Name(name), RetType(retType), Body(std::move(body)) {}
+    FuncDefAST(const std::string &name, const std::string &retType, 
+        std::vector<std::unique_ptr<FuncFParamAST>> params, std::unique_ptr<BlockAST> body)
+        : Name(name), RetType(retType), Params(std::move(params)), Body(std::move(body)) {}
 
     const std::string& getName() const { return Name; }
+    const std::string& getRetType() const { return RetType; }
+    const std::vector<std::unique_ptr<FuncFParamAST>>& getParams() const { return Params; }
     BlockAST* getBody() const { return Body.get(); }
 
     void dump(int indent) const override;

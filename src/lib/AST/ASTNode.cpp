@@ -16,6 +16,7 @@ void VarDeclAST::accept(ASTVisitor &v) { v.visit(*this); }
 void FuncDefAST::accept(ASTVisitor &v) { v.visit(*this); }
 void CompUnitAST::accept(ASTVisitor &v) { v.visit(*this); }
 void FuncCallAST::accept(ASTVisitor &v) { v.visit(*this); }
+void FuncFParamAST::accept(ASTVisitor &v) {v.visit(*this); }
 
 void FuncCallAST::dump(int indent) const {
     std::string space(indent, ' ');
@@ -31,7 +32,13 @@ void NumberAST::dump(int indent) const {
 }
 
 void LValAST::dump(int indent) const {
-    std::cout << std::string(indent, ' ') << "LValAST: " << Name << std::endl;
+    std::cout << std::string(indent, ' ') << "LValAST: " << Name;
+    for (const auto &idx : Indices) {
+        std::cout << "[";
+        idx->dump(0);
+        std::cout << "]";
+    }
+    std::cout << std::endl;
 }
 
 void BinaryExprAST::dump(int indent) const {
@@ -47,15 +54,28 @@ void UnaryExprAST::dump(int indent) const {
     if (Operand) Operand->dump(indent + 2);
 }
 
+void InitValAST::dump(int indent) const {
+    std::string pad(indent, ' ');
+    if (IsLeaf) {
+        std::cout << pad << "InitValAST(Leaf):" << std::endl;
+        Expr->dump(indent + 2);
+    } else {
+        std::cout << pad << "InitValAST(List):" << std::endl;
+        for (const auto &elem : Elements) {
+            elem->dump(indent + 2);
+        }
+    }
+}
+
 void VarDeclAST::dump(int indent) const {
     std::string space(indent, ' ');
-    std::cout << space << "VarDeclAST: " << Type << " " << Name;
-    if (InitExpr) {
-        std::cout << " =" << std::endl;
-        InitExpr->dump(indent + 2);
-    } else {
-        std::cout << std::endl;
+    std::cout << space << "VarDeclAST: " << Type << " " << Name << std::endl;
+    for (const auto &dim : Dims) {
+        dim->dump(indent + 2);
     }
+    if (Init) {
+        Init->dump(indent + 2);
+    } 
 }
 
 void ReturnStmtAST::dump(int indent) const {
@@ -97,11 +117,22 @@ void BlockAST::dump(int indent) const {
     for (auto &item : Items) item->dump(indent + 2);
 }
 
+void FuncFParamAST::dump(int indent) const {
+    std::cout << std::string(indent, ' ') << "Param: " << Type << " " << Name;
+    for (const auto &dim : Dims) {
+        std::cout << "[";
+        if(dim) dim->dump(0);
+        std::cout << "]";
+    }
+    std::cout << std::endl;
+}
+
 void FuncDefAST::dump(int indent) const {
     std::string space(indent, ' ');
-    std::cout << space << "FuncDefAST: " << Name 
-              << " [" << RetType << "]" << std::endl;
-    // if (Params) Params->dump(indent + 2);
+    std::cout << space << "FuncDefAST: " << RetType << " " << Name << std::endl;
+    for (const auto &param : Params) {
+        param->dump(indent + 2);
+    }
     if (Body) Body->dump(indent + 2);
 }
 
