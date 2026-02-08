@@ -5,21 +5,48 @@
 #include <string>
 #include <vector>
 #include <iostream>
+#include <cassert>
 
 namespace sysy {
+
+// RTTI templates.
+template<typename To, typename From>
+bool isa(const From* val);
+
+template<typename To, typename From>
+To* cast(From* val);
+
+template<typename To, typename From>
+To* dyn_cast(From* val);
+
     
 class Value {
+public:
+    enum ValueKind {
+        VK_Argument,
+        VK_BasicBlock,
+        VK_Function,
+        VK_GlobalVariable,
+        VK_ConstantInt,
+        VK_ConstantZero,
+        VK_ConstantArray,
+        VK_Instruction,
+    };
+
 protected:
     Type* Ty;
     std::string Name;
+    const ValueKind VKind;
 
 public:
-    Value(Type* ty, const std::string &name = "") : Ty(ty), Name(name) {}
+    Value(Type* ty, ValueKind kind, const std::string &name = "") : Ty(ty), Name(name), VKind(kind) {}
     virtual ~Value() = default;
 
     Type* getType() const { return Ty; }
     std::string getName() const { return Name; }
     void setName(const std::string &name) { Name = name; }
+
+    ValueKind getValueKind() const { return VKind; }
 
     virtual std::string toString() const = 0;
 };
@@ -28,7 +55,7 @@ class User : public Value {
 protected:
     std::vector<Value*> Operands;
 public:
-    User(Type* ty, const std::string &name = "") : Value(ty, name) {}
+    User(Type* ty, ValueKind kind, const std::string &name = "") : Value(ty, kind, name) {}
 
     void addOperand(Value* v) { Operands.push_back(v); }
     Value* getOperand(int i) const { return Operands[i]; }
@@ -37,30 +64,46 @@ public:
 
 class Constant : public User {
 public:
-    Constant(Type* ty, const std::string &name = "") : User(ty, name) {}
+    Constant(Type* ty, ValueKind kind, const std::string &name = "") : User(ty, kind, name) {}
+
+    static bool classof(const Value* v) {
+        return v->getValueKind() >= VK_ConstantInt && v->getValueKind() <= VK_ConstantArray;
+    }
 };
 
 class ConstantInt : public Constant {
     int Val;
 public:
-    ConstantInt(int val) : Constant(Type::getIntTy(), std::to_string(val)), Val(val) {}
+    ConstantInt(int val) : Constant(Type::getIntTy(), VK_ConstantInt, std::to_string(val)), Val(val) {}
     int getValue() const { return Val; }
     std::string toString() const override { return std::to_string(Val); }
+
+    static bool classof(const Value* v) {
+        return v->getValueKind() == VK_ConstantInt;
+    }
 };
 
 class ConstantZero : public Constant {
 public:
-    ConstantZero(Type* ty) : Constant(ty, "") {}
+    ConstantZero(Type* ty) : Constant(ty, VK_ConstantZero, "") {}
     std::string toString() const override { return "zeroinitializer"; }
+
+    static bool classof(const Value* v) {
+        return v->getValueKind() == VK_ConstantZero;
+    }
 };
 
 class ConstantArray : public Constant {
     std::vector<Constant*> Consts;
 public:
     ConstantArray(ArrayType* ty, const std::vector<Constant*> &consts) 
-        : Constant(ty, ""), Consts(consts) {}
+        : Constant(ty, VK_ConstantArray, ""), Consts(consts) {}
     
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return v->getValueKind() == VK_ConstantArray;
+    }
 };
 
 class GlobalVariable : public User {
@@ -73,10 +116,30 @@ public:
     Constant* getInit() const { return InitVal; }
 
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return v->getValueKind() == VK_GlobalVariable;
+    }
 private:
     bool IsConst = false;
     Constant* InitVal;
 };
+
+template<typename To, typename From>
+bool isa(const From* val) {
+    return val && To::classof(val);
+}
+
+template<typename To, typename From>
+To* cast(From* val) {
+    assert(isa<To>(val) && "cast<To>() argument of incompatible type!");
+    return (To*)val;
+}
+
+template<typename To, typename From>
+To* dyn_cast(From* val) {
+    return isa<To>(val) ? (To*)val : nullptr;
+}
 
 }
 #endif

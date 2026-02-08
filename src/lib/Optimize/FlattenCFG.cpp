@@ -53,11 +53,11 @@ void FlattenCFG::flattenRegion(Region* region, BasicBlock* loopHeader, BasicBloc
             mergeBB->getInstructions().splice(mergeBB->getInstructions().begin(), insts, nextIt, insts.end());
         }
 
-        if (auto ifInst = dynamic_cast<IfInst*>(highLevelInst)) {
+        if (auto ifInst = dyn_cast<IfInst>(highLevelInst)) {
             handleIf(ifInst, bb, mergeBB, loopHeader, loopExit);
-        } else if (auto whileInst = dynamic_cast<WhileInst*>(highLevelInst)) {
+        } else if (auto whileInst = dyn_cast<WhileInst>(highLevelInst)) {
             handleWhile(whileInst, bb, mergeBB);
-        } else if (auto brk = dynamic_cast<BreakInst*>(highLevelInst)) {
+        } else if (auto brk = dyn_cast<BreakInst>(highLevelInst)) {
             // Handle break: jump to loopExit
             if (loopExit) {
                 builder.SetInsertPoint(bb);
@@ -66,7 +66,7 @@ void FlattenCFG::flattenRegion(Region* region, BasicBlock* loopHeader, BasicBloc
             } else {
                 std::cerr << "Error: Break outside loop" << std::endl;
             }
-        } else if (auto cont = dynamic_cast<ContinueInst*>(highLevelInst)) {
+        } else if (auto cont = dyn_cast<ContinueInst>(highLevelInst)) {
             // Handle continue: jump to loopHeader
             if (loopHeader) {
                 builder.SetInsertPoint(bb);

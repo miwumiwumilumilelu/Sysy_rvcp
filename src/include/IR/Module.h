@@ -16,11 +16,15 @@ class BasicBlock;
 class Argument : public Value {
 public:
     Argument(Type *ty, const std::string &name, Function *f, int argNo)
-        : Value(ty, name), Parent(f), ArgNo(argNo) {}
+        : Value(ty, VK_Argument, name), Parent(f), ArgNo(argNo) {}
     std::string toString() const override { return Name; }
 
     Function* getParent() const { return Parent; }
     int getArgNo() const { return ArgNo; }
+
+    static bool classof(const Value* v) {
+        return v->getValueKind() == VK_Argument;
+    }
 
 private:
     Function *Parent;
@@ -39,6 +43,10 @@ public:
 
     std::string toString() const override;
 
+    static bool classof(const Value* v) {
+        return v->getValueKind() == VK_BasicBlock;
+    }
+
 private:
     std::list<Instruction*> InstList;
     Region *Parent;
@@ -54,6 +62,10 @@ public:
     void addArgument(Argument *arg) { Args.push_back(arg); }
 
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return v->getValueKind() == VK_Function;
+    }
 
 private:
     std::unique_ptr<Region> Body;

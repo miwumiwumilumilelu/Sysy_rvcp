@@ -33,6 +33,10 @@ public:
     Region* getRegion(int index) const { return Regions[index].get(); }
     const std::vector<std::unique_ptr<Region>>& getRegions() const {return Regions; }
 
+    static bool classof(const Value* v) {
+        return v->getValueKind() == VK_Instruction;
+    }
+
 private:
     OpID OpCode;
     BasicBlock* Parent;
@@ -44,6 +48,10 @@ public:
     CallInst(Function* func, std::vector<Value*> args, BasicBlock* parent);
     Function* getFunction() const;
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Call;
+    }
 };
 
 class BinaryInst : public Instruction {
@@ -51,6 +59,12 @@ class BinaryInst : public Instruction {
 public:
     BinaryInst(OpID id, Value* lhs, Value* rhs, BasicBlock* parent);
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        if (!isa<Instruction>(v)) return false;
+        OpID op = cast<Instruction>(v)->getOpID();
+        return op >= Add && op <= Div;
+    }
 };
 
 class AllocaInst : public Instruction {
@@ -58,24 +72,40 @@ class AllocaInst : public Instruction {
 public:
     AllocaInst(Type* ty, BasicBlock* parent);
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Alloca;
+    }
 };
 
 class LoadInst : public Instruction {
 public:
     LoadInst(Value* ptr, BasicBlock* parent);
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Load;
+    }
 };
 
 class StoreInst : public Instruction {
 public:
     StoreInst(Value* val, Value* ptr, BasicBlock* parent);
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Store;
+    }
 };
 
 class ReturnInst : public Instruction {
 public:
     ReturnInst(Value* val, BasicBlock* parent);
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Ret;
+    }
 };
 
 class BranchInst : public Instruction {
@@ -86,6 +116,10 @@ public:
     BranchInst(Value *cond, BasicBlock *ifTrue, BasicBlock *ifFalse, BasicBlock *parent);
 
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Br;
+    }
 };
 
 class ICmpInst : public Instruction {
@@ -94,6 +128,10 @@ public:
     ICmpInst(CmpOp op, Value* lhs, Value* rhs, BasicBlock* parent);
     CmpOp getPredicate() const { return Pred; }
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == ICmp;
+    }
 private:
     CmpOp Pred;
     std::string getPredStr() const;
@@ -106,6 +144,10 @@ public:
     Region* getElseRegion() { return getRegions().size() > 1 ? getRegion(1) : nullptr; }
     void addElseRegion();
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == If;
+    }
 };
 
 class WhileInst : public Instruction {
@@ -115,24 +157,40 @@ public:
     Region* getCondRegion() { return getRegion(0); }
     Region* getBodyRegion() { return getRegion(1); }
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == While;
+    }
 };
 
 class BreakInst : public Instruction {
 public:
     BreakInst(BasicBlock* parent);
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Break;
+    }
 };
 
 class ContinueInst : public Instruction {
 public:
     ContinueInst(BasicBlock* parent);
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Continue;
+    }
 };
 
 class GetElementPtrInst : public Instruction {
 public:
     GetElementPtrInst(Value* base, Value* index, BasicBlock* parent);
     std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == GetElementPtr;
+    }
 };
 
 }

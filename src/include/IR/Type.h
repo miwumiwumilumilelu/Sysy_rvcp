@@ -20,6 +20,8 @@ public:
     explicit Type(TypeID id) : ID(id) {}
     virtual ~Type() = default;
 
+    TypeID getTypeID() const { return ID; }
+
     bool isInt() const { return ID == IntTy; }
     bool isVoid() const { return ID == VoidTy; }
     bool isPointer() const { return ID == PointerTy; }
@@ -40,6 +42,10 @@ public:
     IntegerType() : Type(IntTy) {}
 
     std::string toString() const override { return "i32"; }
+
+    static bool classof(const Type* T) {
+        return T->getTypeID() == IntTy;
+    }
 };
 
 class FloatType : public Type {
@@ -47,6 +53,10 @@ public:
     FloatType() : Type(FloatTy) {}
 
     std::string toString() const override { return "float"; }
+
+    static bool classof(const Type* T) {
+        return T->getTypeID() == FloatTy;
+    }
 };
 
 class VoidType : public Type {
@@ -54,6 +64,10 @@ public:
     VoidType() : Type(VoidTy) {}
 
     std::string toString() const override { return "void"; }
+
+    static bool classof(const Type* T) {
+        return T->getTypeID() == VoidTy;
+    }
 };
 
 class PointerType : public Type {
@@ -63,6 +77,10 @@ public:
 
     Type* getPointeeType() const { return PointeeTy; }
     std::string toString() const override { return PointeeTy->toString() + "*"; }
+
+    static bool classof(const Type* T) {
+        return T->getTypeID() == PointerTy;
+    }
 };
 
 class LabelType : public Type {
@@ -70,6 +88,10 @@ public:
     LabelType() : Type(LabelTy) {}
 
     std::string toString() const override { return "label"; }
+
+    static bool classof(const Type* T) {
+        return T->getTypeID() == LabelTy;
+    }
 };
 
 class ArrayType : public Type {
@@ -83,6 +105,10 @@ public:
 
     std::string toString() const override {
         return "[" + std::to_string(NumElements) + " x " + ElemTy->toString() + "]";
+    }
+
+    static bool classof(const Type* T) {
+        return T->getTypeID() == ArrayTy;
     }
 };
 

@@ -43,7 +43,7 @@ void Region::removeBlock(BasicBlock* bb) {
 }
 
 BasicBlock::BasicBlock(const std::string &name, Region *parent) 
-    : Value(Type::getLabelTy(), name), Parent(parent) {
+    : Value(Type::getLabelTy(), VK_BasicBlock, name), Parent(parent) {
     if (parent) parent->addBlock(this);
 }
 
@@ -66,7 +66,7 @@ std::string BasicBlock::toString() const {
 }
 
 Instruction::Instruction(Type *ty, OpID id, BasicBlock *parent) 
-    : User(ty, ""), OpCode(id), Parent(parent) {
+    : User(ty, VK_Instruction, ""), OpCode(id), Parent(parent) {
     if (parent) parent->addInstruction(this);
 }
 
@@ -86,7 +86,7 @@ CallInst::CallInst(Function* func, std::vector<Value*> args, BasicBlock* parent)
 }
 
 Function* CallInst::getFunction() const {
-    return dynamic_cast<Function*>(getOperand(0));
+    return dyn_cast<Function>(getOperand(0));
 }
 
 std::string CallInst::toString() const {
@@ -129,7 +129,7 @@ std::string AllocaInst::toString() const {
 
 LoadInst::LoadInst(Value *ptr, BasicBlock *parent) 
     : Instruction(
-        dynamic_cast<PointerType*>(ptr->getType())->getPointeeType(),
+        dyn_cast<PointerType>(ptr->getType())->getPointeeType(),
         Load, 
         parent
       ) {
@@ -263,8 +263,8 @@ GetElementPtrInst::GetElementPtrInst(Value* base, Value* index, BasicBlock* pare
     addOperand(base);
     addOperand(index);
 
-    if (auto ptrTy = dynamic_cast<PointerType*>(base->getType())) {
-        if (auto arrTy = dynamic_cast<ArrayType*>(ptrTy->getPointeeType())) {
+    if (auto ptrTy = dyn_cast<PointerType>(base->getType())) {
+        if (auto arrTy = dyn_cast<ArrayType>(ptrTy->getPointeeType())) {
             Ty = new PointerType(arrTy->getElementType());
         }
     }
@@ -275,7 +275,7 @@ std::string GetElementPtrInst::toString() const {
 }
 
 Function::Function(const std::string &name, Type *retTy) 
-    : Value(retTy, name) {
+    : Value(retTy, VK_Function, name) {
     Body = std::make_unique<Region>(this);
 }
 
@@ -309,7 +309,7 @@ std::string ConstantArray::toString() const {
 }
 
 GlobalVariable::GlobalVariable(const std::string &name, Type *ty, Constant *initVal)
-    : User(new PointerType(ty), name), InitVal(initVal) {
+    : User(new PointerType(ty), VK_GlobalVariable, name), InitVal(initVal) {
 }
 
 std::string GlobalVariable::toString() const {
@@ -317,7 +317,7 @@ std::string GlobalVariable::toString() const {
     ss << "@" << Name << " = ";
     if (IsConst) ss << "constant "; else ss << "global ";
     
-    Type* baseTy = dynamic_cast<PointerType*>(Ty)->getPointeeType();
+    Type* baseTy = dyn_cast<PointerType>(Ty)->getPointeeType();
     ss << baseTy->toString() << " ";
     
     if (InitVal) {

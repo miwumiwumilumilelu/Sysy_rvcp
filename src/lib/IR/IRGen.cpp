@@ -25,13 +25,13 @@ Value* IRGen::lookupVar(const std::string &name) {
 Constant* IRGen::getGlobalInitVal(InitValAST* init, Type* type) {
     if (init->isLeaf()) {
         init->getExpr()->accept(*this);
-        if (auto constInt = dynamic_cast<ConstantInt*>(LastVal)) {
+        if (auto constInt = dyn_cast<ConstantInt>(LastVal)) {
             return constInt;
         }
         return new ConstantInt(0); 
     }
 
-    if (auto arrTy = dynamic_cast<ArrayType*>(type)) {
+    if (auto arrTy = dyn_cast<ArrayType>(type)) {
         std::vector<Constant*> elements;
         Type* elemTy = arrTy->getElementType();
         int numElements = arrTy->getNumElements();
@@ -66,7 +66,7 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
         return;
     }
 
-    if (auto arrTy = dynamic_cast<ArrayType*>(type)) {
+    if (auto arrTy = dyn_cast<ArrayType>(type)) {
         Type* elemTy = arrTy->getElementType();
         const auto& elems = init->getElements();
         
@@ -96,7 +96,7 @@ void IRGen::fillZero(Value* baseAddr, Type* type, std::vector<int>& indices) {
         }
         builder.Create<StoreInst>(new ConstantInt(0), ptr);
     } 
-    else if (auto arrTy = dynamic_cast<ArrayType*>(type)) {
+    else if (auto arrTy = dyn_cast<ArrayType>(type)) {
         Type* elemTy = arrTy->getElementType();
         int size = arrTy->getNumElements();
         for (int i = 0; i < size; ++i) {
@@ -140,7 +140,7 @@ void IRGen::visit(FuncCallAST &node) {
             Value *val = LastVal;
 
             if (val->getType()->isPointer()) {
-                Type* pointee = dynamic_cast<PointerType*>(val->getType())->getPointeeType();
+                Type* pointee = dyn_cast<PointerType>(val->getType())->getPointeeType();
                 if (pointee->isArray()) {
                     auto zero = new ConstantInt(0);
                     auto gep = builder.Create<GetElementPtrInst>(val, zero);
@@ -307,7 +307,7 @@ void IRGen::visit(LValAST &node) {
         return;
     }
 
-    if (auto ptrTy = dynamic_cast<PointerType*>(addr->getType())) {
+    if (auto ptrTy = dyn_cast<PointerType>(addr->getType())) {
         if (ptrTy->getPointeeType()->isPointer()) {
             auto load = builder.Create<LoadInst>(addr);
             load->setName(newTempName());
@@ -327,7 +327,7 @@ void IRGen::visit(LValAST &node) {
     if (isLValMode) {
         LastVal = addr;
     } else {
-        if (addr->getType()->isPointer() && dynamic_cast<PointerType*>(addr->getType())->getPointeeType()->isArray()) {
+        if (addr->getType()->isPointer() && dyn_cast<PointerType>(addr->getType())->getPointeeType()->isArray()) {
             LastVal = addr;
         } else {
             auto load = builder.Create<LoadInst>(addr);
