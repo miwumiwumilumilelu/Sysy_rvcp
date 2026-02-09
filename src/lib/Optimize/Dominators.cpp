@@ -39,7 +39,10 @@ void Dominators::buildCFG() {
                 }
             }
         }
+        else if (auto ret = dyn_cast<ReturnInst>(term)) {
+        }
         else {
+            // neither branch nor return
             std::cerr << "Warning: BasicBlock " << bb->getName() << " does not end with Br/Ret!\n";
         }
     }

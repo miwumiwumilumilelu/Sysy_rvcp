@@ -278,6 +278,32 @@ std::string GetElementPtrInst::toString() const {
     return Name + " = getelementptr " + getOperand(0)->getName() + ", " + getOperand(1)->getName();
 }
 
+PhiInst::PhiInst(Type *ty, BasicBlock *parent) 
+    : Instruction(ty, Phi, parent) {}
+
+void PhiInst::addIncoming(Value *val, BasicBlock *bb) {
+    addOperand(val);
+    addOperand(bb);
+}
+
+std::string PhiInst::toString() const {
+    std::stringstream ss;
+    // %1 = phi [ %val1, <bb1> ], [ %val2, <bb2> ]
+    ss << Name << " = phi ";
+    for (int i = 0; i < getNumOperands(); i += 2) {
+        if (i > 0) ss << ", ";
+        
+        Value* val = getOperand(i);
+        Value* bb = getOperand(i+1);
+        
+        std::string valName = val ? fmtOperand(val) : "null";
+        std::string bbName = bb ? ("<" + bb->getName() + ">") : "null";
+        
+        ss << "[ " << valName << ", " << bbName << " ]";
+    }
+    return ss.str();
+}
+
 Function::Function(const std::string &name, Type *retTy) 
     : Value(retTy, VK_Function, name) {
     Body = std::make_unique<Region>(this);

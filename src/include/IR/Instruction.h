@@ -16,7 +16,8 @@ public:
         Add, Sub, Mul, Div,
         ICmp, Br, Ret, Call,
         If, While, Break, Continue,
-        GetElementPtr
+        GetElementPtr,
+        Phi
     };
 
     Instruction(Type* ty, OpID id, BasicBlock* parent);
@@ -190,6 +191,19 @@ public:
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == GetElementPtr;
+    }
+};
+
+class PhiInst : public Instruction {
+public:
+    PhiInst(Type* ty, BasicBlock* parent);
+
+    void addIncoming(Value* val, BasicBlock* bb);
+    
+    std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Phi;
     }
 };
 

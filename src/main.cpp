@@ -8,6 +8,8 @@
 #include "Semant/Semant.h"
 #include "IR/IRGen.h"
 #include "Optimize/FlattenCFG.h"
+#include "Optimize/Dominators.h"
+#include "Optimize/Mem2Reg.h"
 
 using namespace sysy;
 
@@ -17,7 +19,6 @@ int main(int argc, char **argv) {
     bool dumpHIR = false;
     bool dumpLIR = false;
 
-    // --- 1. 参数解析 ---
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-o") {
@@ -78,6 +79,16 @@ int main(int argc, char **argv) {
 
     FlattenCFG flatten(module.get());
     flatten.run();
+
+    for (auto func : module->getFunctions()) {
+        if (func->getBody()->getBlocks().empty()) continue;
+
+        Dominators dom(func);
+        dom.run();
+    }
+
+    Mem2Reg mem2reg(module.get(), nullptr); 
+    mem2reg.run();
 
     if (dumpLIR) {
         std::cout << module->print();

@@ -19,6 +19,7 @@ To* cast(From* val);
 template<typename To, typename From>
 To* dyn_cast(From* val);
 
+class User;
     
 class Value {
 public:
@@ -37,6 +38,7 @@ protected:
     Type* Ty;
     std::string Name;
     const ValueKind VKind;
+    std::vector<User*> UseList;
 
 public:
     Value(Type* ty, ValueKind kind, const std::string &name = "") : Ty(ty), Name(name), VKind(kind) {}
@@ -49,6 +51,16 @@ public:
     ValueKind getValueKind() const { return VKind; }
 
     virtual std::string toString() const = 0;
+
+    void addUser(User* user) { UseList.push_back(user); }
+    void removeUser(User* user) {
+        auto it = std::remove(UseList.begin(), UseList.end(), user);
+        UseList.erase(it, UseList.end());
+    }   
+
+    const std::vector<User*>& getUsers() const { return UseList; }
+
+    void replaceAllUsesWith(Value* newVal);
 };
 
 class User : public Value {
@@ -57,10 +69,40 @@ protected:
 public:
     User(Type* ty, ValueKind kind, const std::string &name = "") : Value(ty, kind, name) {}
 
-    void addOperand(Value* v) { Operands.push_back(v); }
+    virtual ~User() {
+        for (auto v : Operands) {
+            if (v) v->removeUser(this);
+        }
+    }
+
+    void addOperand(Value* v) { 
+        Operands.push_back(v); 
+        if (v) v->addUser(this);
+    }
     Value* getOperand(int i) const { return Operands[i]; }
     int getNumOperands() const { return Operands.size(); }
+    void setOperand(int i, Value* v) { 
+        if (i < Operands.size()) {
+            Value* oldVal = Operands[i];
+            if (oldVal) oldVal->removeUser(this);
+            
+            Operands[i] = v;
+            if (v) v->addUser(this);
+        }
+    }
 };
+
+inline void Value::replaceAllUsesWith(Value* newVal) {
+    std::vector<User*> users = UseList;
+    
+    for (auto user : users) {
+        for (int i = 0; i < user->getNumOperands(); ++i) {
+            if (user->getOperand(i) == this) {
+                user->setOperand(i, newVal);
+            }
+        }
+    }
+}
 
 class Constant : public User {
 public:
