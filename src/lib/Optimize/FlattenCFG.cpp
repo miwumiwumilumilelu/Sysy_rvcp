@@ -92,31 +92,31 @@ void FlattenCFG::handleIf(IfInst* inst, BasicBlock* currentBB, BasicBlock* merge
     flattenRegion(thenRegion, loopHeader, loopExit);
 
     BasicBlock* thenEntry = thenRegion->getEntryBlock();
-    BasicBlock* thenExit = thenRegion->getBlocks().back();
+
+    for (auto bb : thenRegion->getBlocks()) {
+        if (bb->getInstructions().empty() || !bb->getInstructions().back()->isTerminator()) {
+            builder.SetInsertPoint(bb);
+            builder.CreateBr(mergeBB);
+        }
+    }
 
     // If there is no Else, default jump to Merge.
     BasicBlock* elseEntry = mergeBB;
     if (auto elseRegion = inst->getElseRegion()) {
         flattenRegion(elseRegion, loopHeader, loopExit);
         elseEntry = elseRegion->getEntryBlock();
-        BasicBlock* elseExit = elseRegion->getBlocks().back();
 
-        if (elseExit->getInstructions().empty() || 
-            !elseExit->getInstructions().back()->isTerminator()) {
-            builder.SetInsertPoint(elseExit);
-            builder.CreateBr(mergeBB);
+        for (auto bb : elseRegion->getBlocks()) {
+            if (bb->getInstructions().empty() || !bb->getInstructions().back()->isTerminator()) {
+                builder.SetInsertPoint(bb);
+                builder.CreateBr(mergeBB);
+            }
         }
         moveBlocksFromRegion(elseRegion, parentRegion);
     }
 
     builder.SetInsertPoint(currentBB);
     builder.Create<BranchInst>(inst->getOperand(0), thenEntry, elseEntry);
-
-    if (thenExit->getInstructions().empty() || 
-        !thenExit->getInstructions().back()->isTerminator()) {
-        builder.SetInsertPoint(thenExit);
-        builder.CreateBr(mergeBB);
-    }
 
     moveBlocksFromRegion(thenRegion, parentRegion);
     currentBB->getInstructions().remove(inst);
@@ -134,7 +134,6 @@ void FlattenCFG::handleWhile(WhileInst* inst, BasicBlock* currentBB, BasicBlock*
 
     BasicBlock* condExit = condRegion->getBlocks().back();
     BasicBlock* bodyEntry = bodyRegion->getEntryBlock();
-    BasicBlock* bodyExit = bodyRegion->getBlocks().back();
 
     builder.SetInsertPoint(currentBB);
     builder.CreateBr(condEntry);
@@ -156,10 +155,11 @@ void FlattenCFG::handleWhile(WhileInst* inst, BasicBlock* currentBB, BasicBlock*
     builder.SetInsertPoint(condExit);
     builder.Create<BranchInst>(condVal, bodyEntry, mergeBB);
 
-    if (bodyExit->getInstructions().empty() ||
-        !bodyExit->getInstructions().back()->isTerminator()) {
-        builder.SetInsertPoint(bodyExit);
-        builder.CreateBr(condEntry);
+    for (auto bb : bodyRegion->getBlocks()) {
+        if (bb->getInstructions().empty() || !bb->getInstructions().back()->isTerminator()) {
+            builder.SetInsertPoint(bb);
+            builder.CreateBr(condEntry);
+        }
     }
 
     moveBlocksFromRegion(condRegion, parentRegion);
