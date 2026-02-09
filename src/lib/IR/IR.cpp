@@ -24,6 +24,13 @@ static std::string addIndent(const std::string &str, int spaceCount) {
     return res;
 }
 
+static std::string fmtOperand(Value* v) {
+    if (auto c = dyn_cast<ConstantInt>(v)) {
+        return std::to_string(c->getValue());
+    }
+    return v->getName();
+}
+
 Type* Type::getIntTy() { static IntegerType t; return &t; }
 Type* Type::getVoidTy() { static VoidType t; return &t; }
 Type* Type::getFloatTy() { static FloatType t; return &t; }
@@ -58,7 +65,7 @@ Function* BasicBlock::getParentFunc() const {
 
 std::string BasicBlock::toString() const {
     std::stringstream ss;
-    ss << Name << ":\n"; // label:
+    ss << Name << ":\n";
     for (auto inst : InstList) {
         ss << addIndent(inst->toString(), 4) << "\n";
     }
@@ -97,7 +104,7 @@ std::string CallInst::toString() const {
     str += "call " + getFunction()->getName() + "(";
     for (int i = 1; i < getNumOperands(); ++i) {
         if (i > 1) str += ", ";
-        str += "i32 " + getOperand(i)->getName();
+        str += fmtOperand(getOperand(i));
     }
     str += ")";
     return str;
@@ -117,7 +124,7 @@ BinaryInst::BinaryInst(OpID id, Value *lhs, Value *rhs, BasicBlock *parent)
 }
 
 std::string BinaryInst::toString() const {
-    return Name + " = " + OpStr + " i32 " + getOperand(0)->getName() + ", " + getOperand(1)->getName();
+    return Name + " = " + OpStr + " " + fmtOperand(getOperand(0)) + ", " + fmtOperand(getOperand(1));
 }
 
 AllocaInst::AllocaInst(Type *ty, BasicBlock *parent) 
@@ -137,8 +144,7 @@ LoadInst::LoadInst(Value *ptr, BasicBlock *parent)
 }
 
 std::string LoadInst::toString() const {
-    // <result> = load <ty>, <ty>* <ptr>
-    return Name + " = load " + getType()->toString() + ", " + getOperand(0)->getType()->toString() + " " + getOperand(0)->getName();
+    return Name + " = load " + fmtOperand(getOperand(0));
 }
 
 StoreInst::StoreInst(Value *val, Value *ptr, BasicBlock *parent) 
@@ -148,9 +154,7 @@ StoreInst::StoreInst(Value *val, Value *ptr, BasicBlock *parent)
 }
 
 std::string StoreInst::toString() const {
-    // store <ty> <val>, <ty>* <ptr>
-    return "store " + getOperand(0)->getType()->toString() + " " + getOperand(0)->getName() + 
-        ", " + getOperand(1)->getType()->toString() + " " + getOperand(1)->getName();
+    return "store " + fmtOperand(getOperand(0)) + ", " + fmtOperand(getOperand(1));
 }
 
 ReturnInst::ReturnInst(Value *val, BasicBlock *parent) 
@@ -160,7 +164,7 @@ ReturnInst::ReturnInst(Value *val, BasicBlock *parent)
 
 std::string ReturnInst::toString() const {
     if (getNumOperands() == 0) return "ret void";
-    return "ret i32 " + getOperand(0)->getName();
+    return "ret " + fmtOperand(getOperand(0));
 }
 
 BranchInst::BranchInst(BasicBlock *dest, BasicBlock *parent) 
@@ -176,8 +180,8 @@ BranchInst::BranchInst(Value *cond, BasicBlock *ifTrue, BasicBlock *ifFalse, Bas
 }
 
 std::string BranchInst::toString() const {
-    if (getNumOperands() == 1) return "br label %" + getOperand(0)->getName();
-    return "br i1 " + getOperand(0)->getName() + ", label %" + getOperand(1)->getName() + ", label %" + getOperand(2)->getName();
+    if (getNumOperands() == 1) return "br <" + getOperand(0)->getName() + ">";
+    return "br " + fmtOperand(getOperand(0)) + ", <" + getOperand(1)->getName() + ">, <else = " + getOperand(2)->getName() + ">";
 }
 
 ICmpInst::ICmpInst(CmpOp op, Value *lhs, Value *rhs, BasicBlock *parent)
@@ -196,7 +200,7 @@ std::string ICmpInst::getPredStr() const {
 }
 
 std::string ICmpInst::toString() const {
-    return Name + " = icmp " + getPredStr() + " i32 " + getOperand(0)->getName() + ", " + getOperand(1)->getName();
+    return Name + " = icmp " + getPredStr() + " " + fmtOperand(getOperand(0)) + ", " + fmtOperand(getOperand(1));
 }
 
 IfInst::IfInst(Value* cond, BasicBlock* parent) 
@@ -277,6 +281,10 @@ std::string GetElementPtrInst::toString() const {
 Function::Function(const std::string &name, Type *retTy) 
     : Value(retTy, VK_Function, name) {
     Body = std::make_unique<Region>(this);
+}
+
+BasicBlock* Function::getEntryBlock() {
+    return Body->getEntryBlock();
 }
 
 std::string Function::toString() const {

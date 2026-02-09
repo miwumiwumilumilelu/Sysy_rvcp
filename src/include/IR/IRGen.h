@@ -52,7 +52,7 @@ private:
     // (usually AllocaInst* address)
     std::vector<std::map<std::string, Value*>> Scopes;
 
-    int TempCounter = 0;
+    int ValueCounter = 0;
     int LabelCounter = 0;
 
     void enterScope() { Scopes.emplace_back(); }
@@ -60,8 +60,8 @@ private:
     void defineVar(const std::string &name, Value *val);
     Value* lookupVar(const std::string &name);
 
-    std::string newTempName() { return "%t" + std::to_string(TempCounter++); }
-    std::string newLabelName() { return "L" + std::to_string(LabelCounter++); }
+    std::string nextValueName() { return "%" + std::to_string(ValueCounter++); }
+    std::string newLabelName() { return "bb" + std::to_string(LabelCounter++); }
 };
 
 } 

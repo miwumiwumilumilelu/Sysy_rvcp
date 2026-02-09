@@ -10,6 +10,11 @@ using namespace sysy;
 void FlattenCFG::run() {
     for (auto func : TheModule->getFunctions()) {
         flattenRegion(func->getBody(), nullptr, nullptr);    
+
+        int bbCounter = 0;
+        for (auto bb : func->getBody()->getBlocks()) {
+            bb->setName("bb" + std::to_string(bbCounter++));
+        }
     }
 }
 

@@ -9,7 +9,7 @@ bool Semant::defineSymbol(const std::string &name, const std::string &type) {
         return false;
     }
     currScope[name] = type;
-    std::cout<< "Debug: Defined '" << name << "' type: " << type << std::endl;
+    // std::cout<< "Debug: Defined '" << name << "' type: " << type << std::endl;
     return true;
 }
 

@@ -1,65 +1,87 @@
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <memory>
 #include "Lex/Lexer.h"
 #include "Parse/Parser.h"
 #include "Semant/Semant.h"
 #include "IR/IRGen.h"
 #include "Optimize/FlattenCFG.h"
-#include <iostream>
-#include <fstream>
-#include <vector>
 
 using namespace sysy;
 
-int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <filename>" << std::endl;
+int main(int argc, char **argv) {
+    std::string inputFile;
+    std::string outputFile;
+    bool dumpHIR = false;
+    bool dumpLIR = false;
+
+    // --- 1. 参数解析 ---
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-o") {
+            if (i + 1 < argc) {
+                outputFile = argv[++i];
+            } else {
+                std::cerr << "Error: -o expects a filename\n";
+                return 1;
+            }
+        } else if (arg == "--dump-mid-ir") {
+            dumpHIR = true;
+        } else if (arg == "--dump-cfg-ir") {
+            dumpLIR = true;
+        } else if (arg[0] == '-') {
+            std::cerr << "Unknown option: " << arg << "\n";
+            return 1;
+        } else {
+            inputFile = arg;
+        }
+    }
+
+    if (inputFile.empty()) {
+        std::cerr << "Error: No input file specified.\n";
         return 1;
     }
 
-    std::string filename = argv[1];
-    std::ifstream file(filename);
+    if (outputFile.empty()) {
+        outputFile = inputFile + ".s";
+    }
+
+    std::ifstream file(inputFile);
     if (!file.is_open()) {
-        std::cerr << "Error: Could not open file " << filename << std::endl;
+        std::cerr << "Error: Could not open file " << inputFile << "\n";
         return 1;
     }
-
-    // Read file content
-    std::string sourceCode((std::istreambuf_iterator<char>(file)),
-                           std::istreambuf_iterator<char>());
+    std::string code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     file.close();
 
-    std::cout << "--- Compiling " << filename << " ---" << std::endl;
-
-    // 1. Frontend: Lexer & Parser
-    Lexer lexer(sourceCode);
+    Lexer lexer(code);
     Parser parser(lexer);
     auto ast = parser.parseCompUnit();
 
     if (!ast) {
-        std::cerr << "Parser Error: Failed to generate AST." << std::endl;
         return 1;
     }
 
-    // 2. Semantic Analysis
     Semant semant;
-    ast->accept(semant);
+    semant.visit(*ast);
 
-    // 3. IR Generation (High-Level IR)
     IRGen irGen;
-    ast->accept(irGen);
-    auto module = irGen.getModule();
+    irGen.visit(*ast);
 
-    std::cout << "\n=== Generated High-Level IR ===\n" << std::endl;
-    if (module) {
-        std::cout << module->print() << std::endl;
+    auto module = irGen.getModule(); 
+
+    if (dumpHIR) {
+        std::cout << module->print();
     }
 
-    // 4. Optimization: FlattenCFG Pass (High-Level -> Low-Level)
-    if (module) {
-        std::cout << "\n[Running Pass] FlattenCFG..." << std::endl;
-        FlattenCFG flatten(module.get());
-        flatten.run();
-        
-        std::cout << "\n=== Flattened IR (Low-Level) ===\n" << std::endl;
-        std::cout << module->print() << std::endl;
+    FlattenCFG flatten(module.get());
+    flatten.run();
+
+    if (dumpLIR) {
+        std::cout << module->print();
     }
+
+    return 0;
 }

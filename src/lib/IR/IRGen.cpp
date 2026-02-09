@@ -58,7 +58,7 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
         Value* ptr = baseAddr;
         for (int idx : indices) {
             auto gep = builder.Create<GetElementPtrInst>(ptr, new ConstantInt(idx));
-            gep->setName(newTempName());
+            gep->setName(nextValueName());
             ptr = gep;
         }
         
@@ -91,7 +91,7 @@ void IRGen::fillZero(Value* baseAddr, Type* type, std::vector<int>& indices) {
         Value* ptr = baseAddr;
         for (int idx : indices) {
             auto gep = builder.Create<GetElementPtrInst>(ptr, new ConstantInt(idx));
-            gep->setName(newTempName());
+            gep->setName(nextValueName());
             ptr = gep;
         }
         builder.Create<StoreInst>(new ConstantInt(0), ptr);
@@ -145,7 +145,7 @@ void IRGen::visit(FuncCallAST &node) {
                     auto zero = new ConstantInt(0);
                     auto gep = builder.Create<GetElementPtrInst>(val, zero);
 
-                    gep->setName(newTempName());
+                    gep->setName(nextValueName());
                     val = gep;
                 }
             }
@@ -158,7 +158,7 @@ void IRGen::visit(FuncCallAST &node) {
 
     auto call = builder.Create<CallInst>(callee, args);
     if (!callee->getType()->isVoid()) {
-        call->setName(newTempName());
+        call->setName(nextValueName());
         LastVal = call;
     } else {
         LastVal = nullptr;
@@ -173,7 +173,8 @@ void IRGen::visit(FuncDefAST &node) {
     auto func = new Function(node.getName(), retType);
     TheModule->addFunction(func);
     CurrentFunc = func;
-    TempCounter = 0;
+    ValueCounter = 0;
+    LabelCounter = 0;
 
     std::vector<Value*> argAllocas;
 
@@ -203,7 +204,7 @@ void IRGen::visit(FuncDefAST &node) {
         func->addArgument(arg);
     }
 
-    BasicBlock *entryBlock = new BasicBlock("entry", func->getBody());
+    BasicBlock *entryBlock = new BasicBlock(newLabelName(), func->getBody());
     builder.SetInsertPoint(entryBlock);
 
     enterScope();
@@ -276,7 +277,7 @@ void IRGen::visit(VarDeclAST &node) {
     }
 
     auto alloca = builder.Create<AllocaInst>(varType);
-    alloca->setName("%" + node.getName() + "_" + std::to_string(TempCounter++));
+    alloca->setName("%" + node.getName() + "_" + std::to_string(ValueCounter++));
     
     defineVar(node.getName(), alloca);
 
@@ -310,7 +311,7 @@ void IRGen::visit(LValAST &node) {
     if (auto ptrTy = dyn_cast<PointerType>(addr->getType())) {
         if (ptrTy->getPointeeType()->isPointer()) {
             auto load = builder.Create<LoadInst>(addr);
-            load->setName(newTempName());
+            load->setName(nextValueName());
             addr = load;
         }
     }
@@ -320,7 +321,7 @@ void IRGen::visit(LValAST &node) {
         Value *indexVal = LastVal;
 
         auto gep = builder.Create<GetElementPtrInst>(addr, indexVal);
-        gep->setName(newTempName());
+        gep->setName(nextValueName());
         addr = gep;
     }
 
@@ -331,7 +332,7 @@ void IRGen::visit(LValAST &node) {
             LastVal = addr;
         } else {
             auto load = builder.Create<LoadInst>(addr);
-            load->setName(newTempName());
+            load->setName(nextValueName());
             LastVal = load;
         }
     }
@@ -379,7 +380,7 @@ void IRGen::visit(BinaryExprAST &node) {
     }
 
     if (inst) {
-        inst->setName(newTempName());
+        inst->setName(nextValueName());
         LastVal = inst;
     }
 }
@@ -391,7 +392,7 @@ void IRGen::visit(IfStmtAST &node) {
     auto ifInst = builder.Create<IfInst>(cond);
 
     {
-        BasicBlock *thenBlock = new BasicBlock("then", ifInst->getThenRegion());
+        BasicBlock *thenBlock = new BasicBlock(newLabelName(), ifInst->getThenRegion());
         BasicBlock *originalBlock = builder.GetInsertPoint();
         
         builder.SetInsertPoint(thenBlock);
@@ -402,7 +403,7 @@ void IRGen::visit(IfStmtAST &node) {
 
     if (node.getElse()) {
         ifInst->addElseRegion();
-        BasicBlock *elseBlock = new BasicBlock("else", ifInst->getElseRegion());
+        BasicBlock *elseBlock = new BasicBlock(newLabelName(), ifInst->getElseRegion());
         
         BasicBlock *originalBlock = builder.GetInsertPoint();
         builder.SetInsertPoint(elseBlock);
@@ -415,7 +416,7 @@ void IRGen::visit(WhileStmtAST &node) {
     auto whileInst = builder.Create<WhileInst>();
 
     {
-        BasicBlock *condBlock = new BasicBlock("cond", whileInst->getCondRegion());
+        BasicBlock *condBlock = new BasicBlock(newLabelName(), whileInst->getCondRegion());
         BasicBlock *originalBlock = builder.GetInsertPoint();
         
         builder.SetInsertPoint(condBlock);
@@ -432,7 +433,7 @@ void IRGen::visit(WhileStmtAST &node) {
     }
 
     {
-        BasicBlock *bodyBlock = new BasicBlock("body", whileInst->getBodyRegion());
+        BasicBlock *bodyBlock = new BasicBlock(newLabelName(), whileInst->getBodyRegion());
         BasicBlock *originalBlock = builder.GetInsertPoint();
         
         builder.SetInsertPoint(bodyBlock);
@@ -463,7 +464,7 @@ void IRGen::visit(UnaryExprAST &node) {
         Value *operand = LastVal;
         auto zero = new ConstantInt(0);
         auto inst = builder.Create<BinaryInst>(Instruction::Sub, zero, operand);
-        inst->setName(newTempName());
+        inst->setName(nextValueName());
         LastVal = inst;
     }
 }
