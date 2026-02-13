@@ -10,6 +10,7 @@
 #include "Optimize/FlattenCFG.h"
 #include "Optimize/Dominators.h"
 #include "Optimize/Mem2Reg.h"
+#include "Optimize/ConstantFold.h"
 
 using namespace sysy;
 
@@ -80,15 +81,11 @@ int main(int argc, char **argv) {
     FlattenCFG flatten(module.get());
     flatten.run();
 
-    for (auto func : module->getFunctions()) {
-        if (func->getBody()->getBlocks().empty()) continue;
-
-        Dominators dom(func);
-        dom.run();
-    }
-
     Mem2Reg mem2reg(module.get(), nullptr); 
     mem2reg.run();
+
+    ConstantFold constantFold(module.get());
+    constantFold.run();
 
     if (dumpLIR) {
         std::cout << module->print();

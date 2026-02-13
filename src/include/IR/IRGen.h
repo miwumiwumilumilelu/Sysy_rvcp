@@ -53,6 +53,8 @@ private:
 
     void fillZero(Value *baseAddr, Type *type, std::vector<int> &indices);
 
+    Constant* evaluateConstantExpr(Value* val);
+
     // Symbol stack: Variable name -> Value* in IR.
     // (usually AllocaInst* address)
     std::vector<std::map<std::string, Value*>> Scopes;

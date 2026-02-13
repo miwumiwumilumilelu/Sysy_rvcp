@@ -70,18 +70,11 @@ Constant* IRGen::getGlobalInitVal(InitValAST* init, Type* type) {
         init->getExpr()->accept(*this);
         Value* computedVal = LastVal;
 
-        if (auto bin = dyn_cast<BinaryInst>(computedVal)) {
-            if (auto c1 = dyn_cast<ConstantInt>(bin->getOperand(0))) {
-                if (auto c2 = dyn_cast<ConstantInt>(bin->getOperand(1))) {
-                    if (bin->getOpID() == Instruction::Add) computedVal = new ConstantInt(c1->getValue() + c2->getValue());
-                    else if (bin->getOpID() == Instruction::Sub) computedVal = new ConstantInt(c1->getValue() - c2->getValue());
-                    else if (bin->getOpID() == Instruction::Mul) computedVal = new ConstantInt(c1->getValue() * c2->getValue());
-                    else if (bin->getOpID() == Instruction::Div && c2->getValue() != 0) computedVal = new ConstantInt(c1->getValue() / c2->getValue());
-                }
-            }
+        if (auto evaluated = evaluateConstantExpr(computedVal)) {
+            computedVal = evaluated;
         }
 
-        if (auto val = dyn_cast<Constant>(LastVal)) {
+        if (auto val = dyn_cast<Constant>(computedVal)) {
             if (val->getType() == type) {
                 return val;
             }
@@ -114,6 +107,63 @@ Constant* IRGen::getGlobalInitVal(InitValAST* init, Type* type) {
         return new ConstantArray(arrTy, elements);
     }
     return new ConstantZero(type);
+}
+
+Constant* IRGen::evaluateConstantExpr(Value* val) {
+    if (!val) return nullptr;
+
+    if (auto c = dyn_cast<Constant>(val)) {
+        return c;
+    }
+
+    if (auto bin = dyn_cast<BinaryInst>(val)) {
+        auto lhs = evaluateConstantExpr(bin->getOperand(0));
+        auto rhs = evaluateConstantExpr(bin->getOperand(1));
+        if (lhs && rhs) {
+            if (auto i1 = dyn_cast<ConstantInt>(lhs)) {
+                if (auto i2 = dyn_cast<ConstantInt>(rhs)) {
+                    int v1 = i1->getValue();
+                    int v2 = i2->getValue();
+                    switch (bin->getOpID()) {
+                        case Instruction::Add: return new ConstantInt(v1 + v2);
+                        case Instruction::Sub: return new ConstantInt(v1 - v2);
+                        case Instruction::Mul: return new ConstantInt(v1 * v2);
+                        case Instruction::Div: return v2 != 0 ? new ConstantInt(v1 / v2) : nullptr;
+                        case Instruction::Mod: return v2 != 0 ? new ConstantInt(v1 % v2) : nullptr;
+                        default: return nullptr;
+                    }
+                }
+            }
+            else if (auto f1 = dyn_cast<ConstantFloat>(lhs)) {
+                if (auto f2 = dyn_cast<ConstantFloat>(rhs)) {
+                    float v1 = f1->getValue();
+                    float v2 = f2->getValue();
+                    switch (bin->getOpID()) {
+                        case Instruction::FAdd: return new ConstantFloat(v1 + v2);
+                        case Instruction::FSub: return new ConstantFloat(v1 - v2);
+                        case Instruction::FMul: return new ConstantFloat(v1 * v2);
+                        case Instruction::FDiv: return v2 != 0.0f ? new ConstantFloat(v1 / v2) : nullptr;
+                        default: return nullptr;
+                    }
+                }
+            }
+        }
+    }
+    else if (auto castInst = dyn_cast<CastInst>(val)) {
+        auto op = evaluateConstantExpr(castInst->getOperand(0));
+        if (op) {
+            if (castInst->getOpID() == Instruction::SIToFP) {
+                if (auto c = dyn_cast<ConstantInt>(op)) {
+                    return new ConstantFloat((float)c->getValue());
+                }
+            } else if (castInst->getOpID() == Instruction::FPToSI) {
+                if (auto c = dyn_cast<ConstantFloat>(op)) {
+                    return new ConstantInt((int)c->getValue());
+                }
+            }
+        }
+    }
+    return nullptr;
 }
 
 void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std::vector<int>& indices) {
@@ -481,7 +531,6 @@ void IRGen::visit(BinaryExprAST &node) {
     L = castTo(L, targetTy);
     R = castTo(R, targetTy);
 
-    std::string opStr = node.getOp();
     Instruction *inst = nullptr;
 
     if (opStr == ">" || opStr == "<" || opStr == "==" || 
