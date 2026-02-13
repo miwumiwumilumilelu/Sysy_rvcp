@@ -22,13 +22,80 @@ Value* IRGen::lookupVar(const std::string &name) {
     return nullptr; 
 }
 
+Value* IRGen::castTo(Value* val, Type* targetTy) {
+    if (val->getType() == targetTy) {
+        return val;
+    }
+    // int -> float
+    if (targetTy->isFloat() && val->getType()->isInt()) {
+        auto inst = builder.Create<CastInst>(Instruction::SIToFP, val, targetTy);
+        inst->setName(nextValueName());
+        return inst;
+    }
+    // float -> int
+    if (targetTy->isInt() && val->getType()->isFloat()) {
+        auto inst = builder.Create<CastInst>(Instruction::FPToSI, val, targetTy);
+        inst->setName(nextValueName());
+        return inst;
+    }
+    return val;
+}
+
+Value* IRGen::toCondition(Value* cond) {
+    if (!cond) return nullptr;
+
+    // It is already a comparison instruction in itself, and it is already a condition, so go back directly.
+    if (auto inst = dyn_cast<Instruction>(cond)) {
+        if (inst->getOpID() == Instruction::ICmp || inst->getOpID() == Instruction::FCmp) {
+            return cond;
+        }
+    }
+
+    // Compare with 0.
+    if (cond->getType()->isFloat()) {
+        auto zero = new ConstantFloat(0.0f);
+        auto fcmp = builder.Create<FCmpInst>(FCmpInst::ONE, cond, zero);
+        fcmp->setName(nextValueName());
+        return fcmp;
+    } else {
+        auto zero = new ConstantInt(0);
+        auto icmp = builder.Create<ICmpInst>(ICmpInst::NE, cond, zero);
+        icmp->setName(nextValueName());
+        return icmp;
+    }
+}
+
 Constant* IRGen::getGlobalInitVal(InitValAST* init, Type* type) {
     if (init->isLeaf()) {
         init->getExpr()->accept(*this);
-        if (auto constInt = dyn_cast<ConstantInt>(LastVal)) {
-            return constInt;
+        Value* computedVal = LastVal;
+
+        if (auto bin = dyn_cast<BinaryInst>(computedVal)) {
+            if (auto c1 = dyn_cast<ConstantInt>(bin->getOperand(0))) {
+                if (auto c2 = dyn_cast<ConstantInt>(bin->getOperand(1))) {
+                    if (bin->getOpID() == Instruction::Add) computedVal = new ConstantInt(c1->getValue() + c2->getValue());
+                    else if (bin->getOpID() == Instruction::Sub) computedVal = new ConstantInt(c1->getValue() - c2->getValue());
+                    else if (bin->getOpID() == Instruction::Mul) computedVal = new ConstantInt(c1->getValue() * c2->getValue());
+                    else if (bin->getOpID() == Instruction::Div && c2->getValue() != 0) computedVal = new ConstantInt(c1->getValue() / c2->getValue());
+                }
+            }
         }
-        return new ConstantInt(0); 
+
+        if (auto val = dyn_cast<Constant>(LastVal)) {
+            if (val->getType() == type) {
+                return val;
+            }
+            if (type->isFloat() && val->getType()->isInt()) {
+                auto intVal = cast<ConstantInt>(val)->getValue();
+                return new ConstantFloat((float)intVal);
+            }
+            if (type->isInt() && val->getType()->isFloat()) {
+                auto floatVal = cast<ConstantFloat>(val)->getValue();
+                return new ConstantInt((int)floatVal);
+            }
+        }
+
+        return new ConstantZero(type);
     }
 
     if (auto arrTy = dyn_cast<ArrayType>(type)) {
@@ -41,7 +108,6 @@ Constant* IRGen::getGlobalInitVal(InitValAST* init, Type* type) {
             if (i < initElements.size()) {
                 elements.push_back(getGlobalInitVal(initElements[i].get(), elemTy));
             } else {
-                // 填充 0
                 elements.push_back(new ConstantZero(elemTy));
             }
         }
@@ -54,6 +120,8 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
     if (init->isLeaf()) {
         init->getExpr()->accept(*this);
         Value* val = LastVal;
+
+        val = castTo(val, type);
         
         Value* ptr = baseAddr;
         for (int idx : indices) {
@@ -87,14 +155,15 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
 }
 
 void IRGen::fillZero(Value* baseAddr, Type* type, std::vector<int>& indices) {
-    if (type->isInt()) {
+    if (type->isInt() || type->isFloat()) {
         Value* ptr = baseAddr;
         for (int idx : indices) {
             auto gep = builder.Create<GetElementPtrInst>(ptr, new ConstantInt(idx));
             gep->setName(nextValueName());
             ptr = gep;
         }
-        builder.Create<StoreInst>(new ConstantInt(0), ptr);
+        Constant* zero = type->isFloat() ? (Constant*)new ConstantFloat(0.0f) : (Constant*)new ConstantInt(0);
+        builder.Create<StoreInst>(zero, ptr);
     } 
     else if (auto arrTy = dyn_cast<ArrayType>(type)) {
         Type* elemTy = arrTy->getElementType();
@@ -121,12 +190,13 @@ void IRGen::visit(FuncCallAST &node) {
 
     if (!callee) {
         Type* retType = Type::getIntTy(); 
-        if (funcName == "putint" || funcName == "putch" || funcName == "putarray") 
+        if (funcName == "putint" || funcName == "putch" || funcName == "putarray" ||
+            funcName == "putfarray" || funcName == "putfloat")
             retType = Type::getVoidTy();
-        else if (funcName == "getint" || funcName == "getch")
+        else if (funcName == "getint" || funcName == "getch" || funcName == "getarray" || funcName == "getfarray")
             retType = Type::getIntTy();
-        else if (funcName == "getarray" || funcName == "getfarray")
-            retType = Type::getIntTy();
+        else if (funcName == "getfloat")
+            retType = Type::getFloatTy();
             
         callee = new Function(funcName, retType);
         TheModule->addFunction(callee);
@@ -180,12 +250,11 @@ void IRGen::visit(FuncDefAST &node) {
 
     for (size_t i = 0; i < node.getParams().size(); ++i) {
         auto &paramNode = node.getParams()[i];
-        Type* argTy = Type::getIntTy();
 
-        if (paramNode->getDims().empty()) {
-            argTy = Type::getIntTy();            
-        } else {
-            Type* baseTy = Type::getIntTy();
+        Type* baseTy = (paramNode->getType() == "float") ? Type::getFloatTy() : Type::getIntTy();
+        Type* argTy = baseTy;
+
+        if (!paramNode->getDims().empty()) {
             const auto &dims = paramNode->getDims();
             for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
                 if (it == dims.rend() - 1) continue;
@@ -252,7 +321,7 @@ void IRGen::visit(BlockAST &node) {
 }
 
 void IRGen::visit(VarDeclAST &node) {
-    Type* varType = Type::getIntTy();
+    Type* varType = (node.getType() == "float") ? Type::getFloatTy() : Type::getIntTy();
     const auto &dims = node.getDims();
     for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
         int size = 0;
@@ -297,8 +366,11 @@ void IRGen::visit(AssignStmtAST &node) {
     Value *val = LastVal;
 
     if (addr && val) {
-        builder.Create<StoreInst>(val, addr);
+        Type* targetTy = dyn_cast<PointerType>(addr->getType())->getPointeeType();
+        val = castTo(val, targetTy);
     }
+
+    builder.Create<StoreInst>(val, addr);
 }
 
 void IRGen::visit(LValAST &node) {
@@ -317,7 +389,10 @@ void IRGen::visit(LValAST &node) {
     }
 
     for (auto &indexExpr : node.getIndices()) {
+        bool oldMode = isLValMode;
+        isLValMode = false;
         indexExpr->accept(*this);
+        isLValMode = oldMode;
         Value *indexVal = LastVal;
 
         auto gep = builder.Create<GetElementPtrInst>(addr, indexVal);
@@ -342,11 +417,57 @@ void IRGen::visit(NumberAST &node) {
     if (node.isInt()) {
         LastVal = new ConstantInt(node.getIntVal()); 
     } else {
-        LastVal = new ConstantInt((int)node.getFloatVal());
+        LastVal = new ConstantFloat(node.getFloatVal());
     }
 }
 
 void IRGen::visit(BinaryExprAST &node) {
+    std::string opStr =node.getOp();
+
+    // Short-circuit evaluation.
+    if (opStr == "&&" || opStr == "||") {
+        node.getLHS()->accept(*this);
+        Value *L = LastVal;
+        L = toCondition(L);
+
+        BasicBlock* currentBB = builder.GetInsertPoint();
+        Region* currentRegion = currentBB->getParent();
+
+        BasicBlock* rhsBB = new BasicBlock(newLabelName(), currentRegion);
+        BasicBlock* mergeBB = new BasicBlock(newLabelName(), currentRegion);
+
+        // If it's &&: L is true then calculate RHS, false directly jump merge return 0.
+        // If it's ||: L is false then calculate RHS, true directly jump merge return 1.
+        if (opStr == "&&") {
+            builder.Create<BranchInst>(L, rhsBB, mergeBB);
+        } else {
+            builder.Create<BranchInst>(L, mergeBB, rhsBB);
+        }
+
+        builder.SetInsertPoint(rhsBB);
+        node.getRHS()->accept(*this);
+        Value* R = LastVal;
+        R = toCondition(R);
+        // There may also be nested if/while inside new blocks.
+        BasicBlock* rhsEndBB = builder.GetInsertPoint(); 
+        builder.Create<BranchInst>(mergeBB);
+
+        builder.SetInsertPoint(mergeBB);
+        auto phi = builder.Create<PhiInst>(Type::getIntTy());
+        phi->setName(nextValueName());
+
+        if (opStr == "&&") {
+            phi->addIncoming(new ConstantInt(0), currentBB);
+            phi->addIncoming(R, rhsEndBB);
+        } else {
+            phi->addIncoming(new ConstantInt(1), currentBB);
+            phi->addIncoming(R, rhsEndBB);
+        }
+
+        LastVal = phi;
+        return;
+    }
+
     node.getLHS()->accept(*this);
     Value *L = LastVal;
     node.getRHS()->accept(*this);
@@ -354,27 +475,53 @@ void IRGen::visit(BinaryExprAST &node) {
 
     if (!L || !R) return;
 
+    bool isFloat = L->getType()->isFloat() || R->getType()->isFloat();
+    Type* targetTy = isFloat ? Type::getFloatTy() : Type::getIntTy();
+
+    L = castTo(L, targetTy);
+    R = castTo(R, targetTy);
+
     std::string opStr = node.getOp();
     Instruction *inst = nullptr;
 
     if (opStr == ">" || opStr == "<" || opStr == "==" || 
         opStr == ">=" || opStr == "<=" || opStr == "!=") {
         
-        ICmpInst::CmpOp pred = ICmpInst::EQ;
-        if (opStr == ">") pred = ICmpInst::SGT;
-        else if (opStr == "<") pred = ICmpInst::SLT;
-        else if (opStr == "==") pred = ICmpInst::EQ;
-        else if (opStr == "!=") pred = ICmpInst::NE;
-        else if (opStr == ">=") pred = ICmpInst::SGE;
-        else if (opStr == "<=") pred = ICmpInst::SLE;
+        if (isFloat) {
+            FCmpInst::CmpOp pred = FCmpInst::OEQ;
+            if (opStr == ">") pred = FCmpInst::OGT;
+            else if (opStr == "<") pred = FCmpInst::OLT;
+            else if (opStr == "==") pred = FCmpInst::OEQ;
+            else if (opStr == "!=") pred = FCmpInst::ONE;
+            else if (opStr == ">=") pred = FCmpInst::OGE;
+            else if (opStr == "<=") pred = FCmpInst::OLE;
 
-        inst = builder.Create<ICmpInst>(pred, L, R);
+            inst = builder.Create<FCmpInst>(pred, L, R);
+        } else {
+            ICmpInst::CmpOp pred = ICmpInst::EQ;
+            if (opStr == ">") pred = ICmpInst::SGT;
+            else if (opStr == "<") pred = ICmpInst::SLT;
+            else if (opStr == "==") pred = ICmpInst::EQ;
+            else if (opStr == "!=") pred = ICmpInst::NE;
+            else if (opStr == ">=") pred = ICmpInst::SGE;
+            else if (opStr == "<=") pred = ICmpInst::SLE;
+
+            inst = builder.Create<ICmpInst>(pred, L, R);
+        }
     } else {
         Instruction::OpID op = Instruction::Add;
-        if (opStr == "+") op = Instruction::Add;
-        else if (opStr == "-") op = Instruction::Sub;
-        else if (opStr == "*") op = Instruction::Mul;
-        else if (opStr == "/") op = Instruction::Div;
+        if (isFloat) {
+            if (opStr == "+") op = Instruction::FAdd;
+            else if (opStr == "-") op = Instruction::FSub;
+            else if (opStr == "*") op = Instruction::FMul;
+            else if (opStr == "/") op = Instruction::FDiv;
+        } else {
+            if (opStr == "+") op = Instruction::Add;
+            else if (opStr == "-") op = Instruction::Sub;
+            else if (opStr == "*") op = Instruction::Mul;
+            else if (opStr == "/") op = Instruction::Div;
+            else if (opStr == "%") op = Instruction::Mod;
+        }
 
         inst = builder.Create<BinaryInst>(op, L, R);
     }
@@ -388,6 +535,8 @@ void IRGen::visit(BinaryExprAST &node) {
 void IRGen::visit(IfStmtAST &node) {
     node.getCond()->accept(*this);
     Value *cond = LastVal;
+
+    cond = toCondition(cond);
 
     auto ifInst = builder.Create<IfInst>(cond);
 
@@ -421,14 +570,9 @@ void IRGen::visit(WhileStmtAST &node) {
         
         builder.SetInsertPoint(condBlock);
         node.getCond()->accept(*this);
-// Note: Cond Region should "return" the condition value in some way
-// Here we temporarily assume LastVal is the condition, and LowerPass will handle it later
-// For convenience in Flatten, we can insert a special Yield instruction here or leave it untreated
-// As long as the AST traversal generates icmp or similar instructions within condBlock
 
-// need to store or mark LastVal (i.e., the result of the condition)
-// In advanced IR, we typically 约定 the result of the last computation instruction in the Cond Region is the condition
-        
+        LastVal = toCondition(LastVal);
+
         builder.SetInsertPoint(originalBlock);
     }
 
@@ -444,13 +588,17 @@ void IRGen::visit(WhileStmtAST &node) {
 }
 
 void IRGen::visit(ReturnStmtAST &node) {
-    Value *retVal = nullptr;
     if (node.getRetVal()) {
         node.getRetVal()->accept(*this);
-        retVal = LastVal;
+        Value *retVal = LastVal;
+        retVal =castTo(retVal, CurrentFunc->getType());
         builder.CreateRet(retVal);
     } else {
-        builder.CreateRet(new ConstantInt(0));
+        if (CurrentFunc->getType()->isVoid()) {
+            builder.CreateRet(nullptr);
+        } else {
+            builder.CreateRet(new ConstantZero(CurrentFunc->getType()));
+        }
     }
 }
 
@@ -459,12 +607,26 @@ void IRGen::visit(ExprStmtAST &node) {
 }
 
 void IRGen::visit(UnaryExprAST &node) {
+    node.getOperand()->accept(*this);
+    Value *operand = LastVal;
     if (node.getOp() == "-") {
-        node.getOperand()->accept(*this);
-        Value *operand = LastVal;
-        auto zero = new ConstantInt(0);
-        auto inst = builder.Create<BinaryInst>(Instruction::Sub, zero, operand);
+        Instruction* inst = nullptr;
+        if (operand->getType()->isFloat()) {
+            auto zero = new ConstantFloat(0.0f);
+            inst = builder.Create<BinaryInst>(Instruction::FSub, zero, operand);
+        } else {
+            auto zero = new ConstantInt(0);
+            inst = builder.Create<BinaryInst>(Instruction::Sub, zero, operand);
+        }
         inst->setName(nextValueName());
         LastVal = inst;
     }
+    else if (node.getOp() == "!") {
+        operand = toCondition(operand);
+        auto zero = new ConstantInt(0);
+        auto inst = builder.Create<ICmpInst>(ICmpInst::EQ, operand, zero);
+        inst->setName(nextValueName());
+        LastVal = inst;
+    }
+    else if (node.getOp() == "+") {} // Just keep LastVal as operand.
 }

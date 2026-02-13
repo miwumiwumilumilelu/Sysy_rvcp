@@ -29,6 +29,7 @@ public:
         VK_Function,
         VK_GlobalVariable,
         VK_ConstantInt,
+        VK_ConstantFloat,
         VK_ConstantZero,
         VK_ConstantArray,
         VK_Instruction,
@@ -122,6 +123,18 @@ public:
 
     static bool classof(const Value* v) {
         return v->getValueKind() == VK_ConstantInt;
+    }
+};
+
+class ConstantFloat : public Constant {
+    float Val;
+public:
+    ConstantFloat(float val) : Constant(Type::getFloatTy(), VK_ConstantFloat, std::to_string(val)), Val(val) {}
+    float getValue() const { return Val; }
+    std::string toString() const override { return std::to_string(Val); }
+
+    static bool classof(const Value* v) {
+        return v->getValueKind() == VK_ConstantFloat;
     }
 };
 

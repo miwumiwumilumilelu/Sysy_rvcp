@@ -23,6 +23,7 @@ public:
     TypeID getTypeID() const { return ID; }
 
     bool isInt() const { return ID == IntTy; }
+    bool isFloat() const { return ID == FloatTy; }
     bool isVoid() const { return ID == VoidTy; }
     bool isPointer() const { return ID == PointerTy; }
     bool isArray() const { return ID == ArrayTy; }

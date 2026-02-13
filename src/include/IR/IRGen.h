@@ -43,6 +43,11 @@ private:
     // Distinguish whether an address or a value is obtained when accessing an LValAST.
     bool isLValMode = false;
 
+    Value* castTo(Value* val, Type* targetTy);
+
+    // Enforce conversion of any value to a conditional judgment.
+    Value* toCondition(Value* cond);
+
     Constant* getGlobalInitVal(InitValAST* init, Type* type);
     void processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std::vector<int>& indices);
 

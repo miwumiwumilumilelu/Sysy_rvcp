@@ -13,8 +13,10 @@ class Instruction : public User {
 public:
     enum OpID {
         Alloca, Load, Store,
-        Add, Sub, Mul, Div,
-        ICmp, Br, Ret, Call,
+        Add, Sub, Mul, Div, Mod,
+        FAdd, FSub, FMul, FDiv,
+        SIToFP, FPToSI,
+        ICmp, FCmp, Br, Ret, Call,
         If, While, Break, Continue,
         GetElementPtr,
         Phi
@@ -64,7 +66,7 @@ public:
     static bool classof(const Value* v) {
         if (!isa<Instruction>(v)) return false;
         OpID op = cast<Instruction>(v)->getOpID();
-        return op >= Add && op <= Div;
+        return op >= Add && op <= FDiv;
     }
 };
 
@@ -192,6 +194,37 @@ public:
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == GetElementPtr;
     }
+};
+
+// Type casting：
+// int -> float
+// float -> int
+class CastInst : public Instruction {
+public:
+    CastInst(OpID op, Value* val, Type* targetTy, BasicBlock* parent);
+    std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) &&
+               (cast<Instruction>(v)->getOpID() == SIToFP ||
+                cast<Instruction>(v)->getOpID() == FPToSI);
+    }
+};
+
+class FCmpInst : public Instruction {
+public:
+    // O represents Ordered (considering NaN)
+    enum CmpOp { OEQ, ONE, OGT, OGE, OLT, OLE };
+    FCmpInst(CmpOp op, Value* lhs, Value* rhs, BasicBlock* parent);
+    CmpOp getPredicate() const { return Pred; }
+    std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == FCmp;
+    }
+private:
+    CmpOp Pred;
+    std::string getPredStr() const;
 };
 
 class PhiInst : public Instruction {

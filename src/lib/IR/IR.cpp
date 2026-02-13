@@ -25,8 +25,11 @@ static std::string addIndent(const std::string &str, int spaceCount) {
 }
 
 static std::string fmtOperand(Value* v) {
-    if (auto c = dyn_cast<ConstantInt>(v)) {
-        return std::to_string(c->getValue());
+    if (auto ci = dyn_cast<ConstantInt>(v)) {
+        return std::to_string(ci->getValue());
+    }
+    else if (auto cf = dyn_cast<ConstantFloat>(v)) {
+        return std::to_string(cf->getValue());
     }
     return v->getName();
 }
@@ -111,7 +114,7 @@ std::string CallInst::toString() const {
 }
 
 BinaryInst::BinaryInst(OpID id, Value *lhs, Value *rhs, BasicBlock *parent) 
-    : Instruction(Type::getIntTy(), id, parent) {
+    : Instruction((id >= FAdd && id <= FDiv) ? Type::getFloatTy() : Type::getIntTy(), id, parent) {
     addOperand(lhs);
     addOperand(rhs);
     switch(id) {
@@ -119,6 +122,11 @@ BinaryInst::BinaryInst(OpID id, Value *lhs, Value *rhs, BasicBlock *parent)
         case Sub: OpStr = "sub"; break;
         case Mul: OpStr = "mul"; break;
         case Div: OpStr = "sdiv"; break; // signed div
+        case Mod: OpStr = "srem"; break;
+        case FAdd: OpStr = "fadd"; break;
+        case FSub: OpStr = "fsub"; break;
+        case FMul: OpStr = "fmul"; break;
+        case FDiv: OpStr = "fdiv"; break;
         default: OpStr = "unknown"; break;
     }
 }
@@ -276,6 +284,36 @@ GetElementPtrInst::GetElementPtrInst(Value* base, Value* index, BasicBlock* pare
 
 std::string GetElementPtrInst::toString() const {
     return Name + " = getelementptr " + getOperand(0)->getName() + ", " + getOperand(1)->getName();
+}
+
+CastInst::CastInst(OpID op, Value* val, Type* targetTy, BasicBlock* parent)
+    : Instruction(targetTy, op, parent) {
+    addOperand(val);
+}
+
+std::string CastInst::toString() const {
+    std::string opStr = (getOpID() == SIToFP) ? "sitofp" : "fptosi";
+    // %2 = sitofp %1
+    return Name + " = " + opStr + " " + fmtOperand(getOperand(0));
+}
+
+FCmpInst::FCmpInst(CmpOp op, Value *lhs, Value *rhs, BasicBlock *parent) 
+    : Instruction(Type::getIntTy(), FCmp, parent), Pred(op) {
+    addOperand(lhs);
+    addOperand(rhs);
+}
+
+std::string FCmpInst::getPredStr() const {
+    switch(Pred) {
+        case OEQ: return "oeq"; case ONE: return "one";
+        case OGT: return "ogt"; case OGE: return "oge";
+        case OLT: return "olt"; case OLE: return "ole";
+    }
+    return "";
+}
+
+std::string FCmpInst::toString() const {
+    return Name + " = fcmp " + getPredStr() + " " + fmtOperand(getOperand(0)) + ", " + fmtOperand(getOperand(1));
 }
 
 PhiInst::PhiInst(Type *ty, BasicBlock *parent) 

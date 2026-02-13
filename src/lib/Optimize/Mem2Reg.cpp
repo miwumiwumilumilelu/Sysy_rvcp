@@ -115,6 +115,12 @@ void Mem2Reg::rename(BasicBlock* bb) {
     std::vector<Instruction*> instsToRemove;
     std::map<AllocaInst*, int> pushCount;
 
+    auto getZeroConstant = [&](AllocaInst* ai) -> Constant* {
+        Type* baseType = cast<PointerType>(ai->getType())->getPointeeType();
+        if (baseType->isFloat()) return new ConstantFloat(0.0f);
+        return new ConstantInt(0);
+    };
+
     for (auto inst : bb->getInstructions()) {
         if (auto phi = dyn_cast<PhiInst>(inst)) {
             if (PhiToAlloca.count(phi)) {
@@ -130,7 +136,7 @@ void Mem2Reg::rename(BasicBlock* bb) {
                     if (!IncomingVals[ai].empty()) {
                         val = IncomingVals[ai].back();
                     } else {
-                        val = new ConstantInt(0); 
+                        val = getZeroConstant(ai);
                     }
                     load->replaceAllUsesWith(val);
                     instsToRemove.push_back(load);
@@ -162,7 +168,7 @@ void Mem2Reg::rename(BasicBlock* bb) {
                     if (!IncomingVals[ai].empty()) {
                         phi->addIncoming(IncomingVals[ai].back(), bb);
                     } else {
-                        phi->addIncoming(new ConstantInt(0), bb); 
+                        phi->addIncoming(getZeroConstant(ai), bb); 
                     }
                 }
             }
