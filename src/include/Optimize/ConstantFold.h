@@ -14,7 +14,7 @@ public:
 private:
     Module* TheModule;
 
-    bool foldInstruction(Instruction* inst);
+    bool foldInstruction(Instruction* inst, BasicBlock* currentBB);
 
     Constant* computeBinary(Instruction::OpID op, Constant* lhs, Constant* rhs);
     Constant* computeICmp(ICmpInst::CmpOp pred, Constant* lhs, Constant* rhs);

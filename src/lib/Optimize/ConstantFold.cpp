@@ -15,7 +15,7 @@ void ConstantFold::run() {
                 }
 
                 for (auto inst : worklist) {
-                    if (foldInstruction(inst)) {
+                    if (foldInstruction(inst, bb)) {
                         changed = true;
                     }
                 }
@@ -24,7 +24,7 @@ void ConstantFold::run() {
     }
 }
 
-bool ConstantFold::foldInstruction(Instruction* inst) {
+bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
     if (auto bin = dyn_cast<BinaryInst>(inst)) {
         auto c1 = dyn_cast<Constant>(bin->getOperand(0));
         auto c2 = dyn_cast<Constant>(bin->getOperand(1));
@@ -32,7 +32,7 @@ bool ConstantFold::foldInstruction(Instruction* inst) {
         if (c1 && c2) {
             if (auto folded = computeBinary(bin->getOpID(), c1, c2)) {
                 inst->replaceAllUsesWith(folded);
-                inst->getParent()->getInstructions().remove(inst);
+                currentBB->getInstructions().remove(inst);
                 return true;
             }
         }
@@ -44,7 +44,7 @@ bool ConstantFold::foldInstruction(Instruction* inst) {
         if (c1 && c2) {
             if (auto folded = computeICmp(cmp->getPredicate(), c1, c2)) {
                 inst->replaceAllUsesWith(folded);
-                inst->getParent()->getInstructions().remove(inst);
+                currentBB->getInstructions().remove(inst);
                 return true;
             }
         }
@@ -56,7 +56,7 @@ bool ConstantFold::foldInstruction(Instruction* inst) {
         if (c1 && c2) {
             if (auto folded = computeFCmp(fcmp->getPredicate(), c1, c2)) {
                 inst->replaceAllUsesWith(folded);
-                inst->getParent()->getInstructions().remove(inst);
+                currentBB->getInstructions().remove(inst);
                 return true;
             }
         }
@@ -66,13 +66,13 @@ bool ConstantFold::foldInstruction(Instruction* inst) {
             if (castInst->getOpID() == Instruction::SIToFP && isa<ConstantInt>(c)) {
                 float fval = (float)cast<ConstantInt>(c)->getValue();
                 castInst->replaceAllUsesWith(new ConstantFloat(fval));
-                castInst->getParent()->getInstructions().remove(castInst);
+                currentBB->getInstructions().remove(castInst);
                 return true;
             }
             else if (castInst->getOpID() == Instruction::FPToSI && isa<ConstantFloat>(c)) {
                 int ival = (int)cast<ConstantFloat>(c)->getValue();
                 castInst->replaceAllUsesWith(new ConstantInt(ival));
-                castInst->getParent()->getInstructions().remove(castInst);
+                currentBB->getInstructions().remove(castInst);
                 return true;
             }
         }
@@ -89,10 +89,16 @@ bool ConstantFold::foldInstruction(Instruction* inst) {
     else if (auto br = dyn_cast<BranchInst>(inst)) {
         if (br->getNumOperands() == 3) {
             if (auto cond = dyn_cast<ConstantInt>(br->getOperand(0))) {
-                BasicBlock* parent = br->getParent();
+                BasicBlock* dest_true = cast<BasicBlock>(br->getOperand(1));
+                BasicBlock* dest_false = cast<BasicBlock>(br->getOperand(2));
+            
+                if (dest_true == dest_false) {
+                    return false;
+                }
+
                 BasicBlock* dest = (cond->getValue() != 0) ? cast<BasicBlock>(br->getOperand(1)) : cast<BasicBlock>(br->getOperand(2));
-                parent->getInstructions().remove(br);
-                new BranchInst(dest, parent);
+                currentBB->getInstructions().remove(br);
+                new BranchInst(dest, currentBB);
                 return true;
             }
         }

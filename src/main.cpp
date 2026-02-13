@@ -78,15 +78,20 @@ int main(int argc, char **argv) {
         std::cout << module->print();
     }
 
+    std::cout << "[Debug] Running FlattenCFG..." << std::endl;
     FlattenCFG flatten(module.get());
     flatten.run();
 
+    std::cout << "[Debug] Running Mem2Reg (Dominators inside)..." << std::endl;
     Mem2Reg mem2reg(module.get(), nullptr); 
     mem2reg.run();
 
+    std::cout << "[Debug] Running ConstantFold..." << std::endl;
     ConstantFold constantFold(module.get());
     constantFold.run();
 
+    std::cout << "[Debug] All passes completed!" << std::endl;
+    
     if (dumpLIR) {
         std::cout << module->print();
     }

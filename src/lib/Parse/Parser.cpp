@@ -118,6 +118,8 @@ std::unique_ptr<ExprAST> Parser:: parsePrimaryExpr() {
         return std::make_unique<NumberAST>(val);
     }
     else if (CurTok.is(tok::l_paren)) {
+        getNextToken();
+
         auto expr = parseExpr();
         if (!expr) return nullptr;
         if (!expect(tok::r_paren)) return nullptr;
@@ -159,7 +161,7 @@ std::unique_ptr<ExprAST> Parser::parseUnaryExpr() {
 }
 
 std::unique_ptr<ExprAST> Parser::parseMulExpr() {
-    auto lhs = parsePrimaryExpr();
+    auto lhs = parseUnaryExpr();
     if (!lhs) return nullptr;
 
     while (CurTok.is(tok::star) || CurTok.is(tok::slash) || CurTok.is(tok::percent)) {
@@ -262,6 +264,7 @@ std::unique_ptr<StmtAST> Parser::parseStmt() {
         getNextToken(); // consume 'if'
         expect(tok::l_paren);
         auto cond = parseExpr();
+        if (!cond) return nullptr;
         expect(tok::r_paren);
         auto thenStmt = parseStmt();
         std::unique_ptr<StmtAST> elseStmt = nullptr;
@@ -275,6 +278,7 @@ std::unique_ptr<StmtAST> Parser::parseStmt() {
         getNextToken(); // consume 'while'
         expect(tok::l_paren);
         auto cond = parseExpr();
+        if (!cond) return nullptr;
         expect(tok::r_paren);
         auto body = parseStmt();
         return std::make_unique<WhileStmtAST>(std::move(cond), std::move(body));
