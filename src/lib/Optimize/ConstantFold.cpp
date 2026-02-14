@@ -98,7 +98,15 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
 
                 BasicBlock* dest = (cond->getValue() != 0) ? cast<BasicBlock>(br->getOperand(1)) : cast<BasicBlock>(br->getOperand(2));
                 currentBB->getInstructions().remove(br);
+
+                auto& instList = currentBB->getInstructions();
+                auto it = std::find(instList.begin(), instList.end(), br);
+                if (it != instList.end()) {
+                    instList.erase(it, instList.end());
+                }
+
                 new BranchInst(dest, currentBB);
+
                 return true;
             }
         }

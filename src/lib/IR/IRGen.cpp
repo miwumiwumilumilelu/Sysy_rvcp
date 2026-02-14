@@ -395,7 +395,14 @@ void IRGen::visit(VarDeclAST &node) {
         return;
     }
 
-    auto alloca = builder.Create<AllocaInst>(varType);
+    // Alloca hoists to the entryblock 
+    BasicBlock* entryBB = CurrentFunc->getEntryBlock();
+    auto alloca = new AllocaInst(varType, entryBB);
+
+    auto& instList = entryBB->getInstructions();
+    instList.pop_back();
+    instList.push_front(alloca);
+
     alloca->setName("%" + node.getName() + "_" + std::to_string(ValueCounter++));
     
     defineVar(node.getName(), alloca);
@@ -404,6 +411,14 @@ void IRGen::visit(VarDeclAST &node) {
         std::vector<int> indices;
         processLocalInit(node.getInit(), alloca, varType, indices);
     }
+}
+
+void IRGen::visit(BreakStmtAST &node) {
+    builder.Create<BreakInst>();
+}
+
+void IRGen::visit(ContinueStmtAST &node) {
+    builder.Create<ContinueInst>();
 }
 
 void IRGen::visit(AssignStmtAST &node) {

@@ -81,6 +81,10 @@ void Semant::visit(VarDeclAST &node) {
     defineSymbol(node.getName(), node.getType());
 }
 
+void Semant::visit(BreakStmtAST &/*node*/) {}
+
+void Semant::visit(ContinueStmtAST &/*node*/) {}
+
 void Semant::visit(AssignStmtAST &node) {
     node.getLVal()->accept(*this);
     node.getValue()->accept(*this);

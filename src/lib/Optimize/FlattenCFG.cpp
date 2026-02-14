@@ -132,7 +132,18 @@ void FlattenCFG::handleWhile(WhileInst* inst, BasicBlock* currentBB, BasicBlock*
     flattenRegion(condRegion, condEntry, mergeBB);
     flattenRegion(bodyRegion, condEntry, mergeBB);
 
-    BasicBlock* condExit = condRegion->getBlocks().back();
+    // When short-circuiting evaluation, there is a possibility that 
+    // the merge block may be generated in the middle due to priority reasons
+    // So can't just look for the last basic block
+    BasicBlock* condExit = nullptr;
+    for (auto bb : condRegion->getBlocks()) {
+        if (bb->getInstructions().empty() || !bb->getInstructions().back()->isTerminator()) {
+            condExit = bb;
+            break;
+        }
+    }
+    if (!condExit) condExit = condRegion->getBlocks().back();
+
     BasicBlock* bodyEntry = bodyRegion->getEntryBlock();
 
     builder.SetInsertPoint(currentBB);

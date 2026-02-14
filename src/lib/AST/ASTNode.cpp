@@ -6,6 +6,8 @@ void NumberAST::accept(ASTVisitor &v) { v.visit(*this); }
 void LValAST::accept(ASTVisitor &v) { v.visit(*this); }
 void BinaryExprAST::accept(ASTVisitor &v) { v.visit(*this); }
 void UnaryExprAST::accept(ASTVisitor &v) { v.visit(*this); }
+void BreakStmtAST::accept(ASTVisitor &v) { v.visit(*this); }
+void ContinueStmtAST::accept(ASTVisitor &v) { v.visit(*this); }
 void ReturnStmtAST::accept(ASTVisitor &v) { v.visit(*this); }
 void AssignStmtAST::accept(ASTVisitor &v) { v.visit(*this); }
 void IfStmtAST::accept(ASTVisitor &v) { v.visit(*this); }
@@ -77,6 +79,10 @@ void VarDeclAST::dump(int indent) const {
         Init->dump(indent + 2);
     } 
 }
+
+void BreakStmtAST::dump(int indent) const {}
+
+void ContinueStmtAST::dump(int indent) const {}
 
 void ReturnStmtAST::dump(int indent) const {
     std::cout << std::string(indent, ' ') << "ReturnStmtAST" << std::endl;

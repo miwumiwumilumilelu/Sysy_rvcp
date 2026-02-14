@@ -33,6 +33,8 @@ public:
     void visit(FuncDefAST &node) override;
     void visit(BlockAST &node) override;
     void visit(VarDeclAST &node) override;
+    void visit(BreakStmtAST &node) override;
+    void visit(ContinueStmtAST &node) override;
     void visit(IfStmtAST &node) override;
     void visit(WhileStmtAST &node) override;
     void visit(ReturnStmtAST &node) override;

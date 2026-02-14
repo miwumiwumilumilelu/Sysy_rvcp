@@ -257,6 +257,16 @@ std::unique_ptr<StmtAST> Parser::parseStmt() {
         if (!expect(tok::semi)) return nullptr;
         return std::make_unique<ReturnStmtAST>(std::move(val));
     }
+    else if (CurTok.is(tok::kw_break)) {
+        getNextToken(); // consume 'break'
+        if (!expect(tok::semi)) return nullptr;
+        return std::make_unique<BreakStmtAST>();
+    }
+    else if (CurTok.is(tok::kw_continue)) {
+        getNextToken(); // consume 'continue'
+        if (!expect(tok::semi)) return nullptr;
+        return std::make_unique<ContinueStmtAST>();
+    }
     else if (CurTok.is(tok::l_brace)) {
         return parseBlock();
     }

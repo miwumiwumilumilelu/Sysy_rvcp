@@ -140,6 +140,18 @@ public:
     void accept(ASTVisitor &visitor) override;
 };
 
+class BreakStmtAST : public StmtAST {
+public:
+    void accept(ASTVisitor &visitor) override;
+    void dump(int indent) const override;
+};
+
+class ContinueStmtAST : public StmtAST {
+public:
+    void accept(ASTVisitor &visitor) override;
+    void dump(int indent) const override;
+};
+
 class AssignStmtAST : public StmtAST {
     std::unique_ptr<LValAST> LVal;
     std::unique_ptr<ExprAST> Value;

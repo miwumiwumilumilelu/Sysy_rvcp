@@ -13,6 +13,8 @@ public:
     virtual void visit(FuncDefAST &node) = 0;
     virtual void visit(BlockAST &node) = 0;
     virtual void visit(VarDeclAST &node) = 0;
+    virtual void visit(BreakStmtAST &node) = 0;
+    virtual void visit(ContinueStmtAST &node) = 0;
     virtual void visit(IfStmtAST &node) = 0;
     virtual void visit(WhileStmtAST &node) = 0;
     virtual void visit(ReturnStmtAST &node) = 0;
