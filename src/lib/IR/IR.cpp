@@ -187,6 +187,14 @@ BranchInst::BranchInst(Value *cond, BasicBlock *ifTrue, BasicBlock *ifFalse, Bas
     addOperand(ifFalse);
 }
 
+void BranchInst::replaceSuccessor(BasicBlock* oldBB, BasicBlock* newBB) {
+    for (size_t i = 0; i < Operands.size(); ++i) {
+        if (Operands[i] == oldBB) {
+            Operands[i] = newBB;
+        }
+    }
+}
+
 std::string BranchInst::toString() const {
     if (getNumOperands() == 1) return "br <" + getOperand(0)->getName() + ">";
     return "br " + fmtOperand(getOperand(0)) + ", <" + getOperand(1)->getName() + ">, <else = " + getOperand(2)->getName() + ">";
@@ -322,6 +330,16 @@ PhiInst::PhiInst(Type *ty, BasicBlock *parent)
 void PhiInst::addIncoming(Value *val, BasicBlock *bb) {
     addOperand(val);
     addOperand(bb);
+}
+
+void PhiInst::removeIncomingByBlock(BasicBlock* bb) {
+    for (auto it = Operands.begin(); it != Operands.end(); ) {
+        if ((it + 1) != Operands.end() && *(it + 1) == bb) {
+            it = Operands.erase(it, it + 2);
+        } else {
+            it += 2;
+        }
+    }
 }
 
 std::string PhiInst::toString() const {

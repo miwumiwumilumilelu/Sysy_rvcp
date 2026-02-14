@@ -118,6 +118,8 @@ public:
     // Conditional jmp
     BranchInst(Value *cond, BasicBlock *ifTrue, BasicBlock *ifFalse, BasicBlock *parent);
 
+    void replaceSuccessor(BasicBlock* oldBB, BasicBlock* newBB);
+
     std::string toString() const override;
 
     static bool classof(const Value* v) {
@@ -232,6 +234,8 @@ public:
     PhiInst(Type* ty, BasicBlock* parent);
 
     void addIncoming(Value* val, BasicBlock* bb);
+
+    void removeIncomingByBlock(BasicBlock* bb);
     
     std::string toString() const override;
 

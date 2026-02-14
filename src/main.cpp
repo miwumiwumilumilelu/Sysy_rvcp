@@ -11,6 +11,7 @@
 #include "Optimize/Dominators.h"
 #include "Optimize/Mem2Reg.h"
 #include "Optimize/ConstantFold.h"
+#include "Optimize/SimplifyCFG.h"
 
 using namespace sysy;
 
@@ -86,12 +87,16 @@ int main(int argc, char **argv) {
     Mem2Reg mem2reg(module.get(), nullptr); 
     mem2reg.run();
 
-    std::cout << "[Debug] Running ConstantFold..." << std::endl;
-    ConstantFold constantFold(module.get());
-    constantFold.run();
+    for (int i = 0; i < 3; i++) {
+        ConstantFold constFold(module.get());
+        constFold.run();
+        
+        SimplifyCFG simplify(module.get());
+        simplify.run();
+    }
 
     std::cout << "[Debug] All passes completed!" << std::endl;
-    
+
     if (dumpLIR) {
         std::cout << module->print();
     }
