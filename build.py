@@ -5,9 +5,9 @@ from pathlib import Path
 import shutil
 
 # ================= 配置区域 =================
-COMPILER = "g++"
+COMPILER = "clang++"
 # 编译选项
-CFLAGS = ["-std=c++17", "-g", "-Wall", "-Wextra", "-Isrc/include"]
+CFLAGS = ["-std=c++17", "-g", "-fsanitize=address", "-Wall", "-Wextra", "-Isrc/include"]
 # 目标文件名
 TARGET_NAME = "compiler" 
 # ===========================================

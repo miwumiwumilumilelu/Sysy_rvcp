@@ -44,10 +44,10 @@ std::map<BasicBlock*, std::vector<BasicBlock*>> SimplifyCFG::computePredecessors
         auto term = bb->getInstructions().back();
         if (auto br = dyn_cast<BranchInst>(term)) {
             if (br->getNumOperands() == 3) {
-                preds[cast<BasicBlock>(br->getOperand(1))].push_back(bb);
-                preds[cast<BasicBlock>(br->getOperand(2))].push_back(bb);
+                if (auto t = dyn_cast<BasicBlock>(br->getOperand(1))) preds[t].push_back(bb);
+                if (auto f = dyn_cast<BasicBlock>(br->getOperand(2))) preds[f].push_back(bb);
             } else if (br->getNumOperands() == 1) {
-                preds[cast<BasicBlock>(br->getOperand(0))].push_back(bb);
+                if (auto d = dyn_cast<BasicBlock>(br->getOperand(0))) preds[d].push_back(bb);
             }
         }
     }
@@ -75,13 +75,16 @@ bool SimplifyCFG::eliminateUnreachableBlocks(Region* region) {
         auto term = curr->getInstructions().back();
         if (auto br = dyn_cast<BranchInst>(term)) {
             if (br->getNumOperands() == 3) {
-                BasicBlock* t = cast<BasicBlock>(br->getOperand(1));
-                BasicBlock* f = cast<BasicBlock>(br->getOperand(2));
-                if (reachable.insert(t).second) q.push(t);
-                if (reachable.insert(f).second) q.push(f);
+                if (auto t = dyn_cast<BasicBlock>(br->getOperand(1))) {
+                    if (reachable.insert(t).second) q.push(t);
+                }
+                if (auto f = dyn_cast<BasicBlock>(br->getOperand(2))) {
+                    if (reachable.insert(f).second) q.push(f);
+                }
             } else if (br->getNumOperands() == 1) {
-                BasicBlock* dest = cast<BasicBlock>(br->getOperand(0));
-                if (reachable.insert(dest).second) q.push(dest);
+                if (auto dest = dyn_cast<BasicBlock>(br->getOperand(0))) {
+                    if (reachable.insert(dest).second) q.push(dest);
+                }
             }
         }
     }
@@ -94,13 +97,19 @@ bool SimplifyCFG::eliminateUnreachableBlocks(Region* region) {
                 auto term = bb->getInstructions().back();
                 if (auto br = dyn_cast<BranchInst>(term)) {
                     if (br->getNumOperands() == 3) {
-                        for (auto inst : cast<BasicBlock>(br->getOperand(1))->getInstructions())
-                            if (auto phi = dyn_cast<PhiInst>(inst)) phi->removeIncomingByBlock(bb); else break;
-                        for (auto inst : cast<BasicBlock>(br->getOperand(2))->getInstructions())
-                            if (auto phi = dyn_cast<PhiInst>(inst)) phi->removeIncomingByBlock(bb); else break;
+                        if (auto t = dyn_cast<BasicBlock>(br->getOperand(1))) {
+                            for (auto inst : t->getInstructions())
+                                if (auto phi = dyn_cast<PhiInst>(inst)) phi->removeIncomingByBlock(bb); else break;
+                        }
+                        if (auto f = dyn_cast<BasicBlock>(br->getOperand(2))) {
+                            for (auto inst : f->getInstructions())
+                                if (auto phi = dyn_cast<PhiInst>(inst)) phi->removeIncomingByBlock(bb); else break;
+                        }
                     } else if (br->getNumOperands() == 1) {
-                        for (auto inst : cast<BasicBlock>(br->getOperand(0))->getInstructions())
-                            if (auto phi = dyn_cast<PhiInst>(inst)) phi->removeIncomingByBlock(bb); else break;
+                        if (auto d = dyn_cast<BasicBlock>(br->getOperand(0))) {
+                            for (auto inst : d->getInstructions())
+                                if (auto phi = dyn_cast<PhiInst>(inst)) phi->removeIncomingByBlock(bb); else break;
+                        }
                     }
                 }
             }
@@ -123,7 +132,7 @@ bool SimplifyCFG::mergeBasicBlocks(Region* region) {
         auto term = dyn_cast<BranchInst>(bb->getInstructions().back());
         
         if (term && term->getNumOperands() == 1) {
-            BasicBlock* succ = cast<BasicBlock>(term->getOperand(0));
+            BasicBlock* succ = dyn_cast<BasicBlock>(term->getOperand(0));
 
             if (succ != bb && preds[succ].size() == 1 && succ != region->getEntryBlock()) {
                 auto& succInsts = succ->getInstructions();
@@ -143,7 +152,18 @@ bool SimplifyCFG::mergeBasicBlocks(Region* region) {
                 }
                 
                 bb->getInstructions().remove(term);
+
+                term->replaceAllUsesWith(nullptr);
+                for(int i = 0; i < term->getNumOperands(); i++) term->setOperand(i, nullptr);
+                term->setParent(nullptr);
+                delete term;
+
                 bb->getInstructions().splice(bb->getInstructions().end(), succInsts);
+
+                for (auto inst : bb->getInstructions()) {
+                    inst->setParent(bb);
+                }
+
                 succ->replaceAllUsesWith(bb);
                 
                 auto succItInList = std::find(blocks.begin(), blocks.end(), succ);
@@ -167,7 +187,7 @@ bool SimplifyCFG::eliminateEmptyBlocks(Region* region) {
         if (insts.size() == 1) { 
             if (auto br = dyn_cast<BranchInst>(insts.front())) {
                 if (br->getNumOperands() == 1) {
-                    BasicBlock* succ = cast<BasicBlock>(br->getOperand(0));
+                    BasicBlock* succ = dyn_cast<BasicBlock>(br->getOperand(0));
                     if (succ == bb) continue;
                     
                     auto& bbPreds = preds[bb];
@@ -228,15 +248,16 @@ bool SimplifyCFG::removeGhostPhiEdges(Region* region) {
         auto& bbPreds = preds[bb];
         for (auto inst : bb->getInstructions()) {
             if (auto phi = dyn_cast<PhiInst>(inst)) {
-                std::vector<BasicBlock*> ghosts;
+                std::vector<Value*> ghosts;
                 for (size_t i = 0; i < phi->getNumOperands(); i += 2) {
-                    BasicBlock* inBB = cast<BasicBlock>(phi->getOperand(i+1));
-                    if (std::find(bbPreds.begin(), bbPreds.end(), inBB) == bbPreds.end()) {
-                        ghosts.push_back(inBB);
+                    Value* inBBVal = phi->getOperand(i+1);
+                    BasicBlock* inBB = dyn_cast<BasicBlock>(inBBVal);
+                    if (!inBB || std::find(bbPreds.begin(), bbPreds.end(), inBB) == bbPreds.end()) {
+                        ghosts.push_back(inBBVal);
                     }
                 }
                 for (auto g : ghosts) {
-                    phi->removeIncomingByBlock(g);
+                    phi->removeIncomingByBlock((BasicBlock*)g);
                     changed = true;
                 }
             } else {
@@ -260,10 +281,16 @@ bool SimplifyCFG::simplifyBranches(Region* region) {
         if (auto br = dyn_cast<BranchInst>(term)) {
             if (br->getNumOperands() == 3) {
                 if (br->getOperand(1) == br->getOperand(2)) {
-                    BasicBlock* dest = cast<BasicBlock>(br->getOperand(1));
-                    bb->getInstructions().remove(br);
-                    new BranchInst(dest, bb);
-                    changed = true;
+                    if (BasicBlock* dest = dyn_cast<BasicBlock>(br->getOperand(1))) {
+
+                        br->replaceAllUsesWith(nullptr);
+                        for(int i = 0; i < br->getNumOperands(); i++) br->setOperand(i, nullptr);
+                        br->setParent(nullptr);
+                        delete br;
+
+                        new BranchInst(dest, bb);
+                        changed = true;
+                    }
                 }
             }
         }

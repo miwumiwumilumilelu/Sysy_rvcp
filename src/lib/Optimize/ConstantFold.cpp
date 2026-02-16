@@ -89,8 +89,10 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
     else if (auto br = dyn_cast<BranchInst>(inst)) {
         if (br->getNumOperands() == 3) {
             if (auto cond = dyn_cast<ConstantInt>(br->getOperand(0))) {
-                BasicBlock* dest_true = cast<BasicBlock>(br->getOperand(1));
-                BasicBlock* dest_false = cast<BasicBlock>(br->getOperand(2));
+                BasicBlock* dest_true = dyn_cast<BasicBlock>(br->getOperand(1));
+                BasicBlock* dest_false = dyn_cast<BasicBlock>(br->getOperand(2));
+
+                if (!dest_true || !dest_false) return false;
             
                 if (dest_true == dest_false) {
                     return false;
@@ -99,11 +101,10 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
                 BasicBlock* dest = (cond->getValue() != 0) ? cast<BasicBlock>(br->getOperand(1)) : cast<BasicBlock>(br->getOperand(2));
                 currentBB->getInstructions().remove(br);
 
-                auto& instList = currentBB->getInstructions();
-                auto it = std::find(instList.begin(), instList.end(), br);
-                if (it != instList.end()) {
-                    instList.erase(it, instList.end());
-                }
+                br->replaceAllUsesWith(nullptr);
+                for(int i = 0; i < br->getNumOperands(); i++) br->setOperand(i, nullptr);
+                br->setParent(nullptr);
+                delete br;
 
                 new BranchInst(dest, currentBB);
 

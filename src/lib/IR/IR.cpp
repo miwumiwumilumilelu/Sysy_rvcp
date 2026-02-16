@@ -190,7 +190,7 @@ BranchInst::BranchInst(Value *cond, BasicBlock *ifTrue, BasicBlock *ifFalse, Bas
 void BranchInst::replaceSuccessor(BasicBlock* oldBB, BasicBlock* newBB) {
     for (size_t i = 0; i < Operands.size(); ++i) {
         if (Operands[i] == oldBB) {
-            Operands[i] = newBB;
+            setOperand(i, newBB);
         }
     }
 }
@@ -335,6 +335,11 @@ void PhiInst::addIncoming(Value *val, BasicBlock *bb) {
 void PhiInst::removeIncomingByBlock(BasicBlock* bb) {
     for (auto it = Operands.begin(); it != Operands.end(); ) {
         if ((it + 1) != Operands.end() && *(it + 1) == bb) {
+            Value* val = *it;
+            Value* blcok = *(it + 1);
+            if (val) val->removeUser(this);
+            if (blcok) blcok->removeUser(this);
+
             it = Operands.erase(it, it + 2);
         } else {
             it += 2;

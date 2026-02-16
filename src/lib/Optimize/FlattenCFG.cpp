@@ -56,6 +56,10 @@ void FlattenCFG::flattenRegion(Region* region, BasicBlock* loopHeader, BasicBloc
         if (instIt != insts.end()) {
             auto nextIt = std::next(instIt);
             mergeBB->getInstructions().splice(mergeBB->getInstructions().begin(), insts, nextIt, insts.end());
+
+            for (auto inst : mergeBB->getInstructions()) {
+                inst->setParent(mergeBB);
+            }
         }
 
         if (auto ifInst = dyn_cast<IfInst>(highLevelInst)) {

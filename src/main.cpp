@@ -12,6 +12,7 @@
 #include "Optimize/Mem2Reg.h"
 #include "Optimize/ConstantFold.h"
 #include "Optimize/SimplifyCFG.h"
+#include "Optimize/DCE.h"
 
 using namespace sysy;
 
@@ -93,6 +94,9 @@ int main(int argc, char **argv) {
         
         SimplifyCFG simplify(module.get());
         simplify.run();
+
+        DCE dce(module.get());
+        dce.run();
     }
 
     std::cout << "[Debug] All passes completed!" << std::endl;

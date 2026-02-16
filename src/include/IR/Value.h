@@ -55,8 +55,10 @@ public:
 
     void addUser(User* user) { UseList.push_back(user); }
     void removeUser(User* user) {
-        auto it = std::remove(UseList.begin(), UseList.end(), user);
-        UseList.erase(it, UseList.end());
+        auto it = std::find(UseList.begin(), UseList.end(), user);
+        if (it != UseList.end()) {
+            UseList.erase(it);
+        }
     }   
 
     const std::vector<User*>& getUsers() const { return UseList; }

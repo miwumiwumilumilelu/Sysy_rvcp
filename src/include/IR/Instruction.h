@@ -29,6 +29,7 @@ public:
     bool isTerminator() const;
 
     BasicBlock* getParent() const { return Parent; }
+    void setParent(BasicBlock* bb) { Parent = bb; }
 
     void addRegion(std::unique_ptr<class Region> region) {
         Regions.push_back(std::move(region));

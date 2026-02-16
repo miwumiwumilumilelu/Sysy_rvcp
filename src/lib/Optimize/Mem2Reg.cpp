@@ -93,6 +93,7 @@ void Mem2Reg::insertPhiNodes(Function* func, int& phiCounter) {
                     Type* phiTy = cast<PointerType>(ai->getType())->getPointeeType();
                     
                     auto phi = new PhiInst(phiTy, nullptr); 
+                    phi->setParent(Y);
 
                     Y->getInstructions().push_front(phi); 
 
@@ -185,8 +186,20 @@ void Mem2Reg::rename(BasicBlock* bb) {
         }
     }
 
-    for (auto inst : instsToRemove) {
+    while (!instsToRemove.empty()) {
+        auto inst = instsToRemove.back();
+        instsToRemove.pop_back();
+
         bb->getInstructions().remove(inst);
-        // delete inst; // 暂时注释，防止 double free
-    }
+
+        inst->replaceAllUsesWith(nullptr);
+
+        for (int i = 0; i < inst->getNumOperands(); i++) {
+            inst->setOperand(i, nullptr);
+        }
+
+        inst->setParent(nullptr);
+
+        delete inst; 
+    }   
 }
