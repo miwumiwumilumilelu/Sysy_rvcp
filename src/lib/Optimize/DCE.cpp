@@ -19,7 +19,9 @@ bool DCE::isInstTrivallyDead(Instruction *inst) {
     // Having a ParentBB is alive Inst.
     for (auto user : inst->getUsers()) {
         if (auto uInst = dyn_cast<Instruction>(user)) {
-            if (uInst->getParent() != nullptr) {
+            // If user is inst itself or user's parent is inst's parent, it is alive.
+            // %p1 = phi [ %p1 ]
+            if (uInst != inst && uInst->getParent() != nullptr) {
                 return false;
             }
         } else {
