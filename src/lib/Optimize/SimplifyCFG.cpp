@@ -113,8 +113,21 @@ bool SimplifyCFG::eliminateUnreachableBlocks(Region* region) {
                     }
                 }
             }
+
+            auto& insts = bb->getInstructions();
+            while (!insts.empty()) {
+                auto deadInst = insts.back();
+                insts.pop_back();
+                deadInst->replaceAllUsesWith(nullptr);
+                for(int i = 0; i < deadInst->getNumOperands(); i++) deadInst->setOperand(i, nullptr);
+                deadInst->setParent(nullptr);
+                delete deadInst;
+            }
+
             bb->replaceAllUsesWith(nullptr);
             it = blocks.erase(it);
+
+            delete bb;
             changed = true;
         } else {
             ++it;
@@ -145,7 +158,10 @@ bool SimplifyCFG::mergeBasicBlocks(Region* region) {
                             }
                         }
                         if (incomingVal) phi->replaceAllUsesWith(incomingVal);
+                        for(int i = 0; i < phi->getNumOperands(); i++) phi->setOperand(i, nullptr);
+                        phi->setParent(nullptr);
                         succIt = succInsts.erase(succIt);
+                        delete phi;
                     } else {
                         break;
                     }
@@ -167,7 +183,10 @@ bool SimplifyCFG::mergeBasicBlocks(Region* region) {
                 succ->replaceAllUsesWith(bb);
                 
                 auto succItInList = std::find(blocks.begin(), blocks.end(), succ);
-                if (succItInList != blocks.end()) blocks.erase(succItInList);
+                if (succItInList != blocks.end()) {
+                    blocks.erase(succItInList);
+                    delete succ;
+                } 
                 return true; 
             }
         }
@@ -230,9 +249,14 @@ bool SimplifyCFG::eliminateEmptyBlocks(Region* region) {
                             predBr->replaceSuccessor(bb, succ);
                         }
                     }
-                    
                     bb->replaceAllUsesWith(nullptr);
+                    br->replaceAllUsesWith(nullptr);
+                    for(int i = 0; i < br->getNumOperands(); i++) br->setOperand(i, nullptr);
+                    br->setParent(nullptr);
+                    delete br;
+
                     blocks.erase(it);
+                    delete bb; 
                     return true;
                 }
             }
