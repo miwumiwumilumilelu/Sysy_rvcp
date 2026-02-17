@@ -75,35 +75,41 @@ std::unique_ptr<InitValAST> Parser::parseInitVal() {
     }
 }
 
-std::unique_ptr<VarDeclAST> Parser::parseDecl() {
+std::vector<std::unique_ptr<VarDeclAST>> Parser::parseDecl() {
+    std::vector<std::unique_ptr<VarDeclAST>> decls;
     std::string type = parseType();
-    if (type.empty()) return nullptr;
+    if (type.empty()) return decls;
 
-    if (CurTok.isNot(tok::identifier)) {
-        std::cerr << "Error: Expected variable name after type" << std::endl;
-        return nullptr;
-    }
-    std::string name(CurTok.getText());
-    getNextToken();
-
-    std::vector<std::unique_ptr<ExprAST>> dims;
-    while (CurTok.is(tok::l_square)) {
-        getNextToken(); // consume '['
-        auto dim = parseExpr();
-        if (!dim) return nullptr;
-        dims.push_back(std::move(dim));
-        if (!expect(tok::r_square)) return nullptr;
-    }
-
-    std::unique_ptr<InitValAST> init = nullptr;
-    if (CurTok.is(tok::equal)) {
+    while (true) {
+        if (CurTok.isNot(tok::identifier)) {
+            std::cerr << "Error: Expected variable name after type" << std::endl;
+            return decls;
+        }
+        std::string name(CurTok.getText());
         getNextToken();
-        init = parseInitVal();
+
+        std::vector<std::unique_ptr<ExprAST>> dims;
+        while (CurTok.is(tok::l_square)) {
+            getNextToken(); // consume '['
+            auto dim = parseExpr();
+            if (!dim) dims.push_back(std::move(dim));
+            if (!expect(tok::r_square)) return decls;
+        }
+
+        std::unique_ptr<InitValAST> init = nullptr;
+        if (CurTok.is(tok::equal)) {
+            getNextToken();
+            init = parseInitVal();
+        }
+
+        decls.push_back(std::make_unique<VarDeclAST>(type, name, std::move(dims), std::move(init)));
+
+        if (CurTok.is(tok::comma)) getNextToken();
+        else break;
     }
 
-    if (!expect(tok::semi)) return nullptr;
-
-    return std::make_unique<VarDeclAST>(type, name, std::move(dims), std::move(init));
+    expect(tok::semi);
+    return decls;
 }
 
 std::unique_ptr<ExprAST> Parser:: parsePrimaryExpr() {
@@ -307,6 +313,9 @@ std::unique_ptr<StmtAST> Parser::parseStmt() {
                 std::cerr << "Error: Left side of assignment must be a variable." << std::endl;
                 return nullptr;
             }
+        } else {
+            if (!expect(tok::semi)) return nullptr;
+            return std::make_unique<ExprStmtAST>(std::move(expr));
         }
     }
     else if (CurTok.isNot(tok::r_brace) && CurTok.isNot(tok::semi)) {
@@ -329,7 +338,8 @@ std::unique_ptr<BlockAST> Parser::parseBlock() {
 
     while (CurTok.isNot(tok::r_brace) && CurTok.isNot(tok::eof)) {
         if (CurTok.is(tok::kw_int) || CurTok.is(tok::kw_float)) {
-            if (auto decl = parseDecl()) {
+            auto decls = parseDecl();
+            for (auto& decl : decls) {
                 block->addItem(std::move(decl));
             } 
         } else {
@@ -467,24 +477,33 @@ std::unique_ptr<CompUnitAST> Parser::parseCompUnit() {
             }
         } 
         else {
-            std::vector<std::unique_ptr<ExprAST>> dims;
-            while (CurTok.is(tok::l_square)) {
-                getNextToken(); // consume '['
-                auto dim = parseExpr();
-                if (!dim) break;
-                dims.push_back(std::move(dim));
-                if (!expect(tok::r_square)) break;
-            }
+            while (true) {
+                std::vector<std::unique_ptr<ExprAST>> dims;
+                while (CurTok.is(tok::l_square)) {
+                    getNextToken(); // consume '['
+                    auto dim = parseExpr();
+                    if (!dim) break;
+                    dims.push_back(std::move(dim));
+                    if (!expect(tok::r_square)) break;
+                }
 
-            std::unique_ptr<InitValAST> init = nullptr;
-            if (CurTok.is(tok::equal)) {
-                getNextToken();
-                init = parseInitVal();
-            }
+                std::unique_ptr<InitValAST> init = nullptr;
+                if (CurTok.is(tok::equal)) {
+                    getNextToken();
+                    init = parseInitVal();
+                }
 
-            if (expect(tok::semi)) {
                 unit->addChild(std::make_unique<VarDeclAST>(type, name, std::move(dims), std::move(init)));
+
+                if (CurTok.is(tok::comma)) {
+                    getNextToken(); // consume ','
+                    if (CurTok.isNot(tok::identifier)) {
+                        name = std::string(CurTok.getText());
+                        getNextToken();
+                    } else break;
+                } else break;
             }
+            expect(tok::semi);
         }
     }
     return unit;

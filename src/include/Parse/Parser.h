@@ -30,7 +30,7 @@ private:
 
     std::unique_ptr<BlockAST> parseBlock();       // {...}
     std::unique_ptr<StmtAST> parseStmt();         // (return, block, etc.)
-    std::unique_ptr<VarDeclAST> parseDecl();      // Decl -> Type Identifier [ = Expr ] ;
+    std::vector<std::unique_ptr<VarDeclAST>> parseDecl();      // Decl -> Type Identifier [ = Expr ] ;
     
     std::unique_ptr<ExprAST> parseExpr();         // Expr -> AddExpr
     std::unique_ptr<ExprAST> parseLogicOrExpr(); // ||

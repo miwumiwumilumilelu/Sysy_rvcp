@@ -433,9 +433,9 @@ void IRGen::visit(AssignStmtAST &node) {
     if (addr && val) {
         Type* targetTy = dyn_cast<PointerType>(addr->getType())->getPointeeType();
         val = castTo(val, targetTy);
+        builder.Create<StoreInst>(val, addr);
     }
 
-    builder.Create<StoreInst>(val, addr);
 }
 
 void IRGen::visit(LValAST &node) {
@@ -601,6 +601,8 @@ void IRGen::visit(IfStmtAST &node) {
     Value *cond = LastVal;
 
     cond = toCondition(cond);
+
+    if (!cond) return;
 
     auto ifInst = builder.Create<IfInst>(cond);
 

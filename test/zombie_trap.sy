@@ -1,0 +1,17 @@
+int main() {
+    int i = 0;
+    int sum = 0;
+    while (i < 10) {
+        int trap1 = i * 2;
+
+        int trap2 = trap1 * 0; 
+
+        if (1 == 0) { 
+            int trap3 = trap1 + 100; 
+        }
+        
+        sum = sum + i;
+        i = i + 1;
+    }
+    return sum;
+}
