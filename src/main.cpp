@@ -13,6 +13,8 @@
 #include "Optimize/ConstantFold.h"
 #include "Optimize/SimplifyCFG.h"
 #include "Optimize/DCE.h"
+#include "rv/InstSelector.h"
+#include "rv/MCPrinter.h"
 
 using namespace sysy;
 
@@ -99,11 +101,18 @@ int main(int argc, char **argv) {
         dce.run();
     }
 
-    std::cout << "[Debug] All passes completed!" << std::endl;
-
     if (dumpLIR) {
         std::cout << module->print();
     }
+
+    std::cout << "\n[Debug] ----- Starting Instruction Selection -----" << std::endl;
+    InstSelector selector;
+    MCModule* machineModule = selector.run(module.get());
+
+    std::cout << "\n[Debug] ----- Machine IR (Virtual Assembly) -----\n" << std::endl;
+    MCPrinter printer;
+    printer.print(machineModule, std::cout);
+
 
     return 0;
 }
