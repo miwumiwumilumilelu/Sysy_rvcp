@@ -36,6 +36,40 @@ MCOpnd InstSelector::getOpnd(Value* val) {
         return vreg;
     }
 
+    if (auto cf = dyn_cast<ConstantFloat>(val)) {
+        float fval = cf->getValue();
+        // Treat the binary bits of float as int.
+        int imm = *reinterpret_cast<int*>(&fval);
+        MCOpnd intReg = createVReg();
+        MCOpnd floatReg = createVReg();
+
+        // First load these 32 bits of binary into the integer register.
+        // LI intReg, imm
+        auto liInst = new MCInst(MCInst::LI);
+        liInst->add(intReg)->add(MCOpnd::imm(imm));
+        curMCBlk->push(liInst);
+
+        // Then the bits in the integer register are moved to the floating-point register.
+        // FMV_W_X floatReg, intReg
+        auto fmvInst = new MCInst(MCInst::FMV_W_X);
+        fmvInst->add(floatReg)->add(intReg);
+        curMCBlk->push(fmvInst);
+
+        val2opnd[val] = floatReg;
+        return floatReg;
+    }
+
+    if (auto gv = dyn_cast<GlobalVariable>(val)) {
+        MCOpnd vreg = createVReg();
+        // Using LA to load the label of the global variable.
+        auto laInst = new MCInst(MCInst::LA);
+        laInst->add(vreg)->add(MCOpnd::lbl(gv->getName()));
+        curMCBlk->push(laInst);
+
+        val2opnd[val] = vreg;
+        return vreg;
+    }
+
     // TODO: such as function parameters, first allocate a virtual register as a fallback
     MCOpnd vreg = createVReg();
     val2opnd[val] = vreg;
@@ -137,6 +171,38 @@ void InstSelector::selectInstruction(Instruction* inst) {
             }
             break;
         }
+        case Instruction::FCmp: {
+            auto cmp = cast<FCmpInst>(inst);
+            MCOpnd rd = getOpnd(inst);
+            MCOpnd lhs = getOpnd(cmp->getOperand(0));
+            MCOpnd rhs = getOpnd(cmp->getOperand(1));
+
+            switch(cmp->getPredicate()) {
+                case FCmpInst::OEQ: // a == b -> feq.s rd, a, b
+                    curMCBlk->push((new MCInst(MCInst::FEQ_S))->add(rd)->add(lhs)->add(rhs));
+                    break;
+                case FCmpInst::ONE: // a != b -> feq.s t, a, b; xori rd, t, 1
+                    {
+                        MCOpnd tmp = createVReg();
+                        curMCBlk->push((new MCInst(MCInst::FEQ_S))->add(tmp)->add(lhs)->add(rhs));
+                        curMCBlk->push((new MCInst(MCInst::XORI))->add(rd)->add(tmp)->add(MCOpnd::imm(1)));
+                    }
+                    break;
+                case FCmpInst::OLT: // a < b -> flt.s rd, a, b
+                    curMCBlk->push((new MCInst(MCInst::FLT_S))->add(rd)->add(lhs)->add(rhs));
+                    break;
+                case FCmpInst::OGT: // a > b -> b < a -> flt.s rd, b, a
+                    curMCBlk->push((new MCInst(MCInst::FLT_S))->add(rd)->add(rhs)->add(lhs));
+                    break;
+                case FCmpInst::OLE: // a <= b -> fle.s rd, a, b
+                    curMCBlk->push((new MCInst(MCInst::FLE_S))->add(rd)->add(lhs)->add(rhs));
+                    break;
+                case FCmpInst::OGE: // a >= b -> b <= a -> fle.s rd, b, a
+                    curMCBlk->push((new MCInst(MCInst::FLE_S))->add(rd)->add(rhs)->add(lhs));
+                    break;
+                }
+            break;
+        }
         case Instruction::Br: {
             auto brInst = cast<BranchInst>(inst);
             if (brInst->getNumOperands() == 1) { 
@@ -214,6 +280,7 @@ void InstSelector::selectInstruction(Instruction* inst) {
         }
         default:
             std::cerr << "Warning: Unhandled instruction in selection!" << std::endl;
+            std::cerr << inst->getOpID() << std::endl;
             break;
     }
 }
