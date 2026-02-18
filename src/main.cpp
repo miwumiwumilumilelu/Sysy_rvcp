@@ -15,6 +15,7 @@
 #include "Optimize/DCE.h"
 #include "rv/InstSelector.h"
 #include "rv/MCPrinter.h"
+#include "rv/PhiElim.h"
 
 using namespace sysy;
 
@@ -108,6 +109,10 @@ int main(int argc, char **argv) {
     std::cout << "\n[Debug] ----- Starting Instruction Selection -----" << std::endl;
     InstSelector selector;
     MCModule* machineModule = selector.run(module.get());
+
+    std::cout << "\n[Debug] ----- Running Phi Elimination -----" << std::endl;
+    PhiElim pe;
+    pe.run(machineModule);
 
     std::cout << "\n[Debug] ----- Machine IR (Virtual Assembly) -----\n" << std::endl;
     MCPrinter printer;
