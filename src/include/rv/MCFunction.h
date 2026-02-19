@@ -19,8 +19,9 @@ public:
     // Record how many virtual registers are used in this function.
     // For the next register allocation.
     int maxVReg; 
+    int stackSize;
 
-    MCFunc(std::string n, MCModule* p = nullptr) : name(n), parent(p), maxVReg(0) {}
+    MCFunc(std::string n, MCModule* p = nullptr) : name(n), parent(p), maxVReg(0), stackSize(0) {}
 
     void add(MCBlk* b) {
         b->func = this;

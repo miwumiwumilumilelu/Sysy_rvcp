@@ -16,6 +16,7 @@
 #include "rv/InstSelector.h"
 #include "rv/MCPrinter.h"
 #include "rv/PhiElim.h"
+#include "rv/RegAlloc.h"
 
 using namespace sysy;
 
@@ -113,6 +114,10 @@ int main(int argc, char **argv) {
     std::cout << "\n[Debug] ----- Running Phi Elimination -----" << std::endl;
     PhiElim pe;
     pe.run(machineModule);
+
+    std::cout << "\n[Debug] ----- Running Register Allocation -----" << std::endl;
+    RegAlloc allocator;
+    allocator.run(machineModule);
 
     std::cout << "\n[Debug] ----- Machine IR (Virtual Assembly) -----\n" << std::endl;
     MCPrinter printer;

@@ -49,6 +49,11 @@ void MCPrinter::print(MCFunc* func, std::ostream& os) {
     os << "\n  .globl " << func->name << "\n";
     os << "  .type " << func->name << ", @function\n";
     os << func->name << ":\n";
+
+    if (func->stackSize > 0) {
+        os << "    addi sp, sp, -" << func->stackSize << "\n";
+    }
+
     for (auto blk : func->blks) {
         print(blk, os);
     }
@@ -58,12 +63,31 @@ void MCPrinter::print(MCBlk* blk, std::ostream& os) {
     os << blk->name << ":\n";
     for (auto inst : blk->insts) {
         os << "    ";
+
+        if (inst->opc == MCInst::RET) {
+            if (blk->func && blk->func->stackSize > 0) {
+                os << "addi sp, sp, " << blk->func->stackSize << "\n    ";
+            }
+        }
+
         print(inst, os);
         os << "\n";
     }
 }
 
 void MCPrinter::print(MCInst* inst, std::ostream& os) {
+    if (inst->opc == MCInst::LW || inst->opc == MCInst::SW || 
+        inst->opc == MCInst::FLW || inst->opc == MCInst::FSW) {
+        os << getOpcName(inst->opc) << " ";
+        print(inst->ops[0], os); 
+        os << ", ";
+        print(inst->ops[2], os); 
+        os << "(";
+        print(inst->ops[1], os);
+        os << ")";
+        return;
+    }
+
     os << getOpcName(inst->opc);
     
     if (inst->ops.empty()) return;
