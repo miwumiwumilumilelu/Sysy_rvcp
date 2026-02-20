@@ -5,6 +5,16 @@
 
 using namespace sysy;
 
+static int getDimCount(Type* ty) {
+    if (ty->isPointer()) {
+        return 1 + getDimCount(dyn_cast<PointerType>(ty)->getPointeeType());
+    }
+    if (ty->isArray()) {
+        return 1 + getDimCount(dyn_cast<ArrayType>(ty)->getElementType());
+    }
+    return 0;
+}
+
 IRGen::IRGen() {
     TheModule = std::make_unique<Module>();
     CurrentFunc = nullptr;
@@ -254,26 +264,12 @@ void IRGen::visit(FuncCallAST &node) {
 
     std::vector<Value*> args;
     for (auto &argNode : node.getArgs()) {
-        if (dynamic_cast<LValAST*>(argNode.get())) {
-            isLValMode = false;
-            argNode->accept(*this);
-            Value *val = LastVal;
-
-            if (val->getType()->isPointer()) {
-                Type* pointee = dyn_cast<PointerType>(val->getType())->getPointeeType();
-                if (pointee->isArray()) {
-                    auto zero = new ConstantInt(0);
-                    auto gep = builder.Create<GetElementPtrInst>(val, zero);
-
-                    gep->setName(nextValueName());
-                    val = gep;
-                }
-            }
-            args.push_back(val);
-        } else {
-            argNode->accept(*this);
-            args.push_back(LastVal);
-        }
+        bool oldMode = isLValMode;
+        isLValMode = false;
+        argNode->accept(*this);
+        isLValMode = oldMode;
+        
+        args.push_back(LastVal);
     }
 
     auto call = builder.Create<CallInst>(callee, args);
@@ -445,13 +441,22 @@ void IRGen::visit(LValAST &node) {
         return;
     }
 
+    int maxIndices = getDimCount(addr->getType()) - 1;
+    // Whether the variable is from the local or from the function parameter.
+    bool isParamPointer = false;
+
     if (auto ptrTy = dyn_cast<PointerType>(addr->getType())) {
         if (ptrTy->getPointeeType()->isPointer()) {
             auto load = builder.Create<LoadInst>(addr);
             load->setName(nextValueName());
             addr = load;
+            isParamPointer = true;
         }
     }
+
+    // If the provided index count is less than the array dimension,
+    // it implies that it degenerates into a pointer here.
+    bool isPartial = node.getIndices().size() < maxIndices;
 
     for (auto &indexExpr : node.getIndices()) {
         bool oldMode = isLValMode;
@@ -468,8 +473,15 @@ void IRGen::visit(LValAST &node) {
     if (isLValMode) {
         LastVal = addr;
     } else {
-        if (addr->getType()->isPointer() && dyn_cast<PointerType>(addr->getType())->getPointeeType()->isArray()) {
-            LastVal = addr;
+        if (isPartial) {
+            if (!isParamPointer) {
+                auto zero = new ConstantInt(0);
+                auto gep = builder.Create<GetElementPtrInst>(addr, zero);
+                gep->setName(nextValueName());
+                LastVal = gep;
+            } else {
+                LastVal = addr;
+            }
         } else {
             auto load = builder.Create<LoadInst>(addr);
             load->setName(nextValueName());
