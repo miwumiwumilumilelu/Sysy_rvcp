@@ -76,7 +76,8 @@ class AllocaInst : public Instruction {
 public:
     AllocaInst(Type* ty, BasicBlock* parent);
     std::string toString() const override;
-
+    Type* getAllocatedType() const { return AllocatedType; }
+    
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Alloca;
     }

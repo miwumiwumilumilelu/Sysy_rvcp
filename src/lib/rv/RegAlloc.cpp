@@ -34,6 +34,7 @@ void RegAlloc::run(MCModule* m) {
         use.clear();
         instId.clear();
         physRegState.clear();
+        allocaOffsets.clear();
 
         // Number the command & identify the Call command.
         numberInstructions(f);
@@ -238,6 +239,17 @@ void RegAlloc::linearScan() {
 
     int stackOffset = 0;
 
+    for (auto b : currFunc->blks) {
+        for (auto inst : b->insts) {
+            if (inst->opc == MCInst::ALLOCA) {
+                int vreg = inst->getOp(0).val;
+                int size = inst->getOp(1).val;
+                allocaOffsets[vreg] = stackOffset;
+                stackOffset += size;
+            }
+        }
+    }
+
     for (auto i : intervals) {
         for (auto it = active.begin(); it != active.end(); ) {
             Interval* act = *it;
@@ -304,6 +316,33 @@ void RegAlloc::rewriteCode(MCFunc* f) {
         std::list<MCInst*> newInsts;
         
         for (auto inst : b->insts) {
+
+            if (inst->opc == MCInst::ALLOCA) {
+                MCOpnd& targetOp = inst->getOp(0);
+                if (targetOp.isVReg() && vmap.count(targetOp.val)) {
+                    Interval* it = vmap[targetOp.val];
+                    int offset = allocaOffsets[targetOp.val];
+
+                    MCInst* addi = new MCInst(MCInst::ADDI);
+
+                    if (it->spilled) {
+                        PReg scratch = iSpill1;
+                        // addi s10, sp, offset
+                        addi->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(offset));
+                        newInsts.push_back(addi);
+                        
+                        MCInst* st = new MCInst(MCInst::SW);
+                        // sw s10, offset_v2(sp)
+                        st->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(it->stackOffset));
+                        newInsts.push_back(st);
+                    } else {
+                        addi->add(MCOpnd::preg(it->assigned))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(offset));
+                        newInsts.push_back(addi);
+                    }
+                }
+                continue;
+            }
+
             // Handle Uses.
             for (size_t k = 0; k < inst->opCnt(); k++) {
                 bool isDef = (k == 0);

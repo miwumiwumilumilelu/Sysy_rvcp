@@ -4,6 +4,13 @@
 
 using namespace sysy;
 
+static int getTypeSize(Type* ty) {
+    if (auto arrTy = dyn_cast<ArrayType>(ty)) {
+        return arrTy->getNumElements() * getTypeSize(arrTy->getElementType());
+    }
+    return 4;
+}
+
 MCModule* InstSelector::run(Module* irModule) {
     curMCMod = new MCModule();
     for (auto func : irModule->getFunctions()) {
@@ -237,10 +244,16 @@ void InstSelector::selectInstruction(Instruction* inst) {
         case Instruction::Store:
             curMCBlk->push((new MCInst(MCInst::SW))->add(getOpnd(inst->getOperand(0)))->add(getOpnd(inst->getOperand(1)))->add(MCOpnd::imm(0)));
             break;
-        case Instruction::Alloca:
+        case Instruction::Alloca: {
             // The local variable space is given to subsequent stack frame allocation
-            curMCBlk->push((new MCInst(MCInst::ALLOCA))->add(getOpnd(inst)));
+            auto allocaInst = cast<AllocaInst>(inst);
+            Type* allocTy = allocaInst->getAllocatedType();
+
+            int size = getTypeSize(allocTy);
+
+            curMCBlk->push((new MCInst(MCInst::ALLOCA))->add(getOpnd(inst))->add(MCOpnd::imm(size)));
             break;
+        }
         case Instruction::Call: {
             auto callInst = cast<CallInst>(inst);
             int intCnt = 0;

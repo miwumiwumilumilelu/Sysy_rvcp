@@ -61,6 +61,8 @@ private:
     void computeLocalLiveness(MCBlk* b);
     void computeGlobalLiveness(MCFunc* f);
     void buildIntervals(MCFunc* f);
+
+    std::map<int, int> allocaOffsets;
 };
 
 }
