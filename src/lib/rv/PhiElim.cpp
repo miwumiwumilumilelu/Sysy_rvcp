@@ -16,22 +16,25 @@ bool PhiElim::isFloat(int vr, MCFunc* f) {
         for (auto i : b->insts) {
             for (size_t k = 0; k < i->ops.size(); k++) {
                 if (i->ops[k].isVReg() && i->ops[k].val == vr) {
-                    switch (i->opc) {
-                        case MCInst::FADD_S:
-                        case MCInst::FSUB_S:
-                        case MCInst::FMUL_S:
-                        case MCInst::FDIV_S:
-                        case MCInst::FEQ_S:
-                        case MCInst::FLT_S:
-                        case MCInst::FLE_S:
-                        case MCInst::FCVT_W_S:
-                        case MCInst::FCVT_S_W:
-                        case MCInst::FMV_X_W:
-                        case MCInst::FMV_W_X:
-                        case MCInst::FSW:
-                        case MCInst::FMV_S:
-                            return true;
-                        default: break;
+                    auto opc = i->opc;
+
+                    bool isDef = (k == 0);
+                    if (opc == MCInst::SW || opc == MCInst::FSW || opc == MCInst::BEQ || 
+                        opc == MCInst::BNE || opc == MCInst::BLT || opc == MCInst::BGE || 
+                        opc == MCInst::J || opc == MCInst::RET || opc == MCInst::CALL) {
+                        isDef = false;
+                    }
+
+                    if (isDef) {
+                        if (opc >= MCInst::FADD_S && opc <= MCInst::FDIV_S) return true;
+                        if (opc == MCInst::FMV_S || opc == MCInst::FCVT_S_W || 
+                            opc == MCInst::FMV_W_X || opc == MCInst::FLW) return true;
+                    } else {
+                        if (opc >= MCInst::FADD_S && opc <= MCInst::FDIV_S) return true;
+                        if (opc == MCInst::FMV_S) return true;
+                        if (opc == MCInst::FCVT_W_S || opc == MCInst::FMV_X_W) { if (k == 1) return true; }
+                        if (opc == MCInst::FEQ_S || opc == MCInst::FLT_S || opc == MCInst::FLE_S) { if (k != 0) return true; }
+                        if (opc == MCInst::FSW) { if (k == 0) return true; }
                     }
                 }
             }

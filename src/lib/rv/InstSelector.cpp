@@ -97,6 +97,21 @@ void InstSelector::selectFunction(Function* func) {
         curMCFunc->add(mcBlk);
     }
 
+    curMCBlk = bbMap[func->getBody()->getEntryBlock()];
+    int intCnt = 0;
+    int floatCnt = 0;
+    for (auto arg : func->getArgs()) {
+        MCOpnd vreg = createVReg();
+        val2opnd[arg] = vreg;
+        if (arg->getType()->isFloat()) {
+            PReg preg = static_cast<PReg>(static_cast<int>(PReg::fa0) + floatCnt++);
+            curMCBlk->push((new MCInst(MCInst::FMV_S))->add(vreg)->add(MCOpnd::preg(preg)));
+        } else {
+            PReg preg = static_cast<PReg>(static_cast<int>(PReg::a0) + intCnt++);
+            curMCBlk->push((new MCInst(MCInst::MV))->add(vreg)->add(MCOpnd::preg(preg)));
+        }
+    }
+
     for (auto bb : func->getBody()->getBlocks()) {
         selectBlock(bb);
     }
@@ -238,12 +253,30 @@ void InstSelector::selectInstruction(Instruction* inst) {
             curMCBlk->push((new MCInst(MCInst::ADD))->add(rd)->add(base)->add(offset));
             break;
         }
-        case Instruction::Load:
-            curMCBlk->push((new MCInst(MCInst::LW))->add(getOpnd(inst))->add(getOpnd(inst->getOperand(0)))->add(MCOpnd::imm(0)));
+        case Instruction::Load: {
+            Type* ty = inst->getType();
+            
+            // As long as there is a pointer or array property,
+            // it is forced to be downgraded to an integer load. 
+            bool isF = ty->isFloat() && !ty->isPointer() && !ty->isArray();
+            
+            curMCBlk->push((new MCInst(isF ? MCInst::FLW : MCInst::LW))
+                           ->add(getOpnd(inst))
+                           ->add(getOpnd(inst->getOperand(0)))
+                           ->add(MCOpnd::imm(0)));
             break;
-        case Instruction::Store:
-            curMCBlk->push((new MCInst(MCInst::SW))->add(getOpnd(inst->getOperand(0)))->add(getOpnd(inst->getOperand(1)))->add(MCOpnd::imm(0)));
+        }
+        case Instruction::Store: {
+            Type* ty = inst->getOperand(0)->getType();
+
+            bool isF = ty->isFloat() && !ty->isPointer() && !ty->isArray();
+            
+            curMCBlk->push((new MCInst(isF ? MCInst::FSW : MCInst::SW))
+                           ->add(getOpnd(inst->getOperand(0)))
+                           ->add(getOpnd(inst->getOperand(1)))
+                           ->add(MCOpnd::imm(0)));
             break;
+        }
         case Instruction::Alloca: {
             // The local variable space is given to subsequent stack frame allocation
             auto allocaInst = cast<AllocaInst>(inst);
@@ -257,16 +290,46 @@ void InstSelector::selectInstruction(Instruction* inst) {
         case Instruction::Call: {
             auto callInst = cast<CallInst>(inst);
             int intCnt = 0;
-            for (int i = 0; i < callInst->getNumOperands(); i++) {
+            int floatCnt = 0;
+            Function* callee = callInst->getFunction();
+
+            for (int i = 1; i < callInst->getNumOperands(); i++) {
                 MCOpnd arg = getOpnd(callInst->getOperand(i));
-                PReg targetReg = static_cast<PReg>(static_cast<int>(PReg::a0) + intCnt++);
-                curMCBlk->push((new MCInst(MCInst::MV))->add(MCOpnd::preg(targetReg))->add(arg));
+                Type* argType = callInst->getOperand(i)->getType();
+
+                bool isFloatArg = argType->isFloat() && !argType->isPointer() && !argType->isArray();
+
+                bool expectsFloat = false;
+                if (i - 1 < callee->getArgs().size()) {
+                    Type* expectType = callee->getArgs()[i - 1]->getType();
+                    expectsFloat = expectType->isFloat() && !expectType->isPointer() && !expectType->isArray();
+                } else {
+                    expectsFloat = isFloatArg;
+                }
+
+                PReg targetReg = expectsFloat ? 
+                    static_cast<PReg>(static_cast<int>(PReg::fa0) + floatCnt++) : 
+                    static_cast<PReg>(static_cast<int>(PReg::a0) + intCnt++);
+
+                if (isFloatArg && !expectsFloat) {
+                    curMCBlk->push((new MCInst(MCInst::FMV_X_W))->add(MCOpnd::preg(targetReg))->add(arg));
+                } else if (!isFloatArg && expectsFloat) {
+                    curMCBlk->push((new MCInst(MCInst::FMV_W_X))->add(MCOpnd::preg(targetReg))->add(arg));
+                } else if (isFloatArg && expectsFloat) {
+                    curMCBlk->push((new MCInst(MCInst::FMV_S))->add(MCOpnd::preg(targetReg))->add(arg));
+                } else {
+                    curMCBlk->push((new MCInst(MCInst::MV))->add(MCOpnd::preg(targetReg))->add(arg));
+                }
             }
             
             curMCBlk->push((new MCInst(MCInst::CALL))->add(MCOpnd::lbl(callInst->getFunction()->getName())));
             
             if (!callInst->getType()->isVoid()) {
-                curMCBlk->push((new MCInst(MCInst::MV))->add(getOpnd(callInst))->add(MCOpnd::preg(PReg::a0)));
+                if (callInst->getType()->isFloat()) {
+                    curMCBlk->push((new MCInst(MCInst::FMV_S))->add(getOpnd(callInst))->add(MCOpnd::preg(PReg::fa0)));
+                } else {
+                    curMCBlk->push((new MCInst(MCInst::MV))->add(getOpnd(callInst))->add(MCOpnd::preg(PReg::a0)));
+                }
             }
             break;
         }

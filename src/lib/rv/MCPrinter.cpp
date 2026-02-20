@@ -54,6 +54,14 @@ void MCPrinter::print(MCFunc* func, std::ostream& os) {
         os << "    addi sp, sp, -" << func->stackSize << "\n";
     }
 
+    for (auto const& [reg, off] : func->savedRegOffsets) {
+        if (static_cast<int>(reg) >= 32) {
+            os << "    fsw " << getRegName(reg) << ", " << off << "(sp)\n";
+        } else {
+            os << "    sw " << getRegName(reg) << ", " << off << "(sp)\n";
+        }
+    }
+
     for (auto blk : func->blks) {
         print(blk, os);
     }
@@ -65,8 +73,18 @@ void MCPrinter::print(MCBlk* blk, std::ostream& os) {
         os << "    ";
 
         if (inst->opc == MCInst::RET) {
-            if (blk->func && blk->func->stackSize > 0) {
-                os << "addi sp, sp, " << blk->func->stackSize << "\n    ";
+            if (blk->func) {
+                for (auto const& [reg, off] : blk->func->savedRegOffsets) {
+                    if (static_cast<int>(reg) >= 32) {
+                        os << "flw " << getRegName(reg) << ", " << off << "(sp)\n    ";
+                    } else {
+                        os << "lw " << getRegName(reg) << ", " << off << "(sp)\n    ";
+                    }
+                }
+                
+                if (blk->func->stackSize > 0) {
+                    os << "addi sp, sp, " << blk->func->stackSize << "\n    ";
+                }
             }
         }
 

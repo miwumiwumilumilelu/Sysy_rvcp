@@ -5,6 +5,7 @@
 #include "rv/MCBlock.h"
 #include <vector>
 #include <string>
+#include <map>
 
 namespace sysy {
 
@@ -20,6 +21,9 @@ public:
     // For the next register allocation.
     int maxVReg; 
     int stackSize;
+
+    std::set<PReg> savedRegs;
+    std::map<PReg, int> savedRegOffsets;
 
     MCFunc(std::string n, MCModule* p = nullptr) : name(n), parent(p), maxVReg(0), stackSize(0) {}
 

@@ -24,6 +24,14 @@ bool isCallerSaved(PReg reg) {
     return callerSavedSet.count(reg);
 }
 
+bool isCalleeSaved(PReg reg) {
+    static const std::set<PReg> calleeSavedSet = {
+        PReg::s0, PReg::s1, PReg::s2, PReg::s3, PReg::s4, PReg::s5, PReg::s6, PReg::s7, PReg::s8, PReg::s9, PReg::s10, PReg::s11,
+        PReg::fs0, PReg::fs1, PReg::fs2, PReg::fs3, PReg::fs4, PReg::fs5, PReg::fs6, PReg::fs7, PReg::fs8, PReg::fs9, PReg::fs10, PReg::fs11
+    };
+    return calleeSavedSet.count(reg);
+}
+
 void RegAlloc::run(MCModule* m) {
     for (auto f : m->funcs) {
         currFunc = f;
@@ -175,6 +183,23 @@ void RegAlloc::buildIntervals(MCFunc* f) {
         }
     }
 
+    auto checkIsFloatDef = [](MCInst* i) {
+        auto opc = i->opc;
+        if (opc >= MCInst::FADD_S && opc <= MCInst::FDIV_S) return true;
+        if (opc == MCInst::FMV_S || opc == MCInst::FCVT_S_W || opc == MCInst::FMV_W_X || opc == MCInst::FLW) return true;
+        return false;
+    };
+
+    auto checkIsFloatUse = [](MCInst* i, int k) {
+        auto opc = i->opc;
+        if (opc >= MCInst::FADD_S && opc <= MCInst::FDIV_S) return true;
+        if (opc == MCInst::FMV_S) return true;
+        if (opc == MCInst::FCVT_W_S || opc == MCInst::FMV_X_W) return k == 1; 
+        if (opc == MCInst::FEQ_S || opc == MCInst::FLT_S || opc == MCInst::FLE_S) return k != 0;
+        if (opc == MCInst::FSW) return k == 0;
+        return false;
+    };
+
     for (auto b : f->blks) {
         int blockFrom = blkStart[b];
         for (auto it = b->insts.rbegin(); it != b->insts.rend(); ++it) {
@@ -197,15 +222,16 @@ void RegAlloc::buildIntervals(MCFunc* f) {
             bool isFloat = (i->opc >= MCInst::FADD_S && i->opc <= MCInst::FSW) || i->opc == MCInst::FMV_S;
 
             if (hasDef) {
+                bool isFloatDef = checkIsFloatDef(i);
                 if (vreg2Int.find(defReg) == vreg2Int.end()) {
                     // Dead Variable.
                     // [currId, currId + 1]
                     // Give it a tiny lifespan of +1 just to protect the site.
-                    vreg2Int[defReg] = new Interval{defReg, currId, currId + 1, PReg::zero, false, 0, isFloat};
+                    vreg2Int[defReg] = new Interval{defReg, currId, currId + 1, PReg::zero, false, 0, isFloatDef};
                     intervals.push_back(vreg2Int[defReg]);
                 } else {
                     vreg2Int[defReg]->start = currId;
-                    if (isFloat) vreg2Int[defReg]->isFloat = true;
+                    if (isFloatDef) vreg2Int[defReg]->isFloat = true;
                 }
             }
 
@@ -214,13 +240,14 @@ void RegAlloc::buildIntervals(MCFunc* f) {
                 if (i->getOp(k).isVReg()) {
                     int v = i->getOp(k).val;
                     if (!hasDef || k != 0) {
+                        bool isFloatUse = checkIsFloatUse(i, k);
                         if (vreg2Int.find(v) == vreg2Int.end()) {
-                            vreg2Int[v] = new Interval{v, blockFrom, currId, PReg::zero, false, 0, isFloat};
+                            vreg2Int[v] = new Interval{v, blockFrom, currId, PReg::zero, false, 0, isFloatUse};
                             intervals.push_back(vreg2Int[v]);
                         } else {
                             vreg2Int[v]->end = std::max(vreg2Int[v]->end, currId);
                             vreg2Int[v]->start = std::min(vreg2Int[v]->start, blockFrom);
-                            if (isFloat) vreg2Int[v]->isFloat = true;
+                            if (isFloatUse) vreg2Int[v]->isFloat = true;
                         }
                     }
                 }
@@ -291,16 +318,37 @@ void RegAlloc::linearScan() {
             std::sort(active.begin(), active.end(), [](Interval* a, Interval* b) {
                 return a->end < b->end;
             });
+            if (isCalleeSaved(bestReg)) {
+                currFunc->savedRegs.insert(bestReg);
+            }
         } else {
             i->spilled = true;
             i->stackOffset = stackOffset;
             stackOffset += 4; // 32-bit = 4 bytes
         }
     }
+
+    // Prologue & Epilogue
+    if (stackOffset > 0) {
+        currFunc->savedRegs.insert(PReg::s10);
+        currFunc->savedRegs.insert(PReg::s11);
+        currFunc->savedRegs.insert(PReg::fs10);
+        currFunc->savedRegs.insert(PReg::fs11);
+    }    
+
+    if (!callInstIds.empty()) {
+        currFunc->savedRegs.insert(PReg::ra);
+    }
+
+    int currentOffset = stackOffset;
+    for (PReg reg : currFunc->savedRegs) {
+        currFunc->savedRegOffsets[reg] = currentOffset;
+        currentOffset += 4; // 4B
+    }
     
     // Record the maximum stack offset,
     // to be used later for generating the Prologue, ensuring 16-byte alignment.
-    currFunc->stackSize = (stackOffset + 15) / 16 * 16;
+    currFunc->stackSize = (currentOffset + 15) / 16 * 16;
 }
 
 void RegAlloc::rewriteCode(MCFunc* f) {
