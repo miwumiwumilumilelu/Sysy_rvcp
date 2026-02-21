@@ -246,12 +246,20 @@ void IRGen::visit(CompUnitAST &node) {
 
 void IRGen::visit(FuncCallAST &node) {
     std::string funcName = node.getName();
+
+    // fix
+    if (funcName == "starttime") {
+        funcName = "_sysy_starttime";
+    } else if (funcName == "stoptime") {
+        funcName = "_sysy_stoptime";
+    }
+
     Function *callee = TheModule->getFunction(funcName);
 
     if (!callee) {
         Type* retType = Type::getIntTy(); 
         if (funcName == "putint" || funcName == "putch" || funcName == "putarray" ||
-            funcName == "putfarray" || funcName == "putfloat")
+            funcName == "putfarray" || funcName == "putfloat" || funcName == "_sysy_starttime" || funcName == "_sysy_stoptime")
             retType = Type::getVoidTy();
         else if (funcName == "getint" || funcName == "getch" || funcName == "getarray" || funcName == "getfarray")
             retType = Type::getIntTy();
@@ -259,17 +267,27 @@ void IRGen::visit(FuncCallAST &node) {
             retType = Type::getFloatTy();
             
         callee = new Function(funcName, retType);
+        // For _sysy_starttime/stoptime, they require line number,
+        // and only needs to receive one parameter.
+        if (funcName == "_sysy_starttime" || funcName == "_sysy_stoptime") {
+            callee->addArgument(new Argument(Type::getIntTy(), "lineno", callee, 0));
+        }
         TheModule->addFunction(callee);
     }
 
     std::vector<Value*> args;
-    for (auto &argNode : node.getArgs()) {
-        bool oldMode = isLValMode;
-        isLValMode = false;
-        argNode->accept(*this);
-        isLValMode = oldMode;
-        
-        args.push_back(LastVal);
+
+    if (funcName == "_sysy_starttime" || funcName == "_sysy_stoptime") {
+        args.push_back(new ConstantInt(0));
+    } else {
+        for (auto &argNode : node.getArgs()) {
+            bool oldMode = isLValMode;
+            isLValMode = false;
+            argNode->accept(*this);
+            isLValMode = oldMode;
+
+            args.push_back(LastVal);
+        }
     }
 
     auto call = builder.Create<CallInst>(callee, args);

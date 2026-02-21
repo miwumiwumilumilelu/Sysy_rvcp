@@ -84,11 +84,11 @@ int main(int argc, char **argv) {
         std::cout << module->print();
     }
 
-    std::cout << "[Debug] Running FlattenCFG..." << std::endl;
+    std::cerr << "[Debug] Running FlattenCFG..." << std::endl;
     FlattenCFG flatten(module.get());
     flatten.run();
 
-    std::cout << "[Debug] Running Mem2Reg (Dominators inside)..." << std::endl;
+    std::cerr << "[Debug] Running Mem2Reg (Dominators inside)..." << std::endl;
     Mem2Reg mem2reg(module.get(), nullptr); 
     mem2reg.run();
 
@@ -107,19 +107,19 @@ int main(int argc, char **argv) {
         std::cout << module->print();
     }
 
-    std::cout << "\n[Debug] ----- Starting Instruction Selection -----" << std::endl;
+    std::cerr << "\n[Debug] ----- Starting Instruction Selection -----" << std::endl;
     InstSelector selector;
     MCModule* machineModule = selector.run(module.get());
 
-    std::cout << "\n[Debug] ----- Running Phi Elimination -----" << std::endl;
+    std::cerr << "\n[Debug] ----- Running Phi Elimination -----" << std::endl;
     PhiElim pe;
     pe.run(machineModule);
 
-    std::cout << "\n[Debug] ----- Running Register Allocation -----" << std::endl;
+    std::cerr << "\n[Debug] ----- Running Register Allocation -----" << std::endl;
     RegAlloc allocator;
     allocator.run(machineModule);
 
-    std::cout << "\n[Debug] ----- Machine IR (Virtual Assembly) -----\n" << std::endl;
+    std::cerr << "\n[Debug] ----- Machine IR (Virtual Assembly) -----\n" << std::endl;
     MCPrinter printer;
     printer.print(machineModule, std::cout);
 

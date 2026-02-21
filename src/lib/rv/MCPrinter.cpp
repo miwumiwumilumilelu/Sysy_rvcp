@@ -1,4 +1,6 @@
 #include "rv/MCPrinter.h"
+#include "IR/Type.h"
+#include "IR/Module.h"
 
 using namespace sysy;
 
@@ -39,6 +41,29 @@ const char* MCPrinter::getOpcName(MCInst::Opc opc) {
 }
 
 void MCPrinter::print(MCModule* module, std::ostream& os) {
+    if (!module->globals.empty()) {
+        os << "  .data\n";
+        for (auto global : module->globals) {
+            os << "  .globl " << global->getName() << "\n";
+            os << "  .align 2\n";
+            os << global->getName() << ":\n";
+
+            Type* ty = global->getType();
+            if (ty->isPointer()) {
+                ty = static_cast<PointerType*>(ty)->getPointeeType();
+            }
+
+            int totalBytes = 4;
+            Type* curTy = ty;
+            while (curTy->isArray()) {
+                ArrayType* arrTy = static_cast<ArrayType*>(curTy);
+                totalBytes *= arrTy->getNumElements();
+                curTy = arrTy->getElementType();
+            }
+
+            os << "  .zero " << totalBytes << "\n";
+        }
+    }
     os << "  .text\n";
     for (auto func : module->funcs) {
         print(func, os);

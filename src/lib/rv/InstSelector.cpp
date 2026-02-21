@@ -13,6 +13,8 @@ static int getTypeSize(Type* ty) {
 
 MCModule* InstSelector::run(Module* irModule) {
     curMCMod = new MCModule();
+
+    curMCMod->globals = irModule->getGlobals();
     for (auto func : irModule->getFunctions()) {
         if (!func->getBody()->getBlocks().empty()) {
             selectFunction(func);

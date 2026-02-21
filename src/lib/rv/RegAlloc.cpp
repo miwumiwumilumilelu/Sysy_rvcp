@@ -9,7 +9,10 @@ using namespace sysy;
 // Using s10/fs10, s11/fs11 for spill.
 static const std::set<PReg> RESERVED_REGS = {
     PReg::s10, PReg::s11, PReg::fs10, PReg::fs11,
-    PReg::sp, PReg::gp, PReg::tp, PReg::zero, PReg::ra
+    PReg::sp, PReg::gp, PReg::tp, PReg::zero, PReg::ra,
+    PReg::t0,
+    PReg::a0, PReg::a1, PReg::a2, PReg::a3, PReg::a4, PReg::a5, PReg::a6, PReg::a7,
+    PReg::fa0, PReg::fa1, PReg::fa2, PReg::fa3, PReg::fa4, PReg::fa5, PReg::fa6, PReg::fa7
 };
 
 bool isCallerSaved(PReg reg) {
