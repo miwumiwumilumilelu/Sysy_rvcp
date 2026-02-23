@@ -297,7 +297,7 @@ void RegAlloc::linearScan() {
 
     for (auto i : intervals) {
         auto new_end = std::remove_if(active.begin(), active.end(), [&](Interval* act) {
-            if (act->end < i->start) {
+            if (act->end <= i->start) {
                 physRegState.erase(act->assigned);
                 return true;
             }
@@ -327,6 +327,28 @@ void RegAlloc::linearScan() {
                 if (physRegState.find(reg) != physRegState.end()) continue;
                 if (RESERVED_REGS.count(reg)) continue;
                 if (crossesCall && isCallerSaved(reg)) continue;
+
+                if (i->vreg < 32) {
+                    int ri = static_cast<int>(reg);
+                    // a0-a7(10-17), t1-t2(6-7), t3-t6(28-31) 
+                    if ((ri >= 10 && ri <= 17) || (ri == 6 || ri == 7) || (ri >= 28 && ri <= 31) ||
+                        (ri >= 42 && ri <= 49) || (ri >= 33 && ri <= 38)) {
+                        continue;
+                    }
+                }
+
+                bool conflict = false;
+                for (Interval* other : intervals) {
+                    if (other == i) continue;
+                    if (other->start >= i->end) break; 
+                    if (other->end > i->start) {
+                        if (currFunc->precolorMap.count(other->vreg) && currFunc->precolorMap[other->vreg] == reg) {
+                            conflict = true;
+                            break;
+                        }
+                    }
+                }
+                if (conflict) continue;
 
                 bestReg = reg;
                 break;

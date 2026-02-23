@@ -236,6 +236,14 @@ void MCPrinter::print(MCInst* inst, std::ostream& os) {
         os << "ret";            
         return;
     }
+    if (inst->opc == MCInst::FCVT_W_S) {
+        os << "fcvt.w.s ";
+        print(inst->ops[0], os);
+        os << ", ";
+        print(inst->ops[1], os);
+        os << ", rtz";
+        return;
+    }
 
     os << getOpcName(inst->opc);
     

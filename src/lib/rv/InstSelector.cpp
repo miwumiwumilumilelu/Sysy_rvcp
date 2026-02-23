@@ -8,7 +8,6 @@ static int getTypeSize(Type* ty) {
     if (auto arrTy = dyn_cast<ArrayType>(ty)) {
         return arrTy->getNumElements() * getTypeSize(arrTy->getElementType());
     }
-    if (ty->isPointer()) return 8;
     return 4;
 }
 
@@ -47,20 +46,16 @@ MCOpnd InstSelector::getOpnd(Value* val) {
 
     if (auto cf = dyn_cast<ConstantFloat>(val)) {
         float fval = cf->getValue();
-        // Treat the binary bits of float as int.
         int imm = *reinterpret_cast<int*>(&fval);
         MCOpnd intReg = createVReg();
         MCOpnd floatReg = createVReg();
 
-        // First load these 32 bits of binary into the integer register.
-        // LI intReg, imm
         auto liInst = new MCInst(MCInst::LI);
         liInst->add(intReg)->add(MCOpnd::imm(imm));
-        // Then the bits in the integer register are moved to the floating-point register.
-        // FMV_W_X floatReg, intReg
         auto fmvInst = new MCInst(MCInst::FMV_W_X);
         fmvInst->add(floatReg)->add(intReg);
 
+        // 必须按顺序 push_front，fmv 在前，li 在后，这样生成的顺序才是 li 先执行！
         curMCBlk->func->blks.front()->push_front(fmvInst);
         curMCBlk->func->blks.front()->push_front(liInst);
         val2opnd[val] = floatReg;
@@ -70,7 +65,6 @@ MCOpnd InstSelector::getOpnd(Value* val) {
 
     if (auto gv = dyn_cast<GlobalVariable>(val)) {
         MCOpnd vreg = createVReg();
-        // Using LA to load the label of the global variable.
         auto laInst = new MCInst(MCInst::LA);
         laInst->add(vreg)->add(MCOpnd::lbl(gv->getName()));
 
@@ -80,14 +74,12 @@ MCOpnd InstSelector::getOpnd(Value* val) {
         return vreg;
     }
 
-    // such as function parameters, first allocate a virtual register as a fallback
     MCOpnd vreg = createVReg();
     val2opnd[val] = vreg;
     return vreg;
 }
 
 void InstSelector::selectFunction(Function* func) {
-    // Each function has an independent virtual register number, starting at 0.
     nextVRegNo = 0;
     val2opnd.clear();
     bbMap.clear();
@@ -108,11 +100,21 @@ void InstSelector::selectFunction(Function* func) {
         MCOpnd vreg = createVReg();
         val2opnd[arg] = vreg;
         if (arg->getType()->isFloat()) {
-            PReg preg = static_cast<PReg>(static_cast<int>(PReg::fa0) + floatCnt++);
-            curMCBlk->push((new MCInst(MCInst::FMV_S))->add(vreg)->add(MCOpnd::preg(preg)));
+            if (floatCnt < 8) {
+                PReg preg = static_cast<PReg>(static_cast<int>(PReg::fa0) + floatCnt++);
+                curMCBlk->push((new MCInst(MCInst::FMV_S))->add(vreg)->add(MCOpnd::preg(preg)));
+            } else if (floatCnt < 14) { 
+                static PReg extFloatRegs[] = {PReg::ft1, PReg::ft2, PReg::ft3, PReg::ft4, PReg::ft5, PReg::ft6};
+                curMCBlk->push((new MCInst(MCInst::FMV_S))->add(vreg)->add(MCOpnd::preg(extFloatRegs[floatCnt++ - 8])));
+            }
         } else {
-            PReg preg = static_cast<PReg>(static_cast<int>(PReg::a0) + intCnt++);
-            curMCBlk->push((new MCInst(MCInst::MV))->add(vreg)->add(MCOpnd::preg(preg)));
+            if (intCnt < 8) {
+                PReg preg = static_cast<PReg>(static_cast<int>(PReg::a0) + intCnt++);
+                curMCBlk->push((new MCInst(MCInst::MV))->add(vreg)->add(MCOpnd::preg(preg)));
+            } else if (intCnt < 14) { // for manyargs
+                static PReg extIntRegs[] = {PReg::t1, PReg::t2, PReg::t3, PReg::t4, PReg::t5, PReg::t6};
+                curMCBlk->push((new MCInst(MCInst::MV))->add(vreg)->add(MCOpnd::preg(extIntRegs[intCnt++ - 8])));
+            }
         }
     }
 
@@ -130,7 +132,6 @@ void InstSelector::selectBlock(BasicBlock* bb) {
 
 void InstSelector::selectInstruction(Instruction* inst) {
     switch (inst->getOpID()) {
-        // Handle division and modulo, intercept and optimize powers of 2.
         case Instruction::Div:
         case Instruction::Mod: {
             MCOpnd rd = getOpnd(inst);
@@ -222,25 +223,25 @@ void InstSelector::selectInstruction(Instruction* inst) {
             MCOpnd rhs = getOpnd(cmp->getOperand(1));
 
             switch(cmp->getPredicate()) {
-                case ICmpInst::EQ: // a == b -> xor t, a, b; seqz rd, t
+                case ICmpInst::EQ: 
                     curMCBlk->push((new MCInst(MCInst::XOR))->add(rd)->add(lhs)->add(rhs));
                     curMCBlk->push((new MCInst(MCInst::SEQZ))->add(rd)->add(rd));
                     break;
-                case ICmpInst::NE: // a != b -> xor t, a, b; snez rd, t
+                case ICmpInst::NE: 
                     curMCBlk->push((new MCInst(MCInst::XOR))->add(rd)->add(lhs)->add(rhs));
                     curMCBlk->push((new MCInst(MCInst::SNEZ))->add(rd)->add(rd));
                     break;
-                case ICmpInst::SLT: // a < b -> slt rd, a, b
+                case ICmpInst::SLT: 
                     curMCBlk->push((new MCInst(MCInst::SLT))->add(rd)->add(lhs)->add(rhs));
                     break;
-                case ICmpInst::SGT: // a > b -> b < a -> slt rd, b, a
+                case ICmpInst::SGT: 
                     curMCBlk->push((new MCInst(MCInst::SLT))->add(rd)->add(rhs)->add(lhs));
                     break;
-                case ICmpInst::SLE: // a <= b -> !(b < a) -> slt rd, b, a; xori rd, rd, 1
+                case ICmpInst::SLE: 
                     curMCBlk->push((new MCInst(MCInst::SLT))->add(rd)->add(rhs)->add(lhs));
                     curMCBlk->push((new MCInst(MCInst::XORI))->add(rd)->add(rd)->add(MCOpnd::imm(1)));
                     break;
-                case ICmpInst::SGE: // a >= b -> !(a < b) -> slt rd, a, b; xori rd, rd, 1
+                case ICmpInst::SGE: 
                     curMCBlk->push((new MCInst(MCInst::SLT))->add(rd)->add(lhs)->add(rhs));
                     curMCBlk->push((new MCInst(MCInst::XORI))->add(rd)->add(rd)->add(MCOpnd::imm(1)));
                     break;
@@ -254,26 +255,26 @@ void InstSelector::selectInstruction(Instruction* inst) {
             MCOpnd rhs = getOpnd(cmp->getOperand(1));
 
             switch(cmp->getPredicate()) {
-                case FCmpInst::OEQ: // a == b -> feq.s rd, a, b
+                case FCmpInst::OEQ: 
                     curMCBlk->push((new MCInst(MCInst::FEQ_S))->add(rd)->add(lhs)->add(rhs));
                     break;
-                case FCmpInst::ONE: // a != b -> feq.s t, a, b; xori rd, t, 1
+                case FCmpInst::ONE: 
                     {
                         MCOpnd tmp = createVReg();
                         curMCBlk->push((new MCInst(MCInst::FEQ_S))->add(tmp)->add(lhs)->add(rhs));
                         curMCBlk->push((new MCInst(MCInst::XORI))->add(rd)->add(tmp)->add(MCOpnd::imm(1)));
                     }
                     break;
-                case FCmpInst::OLT: // a < b -> flt.s rd, a, b
+                case FCmpInst::OLT: 
                     curMCBlk->push((new MCInst(MCInst::FLT_S))->add(rd)->add(lhs)->add(rhs));
                     break;
-                case FCmpInst::OGT: // a > b -> b < a -> flt.s rd, b, a
+                case FCmpInst::OGT: 
                     curMCBlk->push((new MCInst(MCInst::FLT_S))->add(rd)->add(rhs)->add(lhs));
                     break;
-                case FCmpInst::OLE: // a <= b -> fle.s rd, a, b
+                case FCmpInst::OLE: 
                     curMCBlk->push((new MCInst(MCInst::FLE_S))->add(rd)->add(lhs)->add(rhs));
                     break;
-                case FCmpInst::OGE: // a >= b -> b <= a -> fle.s rd, b, a
+                case FCmpInst::OGE: 
                     curMCBlk->push((new MCInst(MCInst::FLE_S))->add(rd)->add(rhs)->add(lhs));
                     break;
                 }
@@ -282,11 +283,9 @@ void InstSelector::selectInstruction(Instruction* inst) {
         case Instruction::Br: {
             auto brInst = cast<BranchInst>(inst);
             if (brInst->getNumOperands() == 1) { 
-                // J target
                 BasicBlock* target = cast<BasicBlock>(brInst->getOperand(0));
                 curMCBlk->push((new MCInst(MCInst::J))->add(MCOpnd::lbl(bbMap[target]->name)));
             } else { 
-                // BNE cond, zero, true_bb; J false_bb
                 MCOpnd cond = getOpnd(brInst->getOperand(0));
                 BasicBlock* trueBB = cast<BasicBlock>(brInst->getOperand(1));
                 BasicBlock* falseBB = cast<BasicBlock>(brInst->getOperand(2));
@@ -297,63 +296,26 @@ void InstSelector::selectInstruction(Instruction* inst) {
             break;
         }
         case Instruction::GetElementPtr: {
-            // GEP = base + index * 4
             MCOpnd rd = getOpnd(inst);
             MCOpnd base = getOpnd(inst->getOperand(0));
             MCOpnd idx = getOpnd(inst->getOperand(1));
             
             Type* baseType = inst->getOperand(0)->getType();
-            int stride = 4;
-            if (auto ptrTy = dyn_cast<PointerType>(baseType)) {
-                Value* baseVal = inst->getOperand(0);
-                bool isPointer = isa<Argument>(baseVal) || isa<LoadInst>(baseVal);
-                
-                Type* pointeeTy = ptrTy->getPointeeType();
-                if (isPointer) {
-                    stride = getTypeSize(pointeeTy);
-                } else {
-                    if (auto arrTy = dyn_cast<ArrayType>(pointeeTy)) {
-                        stride = getTypeSize(arrTy->getElementType());
-                    } else {
-                        stride = getTypeSize(pointeeTy);
-                    }
-                }
-            }
+            Type* pointeeTy = cast<PointerType>(baseType)->getPointeeType();
+            
+            int stride = getTypeSize(pointeeTy);
 
-            if (stride == 4) {
-                // 1D array / base pointer: Directly optimized SLLI.
-                MCOpnd offset = createVReg();
-                curMCBlk->push((new MCInst(MCInst::SLLI))->add(offset)->add(idx)->add(MCOpnd::imm(2)));
-                curMCBlk->push((new MCInst(MCInst::ADD))->add(rd)->add(base)->add(offset));
-            } else {
-                // Multidimensional matrix: Check if the step size is a power of 2 (e.g. 1024*4 = 4096).
-                bool isPowerOf2 = stride > 0 && (stride & (stride - 1)) == 0;
-                if (isPowerOf2) {
-                    int shift = 0;
-                    int temp = stride;
-                    while (temp > 1) { temp >>= 1; shift++; }
-                    MCOpnd offset = createVReg();
-                    curMCBlk->push((new MCInst(MCInst::SLLI))->add(offset)->add(idx)->add(MCOpnd::imm(shift)));
-                    curMCBlk->push((new MCInst(MCInst::ADD))->add(rd)->add(base)->add(offset));
-                } else {
-                    // If it's not a power of 2, execute the multiplication instruction honestly.
-                    MCOpnd strideReg = createVReg();
-                    MCOpnd offset = createVReg();
-                    curMCBlk->push((new MCInst(MCInst::LI))->add(strideReg)->add(MCOpnd::imm(stride)));
-                    curMCBlk->push((new MCInst(MCInst::MULW))->add(offset)->add(idx)->add(strideReg));
-                    curMCBlk->push((new MCInst(MCInst::ADD))->add(rd)->add(base)->add(offset));
-                }
-            }
+            MCOpnd strideReg = createVReg();
+            MCOpnd offset = createVReg();
+            curMCBlk->push((new MCInst(MCInst::LI))->add(strideReg)->add(MCOpnd::imm(stride)));
+            curMCBlk->push((new MCInst(MCInst::MULW))->add(offset)->add(idx)->add(strideReg));
+            curMCBlk->push((new MCInst(MCInst::ADD))->add(rd)->add(base)->add(offset));
             break;
         }
         case Instruction::Load: {
             Type* ty = inst->getType();
-            
-            // As long as there is a pointer or array property,
-            // it is forced to be downgraded to an integer load. 
             bool isF = ty->isFloat() && !ty->isPointer() && !ty->isArray();
             bool isPtr = ty->isPointer() || ty->isArray();
-            
             MCInst::Opc opc = isPtr ? MCInst::LD : (isF ? MCInst::FLW : MCInst::LW);
             
             curMCBlk->push((new MCInst(opc))
@@ -364,10 +326,8 @@ void InstSelector::selectInstruction(Instruction* inst) {
         }
         case Instruction::Store: {
             Type* ty = inst->getOperand(0)->getType();
-
             bool isF = ty->isFloat() && !ty->isPointer() && !ty->isArray();
             bool isPtr = ty->isPointer() || ty->isArray();
-            
             MCInst::Opc opc = isPtr ? MCInst::SD : (isF ? MCInst::FSW : MCInst::SW);
             
             curMCBlk->push((new MCInst(opc))
@@ -377,13 +337,10 @@ void InstSelector::selectInstruction(Instruction* inst) {
             break;
         }
         case Instruction::Alloca: {
-            // The local variable space is given to subsequent stack frame allocation
             auto allocaInst = cast<AllocaInst>(inst);
             Type* allocTy = allocaInst->getAllocatedType();
 
-            if (auto ptrTy = dyn_cast<PointerType>(allocTy)) {
-                allocTy = ptrTy->getPointeeType();
-            }
+            if (auto ptrTy = dyn_cast<PointerType>(allocTy)) allocTy = ptrTy->getPointeeType();
 
             std::function<int(Type*)> getSz = [&](Type* t) -> int {
                 if (t->isArray()) {
@@ -394,8 +351,7 @@ void InstSelector::selectInstruction(Instruction* inst) {
             };
 
             int size = getSz(allocTy);
-
-            size = (size + 7) / 8 * 8; // Align to 8 bytes
+            size = (size + 7) / 8 * 8; 
 
             curMCBlk->push((new MCInst(MCInst::ALLOCA))->add(getOpnd(inst))->add(MCOpnd::imm(size)));
             break;
@@ -405,18 +361,35 @@ void InstSelector::selectInstruction(Instruction* inst) {
             auto mcCall = new MCInst(MCInst::CALL);
             mcCall->add(MCOpnd::lbl(callInst->getOperand(0)->getName()));
 
+            int intCnt = 0;
+            int floatCnt = 0;
             for (size_t i = 1; i < callInst->getNumOperands(); ++i) {
                 Value* argVal = callInst->getOperand(i);
                 bool isF = argVal->getType()->isFloat();
                 MCOpnd argVR = createVReg();
                 
-                PReg targetReg = isF ? static_cast<PReg>(static_cast<int>(PReg::fa0) + i - 1) 
-                                     : static_cast<PReg>(static_cast<int>(PReg::a0) + i - 1);
+                PReg targetReg = PReg::zero;
+                if (isF) {
+                    if (floatCnt < 8) {
+                        targetReg = static_cast<PReg>(static_cast<int>(PReg::fa0) + floatCnt++);
+                    } else if (floatCnt < 14) { 
+                        static PReg extFloatRegs[] = {PReg::ft1, PReg::ft2, PReg::ft3, PReg::ft4, PReg::ft5, PReg::ft6};
+                        targetReg = extFloatRegs[floatCnt++ - 8];
+                    }
+                } else {
+                    if (intCnt < 8) {
+                        targetReg = static_cast<PReg>(static_cast<int>(PReg::a0) + intCnt++);
+                    } else if (intCnt < 14) { 
+                        static PReg extIntRegs[] = {PReg::t1, PReg::t2, PReg::t3, PReg::t4, PReg::t5, PReg::t6};
+                        targetReg = extIntRegs[intCnt++ - 8];
+                    }
+                }
                 
-                curMCFunc->precolorMap[argVR.val] = targetReg;
-                curMCBlk->push((new MCInst(isF ? MCInst::FMV_S : MCInst::MV))->add(argVR)->add(getOpnd(argVal)));
-                
-                mcCall->add(argVR);
+                if (targetReg != PReg::zero) {
+                    curMCFunc->precolorMap[argVR.val] = targetReg;
+                    curMCBlk->push((new MCInst(isF ? MCInst::FMV_S : MCInst::MV))->add(argVR)->add(getOpnd(argVal)));
+                    mcCall->add(argVR);
+                }
             }
             curMCBlk->push(mcCall);
 
@@ -435,7 +408,6 @@ void InstSelector::selectInstruction(Instruction* inst) {
 
                 curMCFunc->precolorMap[retVR.val] = isF ? PReg::fa0 : PReg::a0;
                 curMCBlk->push((new MCInst(isF ? MCInst::FMV_S : MCInst::MV))->add(retVR)->add(getOpnd(retVal)));
-                
                 mcRet->add(retVR);
             }
             curMCBlk->push(mcRet);
@@ -456,7 +428,6 @@ void InstSelector::selectInstruction(Instruction* inst) {
         }
         default:
             std::cerr << "Warning: Unhandled instruction in selection!" << std::endl;
-            std::cerr << inst->getOpID() << std::endl;
             break;
     }
 }
