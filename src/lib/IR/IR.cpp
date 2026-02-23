@@ -25,6 +25,8 @@ static std::string addIndent(const std::string &str, int spaceCount) {
 }
 
 static std::string fmtOperand(Value* v) {
+    if (!v) return "null";
+
     if (auto ci = dyn_cast<ConstantInt>(v)) {
         return std::to_string(ci->getValue());
     }
@@ -393,11 +395,26 @@ std::string Function::toString() const {
 
 std::string ConstantArray::toString() const {
     std::stringstream ss;
-    // [i32 1, i32 2]
+    bool allZero = true;
+    for (auto c : Consts) {
+        if (!isa<ConstantZero>(c) && 
+            !(isa<ConstantInt>(c) && cast<ConstantInt>(c)->getValue() == 0) &&
+            !(isa<ConstantFloat>(c) && cast<ConstantFloat>(c)->getValue() == 0.0)) {
+            allZero = false;
+            break;
+        }
+    }
+    if (allZero) return "zeroinitializer";
     ss << "[";
+    int count = 0;
     for (size_t i = 0; i < Consts.size(); ++i) {
         if (i > 0) ss << ", ";
         ss << Consts[i]->getType()->toString() << " " << Consts[i]->toString();
+        count++;
+        if (count >= 16) {
+            ss << ", ... (" << Consts.size() - count << " more elements)";
+            break;
+        }
     }
     ss << "]";
     return ss.str();

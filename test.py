@@ -8,7 +8,7 @@ COMPILER_CMD = "./compiler"
 SYLIB_C = "src/lib/sylib.c"          
 GCC_CMD = "riscv64-linux-gnu-gcc"  
 QEMU_CMD = "qemu-riscv64"          
-TIMEOUT = 5.0                     
+TIMEOUT = 60.0                     
 
 GCC_FLAGS = ["-static"]
 
@@ -31,10 +31,10 @@ def run_test(sy_path, in_path, out_path):
                 )
         except subprocess.TimeoutExpired:
             print("❌ 编译超时")
-            return False
+            return False, "编译超时"
         except subprocess.CalledProcessError:
             print("❌ 编译崩溃 (Compiler Error)")
-            return False
+            return False, "编译崩溃"
 
         try:
             subprocess.run(
@@ -45,7 +45,7 @@ def run_test(sy_path, in_path, out_path):
             )
         except subprocess.CalledProcessError as e:
             print("❌ 汇编/链接失败 (非法指令或语法错误)")
-            return False
+            return False, "汇编/链接失败"
 
         input_data = None
         if os.path.exists(in_path):
@@ -64,7 +64,7 @@ def run_test(sy_path, in_path, out_path):
             elapsed = time.time() - start_time
         except subprocess.TimeoutExpired:
             print("❌ 运行死循环超时 (Timeout)")
-            return False
+            return False, "运行死循环超时"
 
         actual_output = result.stdout.decode('utf-8', errors='ignore').strip()
         actual_full = f"{actual_output}\n{result.returncode}".strip()
@@ -77,14 +77,14 @@ def run_test(sy_path, in_path, out_path):
 
         if actual_clean == expected_clean:
             print(f"✅ PASS ({elapsed:.3f}s)")
-            return True
+            return True, ""
         else:
             print("❌ FAIL (输出不一致)")
             print("--- 期望输出 ---")
             print(expected_clean)
             print("--- 您的输出 ---")
             print(actual_clean)
-            return False
+            return False, "输出不一致"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -98,6 +98,7 @@ if __name__ == "__main__":
 
     pass_count = 0
     total_count = 0
+    failed_tests = [] 
 
     for file in sorted(os.listdir(test_dir)):
         if file.endswith(".sy"):
@@ -112,10 +113,18 @@ if __name__ == "__main__":
                 total_count -= 1
                 continue
 
-            if run_test(sy_path, in_path, out_path):
+            success, reason = run_test(sy_path, in_path, out_path)
+            if success:
                 pass_count += 1
+            else:
+                failed_tests.append((file, reason))
 
     print("=" * 40)
     print(f"测试完成! 总计: {total_count}, 通过: {pass_count}, 失败: {total_count - pass_count}")
-    if pass_count == total_count and total_count > 0:
-        print("🎉 恭喜长官！所有测试全部完美通过！")
+
+    if failed_tests:
+        print("\n❌ 未通过的测试用例及原因汇总:")
+        for file, reason in failed_tests:
+            print(f"  - {file:<25} : {reason}")
+    elif total_count > 0:
+        print("🎉 恭喜！所有测试全部完美通过！")

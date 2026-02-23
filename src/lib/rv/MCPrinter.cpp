@@ -40,6 +40,65 @@ const char* MCPrinter::getOpcName(MCInst::Opc opc) {
     return opcNames[static_cast<int>(opc)];
 }
 
+static int getConstantSize(Constant* c) {
+    if (isa<ConstantInt>(c) || isa<ConstantFloat>(c)) return 4;
+    Type* ty = c->getType();
+    int size = 4;
+    while (ty->isArray()) {
+        ArrayType* arrTy = static_cast<ArrayType*>(ty);
+        size *= arrTy->getNumElements();
+        ty = arrTy->getElementType();
+    }
+    return size;
+}
+
+static int printConstant(Constant* c, std::ostream& os) {
+    if (isa<ConstantInt>(c)) {
+        os << "    .word " << cast<ConstantInt>(c)->getValue() << "\n";
+        return 4;
+    } else if (isa<ConstantFloat>(c)) {
+        float f = cast<ConstantFloat>(c)->getValue();
+        os << "    .word " << *reinterpret_cast<int*>(&f) << "\n";
+        return 4;
+    } else if (isa<ConstantArray>(c)) {
+        int expectedSize = getConstantSize(c);
+
+        bool allZero = true;
+        auto& consts = cast<ConstantArray>(c)->getConsts();
+        for (auto elem : consts) {
+            if (!isa<ConstantZero>(elem) && 
+                !(isa<ConstantInt>(elem) && cast<ConstantInt>(elem)->getValue() == 0) &&
+                !(isa<ConstantFloat>(elem) && cast<ConstantFloat>(elem)->getValue() == 0.0)) {
+                allZero = false;
+                break;
+            }
+        }
+
+        if (allZero) {
+            os << "    .zero " << expectedSize << "\n";
+            return expectedSize;
+        }
+
+        int printedBytes = 0;
+        for (auto elem : consts) {
+            printedBytes += printConstant(elem, os);
+        }
+
+        if (printedBytes < expectedSize) {
+            os << "    .zero " << (expectedSize - printedBytes) << "\n";
+        }
+        return expectedSize;
+        
+    } else if (isa<ConstantZero>(c)) {
+        int expectedSize = getConstantSize(c);
+        os << "    .zero " << expectedSize << "\n";
+        return expectedSize;
+    } else {
+        os << "    .word 0\n";
+        return 4;
+    }
+}
+
 void MCPrinter::print(MCModule* module, std::ostream& os) {
     if (!module->globals.empty()) {
         os << "  .data\n";
@@ -61,7 +120,13 @@ void MCPrinter::print(MCModule* module, std::ostream& os) {
                 curTy = arrTy->getElementType();
             }
 
-            os << "  .zero " << totalBytes << "\n";
+            Constant* init = global->getInit();
+            if (init && !isa<ConstantZero>(init)) {
+                printConstant(init, os);
+                os << "\n";
+            } else {
+                os << "    .zero " << totalBytes << "\n\n";
+            }
         }
     }
     os << "  .text\n";
@@ -76,14 +141,29 @@ void MCPrinter::print(MCFunc* func, std::ostream& os) {
     os << func->name << ":\n";
 
     if (func->stackSize > 0) {
-        os << "    addi sp, sp, -" << func->stackSize << "\n";
+        if (func->stackSize <= 2047) {
+            os << "    addi sp, sp, -" << func->stackSize << "\n";
+        } else {
+            os << "    li t0, " << func->stackSize << "\n";
+            os << "    sub sp, sp, t0\n";
+        }
     }
 
     for (auto const& [reg, off] : func->savedRegOffsets) {
-        if (static_cast<int>(reg) >= 32) {
-            os << "    fsw " << getRegName(reg) << ", " << off << "(sp)\n";
+        if (off <= 2047 && off >= -2048) {
+            if (static_cast<int>(reg) >= 32) {
+                os << "    fsw " << getRegName(reg) << ", " << off << "(sp)\n";
+            } else {
+                os << "    sd " << getRegName(reg) << ", " << off << "(sp)\n";
+            }
         } else {
-            os << "    sw " << getRegName(reg) << ", " << off << "(sp)\n";
+            os << "    li t0, " << off << "\n";
+            os << "    add t0, sp, t0\n";
+            if (static_cast<int>(reg) >= 32) {
+                os << "    fsw " << getRegName(reg) << ", 0(t0)\n";
+            } else {
+                os << "    sd " << getRegName(reg) << ", 0(t0)\n";
+            }
         }
     }
 
@@ -100,15 +180,30 @@ void MCPrinter::print(MCBlk* blk, std::ostream& os) {
         if (inst->opc == MCInst::RET) {
             if (blk->func) {
                 for (auto const& [reg, off] : blk->func->savedRegOffsets) {
-                    if (static_cast<int>(reg) >= 32) {
-                        os << "flw " << getRegName(reg) << ", " << off << "(sp)\n    ";
+                    if (off <= 2047 && off >= -2048) {
+                        if (static_cast<int>(reg) >= 32) {
+                            os << "flw " << getRegName(reg) << ", " << off << "(sp)\n    ";
+                        } else {
+                            os << "ld " << getRegName(reg) << ", " << off << "(sp)\n    ";
+                        }
                     } else {
-                        os << "lw " << getRegName(reg) << ", " << off << "(sp)\n    ";
+                        os << "li t0, " << off << "\n    ";
+                        os << "add t0, sp, t0\n    ";
+                        if (static_cast<int>(reg) >= 32) {
+                            os << "flw " << getRegName(reg) << ", 0(t0)\n    ";
+                        } else {
+                            os << "ld " << getRegName(reg) << ", 0(t0)\n    ";
+                        }
                     }
                 }
                 
                 if (blk->func->stackSize > 0) {
-                    os << "addi sp, sp, " << blk->func->stackSize << "\n    ";
+                    if (blk->func->stackSize <= 2047) {
+                        os << "addi sp, sp, " << blk->func->stackSize << "\n    ";
+                    } else {
+                        os << "li t0, " << blk->func->stackSize << "\n    ";
+                        os << "add sp, sp, t0\n    ";
+                    }
                 }
             }
         }
@@ -120,7 +215,8 @@ void MCPrinter::print(MCBlk* blk, std::ostream& os) {
 
 void MCPrinter::print(MCInst* inst, std::ostream& os) {
     if (inst->opc == MCInst::LW || inst->opc == MCInst::SW || 
-        inst->opc == MCInst::FLW || inst->opc == MCInst::FSW) {
+        inst->opc == MCInst::FLW || inst->opc == MCInst::FSW ||
+        inst->opc == MCInst::LD || inst->opc == MCInst::SD) {
         os << getOpcName(inst->opc) << " ";
         print(inst->ops[0], os); 
         os << ", ";
@@ -128,6 +224,16 @@ void MCPrinter::print(MCInst* inst, std::ostream& os) {
         os << "(";
         print(inst->ops[1], os);
         os << ")";
+        return;
+    }
+
+    if (inst->opc == MCInst::CALL) {
+        os << "call ";
+        print(inst->ops[0], os); 
+        return;
+    }
+    if (inst->opc == MCInst::RET) {
+        os << "ret";            
         return;
     }
 

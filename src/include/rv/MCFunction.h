@@ -22,6 +22,7 @@ public:
     int maxVReg; 
     int stackSize;
 
+    std::map<int, PReg> precolorMap;
     std::set<PReg> savedRegs;
     std::map<PReg, int> savedRegOffsets;
 

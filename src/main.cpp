@@ -121,7 +121,10 @@ int main(int argc, char **argv) {
 
     std::cerr << "\n[Debug] ----- Machine IR (Virtual Assembly) -----\n" << std::endl;
     MCPrinter printer;
-    printer.print(machineModule, std::cout);
+    if (!dumpLIR && !dumpHIR) {
+        printer.print(machineModule, std::cout);
+    }
+    
 
 
     return 0;

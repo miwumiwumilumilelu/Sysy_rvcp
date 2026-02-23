@@ -319,15 +319,51 @@ void IRGen::visit(FuncDefAST &node) {
         Type* argTy = baseTy;
 
         if (!paramNode->getDims().empty()) {
+            std::function<int(ASTNode*)> evalConst = [&](ASTNode* n) -> int {
+                if (!n) return 0;
+                if (auto num = dynamic_cast<NumberAST*>(n)) return num->getIntVal();
+                if (auto lval = dynamic_cast<LValAST*>(n)) {
+                    Value* addr = this->lookupVar(lval->getName());
+                    if (auto gv = dyn_cast<GlobalVariable>(addr)) {
+                        if (auto init = dyn_cast<ConstantInt>(gv->getInit())) return init->getValue();
+                    } else if (auto alloca = dyn_cast<AllocaInst>(addr)) {
+                        BasicBlock* bb = this->builder.GetInsertPoint();
+                        if (bb) {
+                            for (auto inst : bb->getInstructions()) {
+                                if (auto store = dyn_cast<StoreInst>(inst)) {
+                                    if (store->getOperand(1) == alloca) {
+                                        if (auto c = dyn_cast<ConstantInt>(store->getOperand(0))) return c->getValue();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return 0;
+                }
+                if (auto bin = dynamic_cast<BinaryExprAST*>(n)) {
+                    int lhs = evalConst(bin->getLHS());
+                    int rhs = evalConst(bin->getRHS());
+                    std::string op = bin->getOp();
+                    if (op == "+") return lhs + rhs;
+                    if (op == "-") return lhs - rhs;
+                    if (op == "*") return lhs * rhs;
+                    if (op == "/") return rhs != 0 ? lhs / rhs : 0;
+                    if (op == "%") return rhs != 0 ? lhs % rhs : 0;
+                    return 0;
+                }
+                if (auto un = dynamic_cast<UnaryExprAST*>(n)) {
+                    int val = evalConst(un->getOperand());
+                    if (un->getOp() == "-") return -val;
+                    if (un->getOp() == "!") return val == 0 ? 1 : 0;
+                    return val;
+                }
+                return 0;
+            };
+
             const auto &dims = paramNode->getDims();
             for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
                 if (it == dims.rend() - 1) continue;
-                int size = 0;
-                if (*it) {
-                    if (auto num = dynamic_cast<NumberAST*>(it->get())) {
-                        size = num->getIntVal();
-                    }
-                }
+                int size = evalConst(it->get());
                 baseTy = new ArrayType(baseTy, size);
             }
             argTy = new PointerType(baseTy);
@@ -386,12 +422,50 @@ void IRGen::visit(BlockAST &node) {
 
 void IRGen::visit(VarDeclAST &node) {
     Type* varType = (node.getType() == "float") ? Type::getFloatTy() : Type::getIntTy();
+    std::function<int(ASTNode*)> evalConst = [&](ASTNode* n) -> int {
+        if (!n) return 0;
+        if (auto num = dynamic_cast<NumberAST*>(n)) return num->getIntVal();
+        if (auto lval = dynamic_cast<LValAST*>(n)) {
+            Value* addr = this->lookupVar(lval->getName());
+            if (auto gv = dyn_cast<GlobalVariable>(addr)) {
+                if (auto init = dyn_cast<ConstantInt>(gv->getInit())) return init->getValue();
+            } else if (auto alloca = dyn_cast<AllocaInst>(addr)) {
+                BasicBlock* bb = this->builder.GetInsertPoint();
+                if (bb) {
+                    for (auto inst : bb->getInstructions()) {
+                        if (auto store = dyn_cast<StoreInst>(inst)) {
+                            if (store->getOperand(1) == alloca) {
+                                if (auto c = dyn_cast<ConstantInt>(store->getOperand(0))) return c->getValue();
+                            }
+                        }
+                    }
+                }
+            }
+            return 0;
+        }
+        if (auto bin = dynamic_cast<BinaryExprAST*>(n)) {
+            int lhs = evalConst(bin->getLHS());
+            int rhs = evalConst(bin->getRHS());
+            std::string op = bin->getOp();
+            if (op == "+") return lhs + rhs;
+            if (op == "-") return lhs - rhs;
+            if (op == "*") return lhs * rhs;
+            if (op == "/") return rhs != 0 ? lhs / rhs : 0;
+            if (op == "%") return rhs != 0 ? lhs % rhs : 0;
+            return 0;
+        }
+        if (auto un = dynamic_cast<UnaryExprAST*>(n)) {
+            int val = evalConst(un->getOperand());
+            if (un->getOp() == "-") return -val;
+            if (un->getOp() == "!") return val == 0 ? 1 : 0;
+            return val;
+        }
+        return 0;
+    };
+
     const auto &dims = node.getDims();
     for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
-        int size = 0;
-        if (auto num = dynamic_cast<NumberAST*>(it->get())) {
-            size = num->getIntVal();
-        }
+        int size = evalConst(it->get());
         varType = new ArrayType(varType, size);
     }
 
@@ -415,7 +489,13 @@ void IRGen::visit(VarDeclAST &node) {
 
     auto& instList = entryBB->getInstructions();
     instList.pop_back();
-    instList.push_front(alloca);
+
+    // Insert in positive order, for the correct layout.
+    auto it = instList.begin();
+    while (it != instList.end() && (*it)->getOpID() == Instruction::Alloca) {
+        ++it;
+    }
+    instList.insert(it, alloca);
 
     alloca->setName("%" + node.getName() + "_" + std::to_string(ValueCounter++));
     

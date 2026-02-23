@@ -157,6 +157,7 @@ public:
     ConstantArray(ArrayType* ty, const std::vector<Constant*> &consts) 
         : Constant(ty, VK_ConstantArray, ""), Consts(consts) {}
     
+    const std::vector<Constant*>& getConsts() const { return Consts; }
     std::string toString() const override;
 
     static bool classof(const Value* v) {

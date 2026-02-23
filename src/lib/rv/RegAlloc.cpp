@@ -6,13 +6,12 @@
 
 using namespace sysy;
 
-// Using s10/fs10, s11/fs11 for spill.
+// Reserve stack pointers, global pointers, return addresses, 
+// and used for large number calculations/overflows t0, s10, s11.
 static const std::set<PReg> RESERVED_REGS = {
     PReg::s10, PReg::s11, PReg::fs10, PReg::fs11,
     PReg::sp, PReg::gp, PReg::tp, PReg::zero, PReg::ra,
     PReg::t0,
-    PReg::a0, PReg::a1, PReg::a2, PReg::a3, PReg::a4, PReg::a5, PReg::a6, PReg::a7,
-    PReg::fa0, PReg::fa1, PReg::fa2, PReg::fa3, PReg::fa4, PReg::fa5, PReg::fa6, PReg::fa7
 };
 
 bool isCallerSaved(PReg reg) {
@@ -99,7 +98,7 @@ void RegAlloc::computeLocalLiveness(MCBlk* b) {
             if (!op.isVReg()) continue;
             // Store/Branch isn't a def.
             bool isDef = (k == 0);
-            if (i->opc == MCInst::SW || i->opc == MCInst::FSW ||
+            if (i->opc == MCInst::SW || i->opc == MCInst::FSW || i->opc == MCInst::SD ||
                 i->opc == MCInst::BEQ || i->opc == MCInst::BNE ||
                 i->opc == MCInst::BLT || i->opc == MCInst::BGE ) {
                 isDef = false;
@@ -127,8 +126,6 @@ void RegAlloc::computeGlobalLiveness(MCFunc* f) {
             // LiveOut = Union(LiveIn of succ)
             liveOut[b].clear();
             if (!b->insts.empty()) {
-                MCInst* last = b->insts.back();
-
                 auto addSucc = [&](const std::string& lbl) {
                     if (label2blk.count(lbl)) {
                         MCBlk* succ = label2blk[lbl];
@@ -141,19 +138,26 @@ void RegAlloc::computeGlobalLiveness(MCFunc* f) {
                     nextBlk = *(it.base());
                 }
 
-                if (last->opc == MCInst::J) {
-                    addSucc(last->getOp(0).label);
-                } else if (last->opc == MCInst::BNE || last->opc == MCInst::BEQ ||
-                           last->opc == MCInst::BLT || last->opc == MCInst::BGE) {
-                    addSucc(last->getOp(last->opCnt()-1).label);
-                    // Fallthrough
-                    if (nextBlk) {
-                        liveOut[b].insert(liveIn[nextBlk].begin(), liveIn[nextBlk].end());
+                bool hasFallthrough = true; 
+                
+                for (auto instIt = b->insts.rbegin(); instIt != b->insts.rend(); ++instIt) {
+                    MCInst* inst = *instIt;
+                    if (inst->opc == MCInst::J) {
+                        addSucc(inst->getOp(0).label);
+                        hasFallthrough = false;
+                    } else if (inst->opc == MCInst::BNE || inst->opc == MCInst::BEQ ||
+                               inst->opc == MCInst::BLT || inst->opc == MCInst::BGE ||
+                               inst->opc == MCInst::BLTU || inst->opc == MCInst::BGEU) {
+                        addSucc(inst->getOp(inst->opCnt()-1).label);
+                    } else if (inst->opc == MCInst::RET) {
+                        hasFallthrough = false;
+                    } else {
+                        break;
                     }
-                } else if (last->opc != MCInst::RET) {
-                    if (nextBlk) {
-                        liveOut[b].insert(liveIn[nextBlk].begin(), liveIn[nextBlk].end());
-                    }
+                }
+
+                if (hasFallthrough && nextBlk) {
+                    liveOut[b].insert(liveIn[nextBlk].begin(), liveIn[nextBlk].end());
                 }
             }
 
@@ -212,7 +216,7 @@ void RegAlloc::buildIntervals(MCFunc* f) {
             // Defs
             bool hasDef = false;
             int defReg = -1;
-            if (i->opc != MCInst::SW && i->opc != MCInst::FSW && 
+            if (i->opc != MCInst::SW && i->opc != MCInst::FSW && i->opc != MCInst::SD &&
                 i->opc != MCInst::BEQ && i->opc != MCInst::BNE && 
                 i->opc != MCInst::BLT && i->opc != MCInst::BGE && 
                 i->opc != MCInst::J && i->opc != MCInst::RET && i->opc != MCInst::CALL) {
@@ -233,7 +237,8 @@ void RegAlloc::buildIntervals(MCFunc* f) {
                     vreg2Int[defReg] = new Interval{defReg, currId, currId + 1, PReg::zero, false, 0, isFloatDef};
                     intervals.push_back(vreg2Int[defReg]);
                 } else {
-                    vreg2Int[defReg]->start = currId;
+                    vreg2Int[defReg]->start = std::min(vreg2Int[defReg]->start, currId);
+                    vreg2Int[defReg]->end = std::max(vreg2Int[defReg]->end, currId + 1);
                     if (isFloatDef) vreg2Int[defReg]->isFloat = true;
                 }
             }
@@ -244,12 +249,14 @@ void RegAlloc::buildIntervals(MCFunc* f) {
                     int v = i->getOp(k).val;
                     if (!hasDef || k != 0) {
                         bool isFloatUse = checkIsFloatUse(i, k);
+
+                        int actualStart = liveIn[b].count(v) ? blockFrom : currId;
                         if (vreg2Int.find(v) == vreg2Int.end()) {
-                            vreg2Int[v] = new Interval{v, blockFrom, currId, PReg::zero, false, 0, isFloatUse};
+                            vreg2Int[v] = new Interval{v, actualStart, currId, PReg::zero, false, 0, isFloatUse};
                             intervals.push_back(vreg2Int[v]);
                         } else {
                             vreg2Int[v]->end = std::max(vreg2Int[v]->end, currId);
-                            vreg2Int[v]->start = std::min(vreg2Int[v]->start, blockFrom);
+                            vreg2Int[v]->start = std::min(vreg2Int[v]->start, actualStart);
                             if (isFloatUse) vreg2Int[v]->isFloat = true;
                         }
                     }
@@ -267,29 +274,36 @@ void RegAlloc::linearScan() {
     active.clear();
     physRegState.clear();
 
-    int stackOffset = 0;
+    // Safety buffer
+    int stackOffset = 256;
 
+    std::vector<MCInst*> allocas;
     for (auto b : currFunc->blks) {
         for (auto inst : b->insts) {
             if (inst->opc == MCInst::ALLOCA) {
-                int vreg = inst->getOp(0).val;
-                int size = inst->getOp(1).val;
-                allocaOffsets[vreg] = stackOffset;
-                stackOffset += size;
+                allocas.push_back(inst);
             }
         }
     }
 
+    for (auto it = allocas.rbegin(); it != allocas.rend(); ++it) {
+        MCInst* inst = *it;
+        int vreg = inst->getOp(0).val;
+        int size = inst->getOp(1).val;
+        stackOffset = (stackOffset + 7) / 8 * 8;
+        allocaOffsets[vreg] = stackOffset;
+        stackOffset += size;
+    }
+
     for (auto i : intervals) {
-        for (auto it = active.begin(); it != active.end(); ) {
-            Interval* act = *it;
+        auto new_end = std::remove_if(active.begin(), active.end(), [&](Interval* act) {
             if (act->end < i->start) {
                 physRegState.erase(act->assigned);
-                it = active.erase(it);
-            } else {
-                ++it;
+                return true;
             }
-        }
+            return false;
+        });
+        active.erase(new_end, active.end());
 
         // Checking if the function call is crossed.
         bool crossesCall = false;
@@ -302,15 +316,21 @@ void RegAlloc::linearScan() {
 
         PReg bestReg = PReg::zero;
 
-        const auto& candidates = i->isFloat ? MCRegInfo::fallocOrder : MCRegInfo::allocOrder;
-        
-        for (PReg reg : candidates) {
-            if (physRegState.find(reg) != physRegState.end()) continue;
-            if (RESERVED_REGS.count(reg)) continue;
-            if (crossesCall && isCallerSaved(reg)) continue;
+        if (currFunc->precolorMap.count(i->vreg)) {
+            bestReg = currFunc->precolorMap[i->vreg];
+        }
 
-            bestReg = reg;
-            break;
+        if (bestReg == PReg::zero) {
+            const auto& candidates = i->isFloat ? MCRegInfo::fallocOrder : MCRegInfo::allocOrder;
+            
+            for (PReg reg : candidates) {
+                if (physRegState.find(reg) != physRegState.end()) continue;
+                if (RESERVED_REGS.count(reg)) continue;
+                if (crossesCall && isCallerSaved(reg)) continue;
+
+                bestReg = reg;
+                break;
+            }
         }
 
         if (bestReg != PReg::zero) {
@@ -326,8 +346,15 @@ void RegAlloc::linearScan() {
             }
         } else {
             i->spilled = true;
-            i->stackOffset = stackOffset;
-            stackOffset += 4; // 32-bit = 4 bytes
+            if (i->isFloat) {
+                stackOffset = (stackOffset + 3) / 4 * 4;
+                i->stackOffset = stackOffset;
+                stackOffset += 4;
+            } else {
+                stackOffset = (stackOffset + 7) / 8 * 8;
+                i->stackOffset = stackOffset;
+                stackOffset += 8; 
+            }
         }
     }
 
@@ -345,8 +372,15 @@ void RegAlloc::linearScan() {
 
     int currentOffset = stackOffset;
     for (PReg reg : currFunc->savedRegs) {
-        currFunc->savedRegOffsets[reg] = currentOffset;
-        currentOffset += 4; // 4B
+        if (static_cast<int>(reg) >= 32) {
+            currentOffset = (currentOffset + 3) / 4 * 4;
+            currFunc->savedRegOffsets[reg] = currentOffset;
+            currentOffset += 4;
+        } else {
+            currentOffset = (currentOffset + 7) / 8 * 8;
+            currFunc->savedRegOffsets[reg] = currentOffset;
+            currentOffset += 8;
+        }
     }
     
     // Record the maximum stack offset,
@@ -374,21 +408,41 @@ void RegAlloc::rewriteCode(MCFunc* f) {
                     Interval* it = vmap[targetOp.val];
                     int offset = allocaOffsets[targetOp.val];
 
-                    MCInst* addi = new MCInst(MCInst::ADDI);
+                    PReg scratch = iSpill1;
+                    PReg destReg = it->spilled ? scratch : it->assigned;
+
+                    if (offset >= -2048 && offset <= 2047) {
+                        MCInst* addi = new MCInst(MCInst::ADDI);
+                        addi->add(MCOpnd::preg(destReg))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(offset));
+                        newInsts.push_back(addi);
+                    } else {
+                        MCInst* li = new MCInst(MCInst::LI);
+                        li->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(offset));
+                        newInsts.push_back(li);
+                        
+                        MCInst* add = new MCInst(MCInst::ADD);
+                        add->add(MCOpnd::preg(destReg))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::preg(PReg::t0));
+                        newInsts.push_back(add);
+                    }
 
                     if (it->spilled) {
-                        PReg scratch = iSpill1;
-                        // addi s10, sp, offset
-                        addi->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(offset));
-                        newInsts.push_back(addi);
-                        
-                        MCInst* st = new MCInst(MCInst::SW);
-                        // sw s10, offset_v2(sp)
-                        st->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(it->stackOffset));
-                        newInsts.push_back(st);
-                    } else {
-                        addi->add(MCOpnd::preg(it->assigned))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(offset));
-                        newInsts.push_back(addi);
+                        if (it->stackOffset >= -2048 && it->stackOffset <= 2047) {
+                            MCInst* st = new MCInst(MCInst::SD);
+                            st->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(it->stackOffset));
+                            newInsts.push_back(st);
+                        } else {
+                            MCInst* li2 = new MCInst(MCInst::LI);
+                            li2->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(it->stackOffset));
+                            newInsts.push_back(li2);
+                            
+                            MCInst* add2 = new MCInst(MCInst::ADD);
+                            add2->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::preg(PReg::t0));
+                            newInsts.push_back(add2);
+                            
+                            MCInst* st = new MCInst(MCInst::SD);
+                            st->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(0));
+                            newInsts.push_back(st);
+                        }
                     }
                 }
                 continue;
@@ -408,11 +462,23 @@ void RegAlloc::rewriteCode(MCFunc* f) {
                     Interval* it = vmap[op.val];
                     if (it->spilled) {
                         PReg scratch = it->isFloat ? (k==1 ? fSpill2 : fSpill1) : (k==1 ? iSpill2 : iSpill1);
-                        MCInst* ld = new MCInst(it->isFloat ? MCInst::FLW : MCInst::LW);
-                        ld->add(MCOpnd::preg(scratch))
-                          ->add(MCOpnd::preg(PReg::sp))
-                          ->add(MCOpnd::imm(it->stackOffset));
-                        newInsts.push_back(ld);
+                        if (it->stackOffset >= -2048 && it->stackOffset <= 2047) {
+                            MCInst* ld = new MCInst(it->isFloat ? MCInst::FLW : MCInst::LD);
+                            ld->add(MCOpnd::preg(scratch))
+                              ->add(MCOpnd::preg(PReg::sp))
+                              ->add(MCOpnd::imm(it->stackOffset));
+                            newInsts.push_back(ld);
+                        } else {
+                            MCInst* li = new MCInst(MCInst::LI);
+                            li->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(it->stackOffset));
+                            newInsts.push_back(li);
+                            MCInst* add = new MCInst(MCInst::ADD);
+                            add->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::preg(PReg::t0));
+                            newInsts.push_back(add);
+                            MCInst* ld = new MCInst(it->isFloat ? MCInst::FLW : MCInst::LD);
+                            ld->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(0));
+                            newInsts.push_back(ld);
+                        }
                         // rewrite
                         op = MCOpnd::preg(scratch);
                     } else {
@@ -440,11 +506,23 @@ void RegAlloc::rewriteCode(MCFunc* f) {
                             PReg scratch = it->isFloat ? fSpill1 : iSpill1;
                             op = MCOpnd::preg(scratch);
 
-                            MCInst* st = new MCInst(it->isFloat ? MCInst::FSW : MCInst::SW);
-                            st->add(MCOpnd::preg(scratch))
-                                ->add(MCOpnd::preg(PReg::sp))
-                                ->add(MCOpnd::imm(it->stackOffset));
-                            newInsts.push_back(st);
+                            if (it->stackOffset >= -2048 && it->stackOffset <= 2047) {
+                                MCInst* st = new MCInst(it->isFloat ? MCInst::FSW : MCInst::SD);
+                                st->add(MCOpnd::preg(scratch))
+                                  ->add(MCOpnd::preg(PReg::sp))
+                                  ->add(MCOpnd::imm(it->stackOffset));
+                                newInsts.push_back(st);
+                            } else {
+                                MCInst* li = new MCInst(MCInst::LI);
+                                li->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(it->stackOffset));
+                                newInsts.push_back(li);
+                                MCInst* add = new MCInst(MCInst::ADD);
+                                add->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::preg(PReg::t0));
+                                newInsts.push_back(add);
+                                MCInst* st = new MCInst(it->isFloat ? MCInst::FSW : MCInst::SD);
+                                st->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(0));
+                                newInsts.push_back(st);
+                            }
                         } else {
                             op = MCOpnd::preg(it->assigned);
                         }

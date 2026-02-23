@@ -92,7 +92,9 @@ std::vector<std::unique_ptr<VarDeclAST>> Parser::parseDecl() {
         while (CurTok.is(tok::l_square)) {
             getNextToken(); // consume '['
             auto dim = parseExpr();
-            if (!dim) dims.push_back(std::move(dim));
+            // fix!
+            if (dim) dims.push_back(std::move(dim));
+            else break;
             if (!expect(tok::r_square)) return decls;
         }
 
@@ -114,7 +116,8 @@ std::vector<std::unique_ptr<VarDeclAST>> Parser::parseDecl() {
 
 std::unique_ptr<ExprAST> Parser:: parsePrimaryExpr() {
     if (CurTok.is(tok::int_const)) {
-        int val = std::stoi(std::string(CurTok.getText()));
+        // Automatically recognizes 0x and 0 prefixes.
+        int val = std::stoi(std::string(CurTok.getText()), nullptr, 0);
         getNextToken();
         return std::make_unique<NumberAST>(val);
     }
@@ -497,10 +500,13 @@ std::unique_ptr<CompUnitAST> Parser::parseCompUnit() {
 
                 if (CurTok.is(tok::comma)) {
                     getNextToken(); // consume ','
-                    if (CurTok.isNot(tok::identifier)) {
+                    if (CurTok.is(tok::identifier)) {
                         name = std::string(CurTok.getText());
                         getNextToken();
-                    } else break;
+                    } else {
+                        std::cerr << "Error: Expected identifier after ','" << std::endl;
+                        break;
+                    }
                 } else break;
             }
             expect(tok::semi);
