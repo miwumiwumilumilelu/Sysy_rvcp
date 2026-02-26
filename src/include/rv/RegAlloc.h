@@ -5,27 +5,21 @@
 #include <map>
 #include <set>
 #include <vector>
-#include <algorithm>
 
 namespace sysy {
 
-// Describing the lifecycle of a virtual register.
 struct Interval {
-    // VRegID
-    int vreg;
-    // Using InstID.
-    int start;
-    int end;
-    // Assigned physical register.
-    PReg assigned;
-    bool spilled;
-    int stackOffset;
+    int vreg;              // Virtual register ID
+    int start;             // Start instruction ID
+    int end;               // End instruction ID
+    PReg assigned;         // Assigned physical register
+    bool spilled;          // Spilled to stack?
+    int stackOffset;       // Stack offset if spilled
+    bool isFloat;          // Floating point register?
+    MCInst* defInst;       // Defining instruction (for rematerialization)
 
-    bool isFloat;
-
-    // Sort by start time.
-    bool operator<(const Interval& t) const {
-        return start < t.start;
+    bool operator<(const Interval& other) const {
+        return start < other.start;
     }
 };
 
@@ -36,33 +30,33 @@ public:
 private:
     MCFunc* currFunc;
     std::vector<Interval*> intervals;
+    std::vector<int> callInstIds;
+    std::map<int, int> allocaOffsets;
 
-    std::vector<Interval*> active;
+    struct AllocState {
+        std::map<PReg, Interval*> physRegState;
+        std::vector<Interval*> active;
+        int stackOffset;
+    };
 
-    // Physical register occupancy status (0 indicates free).
-    std::map<PReg, Interval*> physRegState;
+    AllocState state;
 
     void numberInstructions(MCFunc* f);
     void analyzeLiveness(MCFunc* f);
-    void linearScan();
-    void rewriteCode(MCFunc* f);
+    void buildIntervals(MCFunc* f);
 
-    std::map<MCBlk*, std::set<int>> liveIn;
-    std::map<MCBlk*, std::set<int>> liveOut;
-    std::map<MCBlk*, std::set<int>> def;
-    std::map<MCBlk*, std::set<int>> use;
-
-    std::map<MCInst*, int> instId; // numbering instructions.
+    std::map<MCBlk*, std::set<int>> liveIn, liveOut, def, use;
+    std::map<MCInst*, int> instId;
     std::map<MCBlk*, int> blkStart, blkEnd;
-
-    std::vector<int> callInstIds;
-    std::unordered_map<std::string, MCBlk*> label2blk; // O(1) lookup
+    std::unordered_map<std::string, MCBlk*> label2blk;
 
     void computeLocalLiveness(MCBlk* b);
     void computeGlobalLiveness(MCFunc* f);
-    void buildIntervals(MCFunc* f);
 
-    std::map<int, int> allocaOffsets;
+    void allocateRegisters();
+    bool isLeafFunction() const;
+
+    void rewriteProgram();
 };
 
 }

@@ -229,6 +229,61 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
     }
 
     Constant* constZero = basicTy->isFloat() ? (Constant*)new ConstantFloat(0.0f) : (Constant*)new ConstantInt(0);
+    
+    if (!type->isArray()) {
+        Value* val = flat_vals[0] ? flat_vals[0] : constZero;
+        builder.Create<StoreInst>(val, ptr);
+        return;
+    }
+
+    bool isAllZero = true;
+    for (int i = 0; i < totalSize; ++i) {
+        if (flat_vals[i] != nullptr && !isa<ConstantZero>(flat_vals[i])) {
+            if (auto ci = dyn_cast<ConstantInt>(flat_vals[i])) { if (ci->getValue() != 0) isAllZero = false; }
+            else if (auto cf = dyn_cast<ConstantFloat>(flat_vals[i])) { if (cf->getValue() != 0.0) isAllZero = false; }
+            else isAllZero = false;
+        }
+        if (!isAllZero) break;
+    }
+
+    if (isAllZero && totalSize >= 8) {
+        BasicBlock* condBB = new BasicBlock(newLabelName(), CurrentFunc->getBody());
+        BasicBlock* bodyBB = new BasicBlock(newLabelName(), CurrentFunc->getBody());
+        BasicBlock* endBB = new BasicBlock(newLabelName(), CurrentFunc->getBody());
+
+        // idx
+        auto idxAlloca = builder.Create<AllocaInst>(Type::getIntTy());
+        builder.Create<StoreInst>(new ConstantInt(0), idxAlloca);
+        // curPtr
+        auto ptrAlloca = builder.Create<AllocaInst>(ptr->getType());
+        builder.Create<StoreInst>(ptr, ptrAlloca);
+
+        builder.Create<BranchInst>(condBB);
+
+        // Cond: while (i < totalSize)
+        builder.SetInsertPoint(condBB);
+        auto iLoad = builder.Create<LoadInst>(idxAlloca);
+        auto cmp = builder.Create<ICmpInst>(ICmpInst::SLT, iLoad, new ConstantInt(totalSize));
+        builder.Create<BranchInst>(cmp, bodyBB, endBB);
+
+        // Body: *curPtr = 0; curPtr++; idx++;
+        builder.SetInsertPoint(bodyBB); 
+        auto currentPtr = builder.Create<LoadInst>(ptrAlloca);
+        builder.Create<StoreInst>(constZero, currentPtr);
+
+        auto nextPtr = builder.Create<GetElementPtrInst>(currentPtr, new ConstantInt(1));
+        builder.Create<StoreInst>(nextPtr, ptrAlloca);
+
+        auto iNext = builder.Create<BinaryInst>(Instruction::Add, iLoad, new ConstantInt(1));
+        builder.Create<StoreInst>(iNext, idxAlloca);
+
+        builder.Create<BranchInst>(condBB);
+
+        // End
+        builder.SetInsertPoint(endBB);
+        return;
+    }
+    
     for (int i = 0; i < totalSize; ++i) {
         Value* val = flat_vals[i] ? flat_vals[i] : constZero;
         auto gep = builder.Create<GetElementPtrInst>(ptr, new ConstantInt(i));

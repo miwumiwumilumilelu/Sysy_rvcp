@@ -26,13 +26,31 @@ const std::vector<PReg> MCRegInfo::fargRegs = {
     PReg::fa0, PReg::fa1, PReg::fa2, PReg::fa3, PReg::fa4, PReg::fa5, PReg::fa6, PReg::fa7
 };
 
-const std::vector<PReg> MCRegInfo::allocOrder = {
+// Leaf function: prioritize caller-saved (a0-a7, t1-t6) - no save/restore needed!
+const std::vector<PReg> MCRegInfo::leafAllocOrder = {
+    PReg::a0, PReg::a1, PReg::a2, PReg::a3, PReg::a4, PReg::a5, PReg::a6, PReg::a7,
     PReg::t1, PReg::t2, PReg::t3, PReg::t4, PReg::t5, PReg::t6,
     PReg::s0, PReg::s1, PReg::s2, PReg::s3, PReg::s4, PReg::s5, PReg::s6, PReg::s7, PReg::s8, PReg::s9
 };
 
-const std::vector<PReg> MCRegInfo::fallocOrder = {
+const std::vector<PReg> MCRegInfo::leafFallocOrder = {
+    PReg::fa0, PReg::fa1, PReg::fa2, PReg::fa3, PReg::fa4, PReg::fa5, PReg::fa6, PReg::fa7,
     PReg::ft0, PReg::ft1, PReg::ft2, PReg::ft3, PReg::ft4, PReg::ft5, PReg::ft6, PReg::ft7, PReg::ft8, PReg::ft9, PReg::ft10, PReg::ft11,
+    PReg::fs0, PReg::fs1, PReg::fs2, PReg::fs3, PReg::fs4, PReg::fs5, PReg::fs6, PReg::fs7, PReg::fs8, PReg::fs9
+};
+
+// Non-leaf function: prioritize callee-saved to avoid caller-saved clobbering across calls
+// But still include a0-a7 for temporary values (they just need to be saved/restored across calls)
+const std::vector<PReg> MCRegInfo::normalAllocOrder = {
+    PReg::a0, PReg::a1, PReg::a2, PReg::a3, PReg::a4, PReg::a5, PReg::a6, PReg::a7,
+    PReg::ra,
+    PReg::t0, PReg::t1, PReg::t2, PReg::t3, PReg::t4, PReg::t5, PReg::t6,
+    PReg::s0, PReg::s1, PReg::s2, PReg::s3, PReg::s4, PReg::s5, PReg::s6, PReg::s7, PReg::s8, PReg::s9
+};
+
+const std::vector<PReg> MCRegInfo::normalFallocOrder = {
+    PReg::ft0, PReg::ft1, PReg::ft2, PReg::ft3, PReg::ft4, PReg::ft5, PReg::ft6, PReg::ft7, PReg::ft8, PReg::ft9, PReg::ft10, PReg::ft11,
+    PReg::fa0, PReg::fa1, PReg::fa2, PReg::fa3, PReg::fa4, PReg::fa5, PReg::fa6, PReg::fa7,
     PReg::fs0, PReg::fs1, PReg::fs2, PReg::fs3, PReg::fs4, PReg::fs5, PReg::fs6, PReg::fs7, PReg::fs8, PReg::fs9
 };
 

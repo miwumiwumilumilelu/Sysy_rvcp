@@ -12,12 +12,13 @@ public:
 
 private:
     void print(MCFunc* func, std::ostream& os);
-    void print(MCBlk* blk, std::ostream& os);
+    void print(MCBlk* blk, std::ostream& os, MCFunc* func, bool isFirstBlock = false);
     void print(MCInst* inst, std::ostream& os);
     void print(MCOpnd& opnd, std::ostream& os);
 
     const char* getOpcName(MCInst::Opc opc);
     const char* getRegName(PReg preg);
+    const char* getRoundingModeName(MCInst::RoundingMode rm);
 };
 
 }

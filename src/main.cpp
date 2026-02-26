@@ -17,6 +17,7 @@
 #include "rv/MCPrinter.h"
 #include "rv/PhiElim.h"
 #include "rv/RegAlloc.h"
+#include "rv/Peephole.h"
 
 using namespace sysy;
 

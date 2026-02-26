@@ -117,7 +117,7 @@ std::vector<std::unique_ptr<VarDeclAST>> Parser::parseDecl() {
 std::unique_ptr<ExprAST> Parser:: parsePrimaryExpr() {
     if (CurTok.is(tok::int_const)) {
         // Automatically recognizes 0x and 0 prefixes.
-        int val = std::stoi(std::string(CurTok.getText()), nullptr, 0);
+        int val = static_cast<int>(std::stoul(std::string(CurTok.getText()), nullptr, 0));
         getNextToken();
         return std::make_unique<NumberAST>(val);
     }

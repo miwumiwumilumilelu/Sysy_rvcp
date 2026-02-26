@@ -25,8 +25,13 @@ public:
     static const std::vector<PReg> argRegs;
     static const std::vector<PReg> fargRegs;
 
-    static const std::vector<PReg> allocOrder;
-    static const std::vector<PReg> fallocOrder;
+    // Leaf function allocation order - prioritize caller-saved registers
+    static const std::vector<PReg> leafAllocOrder;
+    static const std::vector<PReg> leafFallocOrder;
+
+    // Non-leaf function allocation order - prioritize callee-saved registers
+    static const std::vector<PReg> normalAllocOrder;
+    static const std::vector<PReg> normalFallocOrder;
 };
 
 }

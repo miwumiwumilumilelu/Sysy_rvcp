@@ -1,270 +1,228 @@
 #include "rv/MCPrinter.h"
-#include "IR/Type.h"
+#include "rv/MCModule.h"
+#include "rv/MCFunction.h"
+#include "rv/MCBlock.h"
+#include "rv/MCInst.h"
+#include "rv/MCOperand.h"
+#include "rv/MCRegister.h"
 #include "IR/Module.h"
+#include "IR/Value.h"
+#include "IR/Type.h"
+#include <cassert>
+#include <algorithm>
 
 using namespace sysy;
 
-const char* MCPrinter::getRegName(PReg preg) {
-    static const char* regNames[] = {
-        "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
-        "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
-        "ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "fs0", "fs1", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5", "fa6", "fa7",
-        "fs2", "fs3", "fs4", "fs5", "fs6", "fs7", "fs8", "fs9", "fs10", "fs11", "ft8", "ft9", "ft10", "ft11"
-    };
-    return regNames[static_cast<int>(preg)];
-}
-
-const char* MCPrinter::getOpcName(MCInst::Opc opc) {
-    static const char* opcNames[] = {
-        // Uppercase indicates that these are high-level pseudo-instructions,
-        // and have not yet dropped to real hardware.
-        "add", "sub", "sll", "srl", "sra",
-        "addi", "slli", "srli", "srai",
-        "ld", "sd", "lui", "auipc",
-        "addw", "subw", "sllw", "srlw", "sraw",
-        "addiw", "slliw", "srliw", "sraiw",
-        "mulw", "divw", "remw",
-        "lw", "sw",
-        "xor", "or", "and", "xori", "ori", "andi",
-        "slt", "sltu", "slti", "sltiu",
-        "seqz", "snez",
-        "beq", "bne", "blt", "bge", "bltu", "bgeu",
-        "j", "call", "ret",
-        "fadd.s", "fsub.s", "fmul.s", "fdiv.s", 
-        "fcvt.w.s", "fcvt.s.w", "fmv.w.x", "fmv.x.w",
-        "feq.s", "flt.s", "fle.s",
-        "flw", "fsw",
-        "li", "la", "mv", "fmv.s",
-        "PHI", "ALLOCA"
-    };
-    return opcNames[static_cast<int>(opc)];
-}
-
-static int getConstantSize(Constant* c) {
-    if (isa<ConstantInt>(c) || isa<ConstantFloat>(c)) return 4;
-    Type* ty = c->getType();
-    int size = 4;
-    while (ty->isArray()) {
-        ArrayType* arrTy = static_cast<ArrayType*>(ty);
-        size *= arrTy->getNumElements();
-        ty = arrTy->getElementType();
-    }
-    return size;
-}
-
-static int printConstant(Constant* c, std::ostream& os) {
-    if (isa<ConstantInt>(c)) {
-        os << "    .word " << cast<ConstantInt>(c)->getValue() << "\n";
-        return 4;
-    } else if (isa<ConstantFloat>(c)) {
-        float f = cast<ConstantFloat>(c)->getValue();
-        os << "    .word " << *reinterpret_cast<int*>(&f) << "\n";
-        return 4;
-    } else if (isa<ConstantArray>(c)) {
-        int expectedSize = getConstantSize(c);
-
-        bool allZero = true;
-        auto& consts = cast<ConstantArray>(c)->getConsts();
-        for (auto elem : consts) {
-            if (!isa<ConstantZero>(elem) && 
-                !(isa<ConstantInt>(elem) && cast<ConstantInt>(elem)->getValue() == 0) &&
-                !(isa<ConstantFloat>(elem) && cast<ConstantFloat>(elem)->getValue() == 0.0)) {
-                allZero = false;
-                break;
-            }
-        }
-
-        if (allZero) {
-            os << "    .zero " << expectedSize << "\n";
-            return expectedSize;
-        }
-
-        int printedBytes = 0;
-        for (auto elem : consts) {
-            printedBytes += printConstant(elem, os);
-        }
-
-        if (printedBytes < expectedSize) {
-            os << "    .zero " << (expectedSize - printedBytes) << "\n";
-        }
-        return expectedSize;
-        
-    } else if (isa<ConstantZero>(c)) {
-        int expectedSize = getConstantSize(c);
-        os << "    .zero " << expectedSize << "\n";
-        return expectedSize;
-    } else {
-        os << "    .word 0\n";
-        return 4;
-    }
-}
-
 void MCPrinter::print(MCModule* module, std::ostream& os) {
-    if (!module->globals.empty()) {
-        os << "  .data\n";
-        for (auto global : module->globals) {
-            os << "  .globl " << global->getName() << "\n";
-            os << "  .align 2\n";
-            os << global->getName() << ":\n";
+    // Print .data section for global variables
+    os << "  .data\n";
 
-            Type* ty = global->getType();
-            if (ty->isPointer()) {
-                ty = static_cast<PointerType*>(ty)->getPointeeType();
+    for (auto* gv : module->globals) {
+        os << "  .globl " << gv->getName() << "\n";
+        os << "  .align 2\n";
+        os << gv->getName() << ":\n";
+
+        if (auto* init = gv->getInit()) {
+            if (auto* ci = dyn_cast<ConstantInt>(init)) {
+                os << "    .word " << ci->getValue() << "\n";
+            } else if (auto* ca = dyn_cast<ConstantArray>(init)) {
+                int elemSize = 4;  // Default to 4 bytes (i32)
+                int totalBytes = ca->getConsts().size() * elemSize;
+                os << "    .zero " << totalBytes << "\n";
+            } else if (isa<ConstantZero>(init)) {
+                PointerType* ptrTy = dyn_cast<PointerType>(gv->getType());
+                Type* ty = ptrTy ? ptrTy->getPointeeType() : nullptr;
+                if (ty) {
+                    if (auto* arrTy = dyn_cast<ArrayType>(ty)) {
+                        int elemSize = 4;  // Default to 4 bytes (i32)
+                        int totalBytes = arrTy->getNumElements() * elemSize;
+                        os << "    .zero " << totalBytes << "\n";
+                    } else {
+                        os << "    .word 0\n";
+                    }
+                } else {
+                    os << "    .word 0\n";
+                }
             }
-
-            int totalBytes = 4;
-            Type* curTy = ty;
-            while (curTy->isArray()) {
-                ArrayType* arrTy = static_cast<ArrayType*>(curTy);
-                totalBytes *= arrTy->getNumElements();
-                curTy = arrTy->getElementType();
-            }
-
-            Constant* init = global->getInit();
-            if (init && !isa<ConstantZero>(init)) {
-                printConstant(init, os);
-                os << "\n";
+        } else {
+            PointerType* ptrTy = dyn_cast<PointerType>(gv->getType());
+            Type* ty = ptrTy ? ptrTy->getPointeeType() : nullptr;
+            if (ty) {
+                if (auto* arrTy = dyn_cast<ArrayType>(ty)) {
+                    int elemSize = 4;  // Default to 4 bytes (i32)
+                    int totalBytes = arrTy->getNumElements() * elemSize;
+                    os << "    .zero " << totalBytes << "\n";
+                } else {
+                    os << "    .word 0\n";
+                }
             } else {
-                os << "    .zero " << totalBytes << "\n\n";
+                os << "    .word 0\n";
             }
         }
     }
-    os << "  .text\n";
-    for (auto func : module->funcs) {
-        print(func, os);
+
+    // Print .text section for functions
+    os << "\n  .text\n\n";
+
+    for (size_t i = 0; i < module->funcs.size(); ++i) {
+        print(module->funcs[i], os);
+        // Add blank line between functions (but not after the last one)
+        if (i < module->funcs.size() - 1) {
+            os << "\n";
+        }
     }
 }
 
 void MCPrinter::print(MCFunc* func, std::ostream& os) {
-    os << "\n  .globl " << func->name << "\n";
-    os << "  .type " << func->name << ", @function\n";
+    os << "  .globl " << func->name << "\n";
     os << func->name << ":\n";
 
-    if (func->stackSize > 0) {
-        if (func->stackSize <= 2047) {
-            os << "    addi sp, sp, -" << func->stackSize << "\n";
+    // Calculate stack frame size
+    int stackSize = func->stackSize;
+    if (stackSize > 0) {
+        // Allocate stack space
+        os << "    addi sp, sp, -" << stackSize << "\n";
+    }
+
+    // Save callee-saved registers
+    std::vector<PReg> savedRegsList;
+    for (auto reg : func->savedRegs) {
+        if (reg == PReg::sp) continue;  // Don't save sp
+        savedRegsList.push_back(reg);
+    }
+
+    // Sort saved registers by offset (largest offset first for proper stack layout)
+    std::sort(savedRegsList.begin(), savedRegsList.end(),
+              [&](PReg a, PReg b) {
+                  return func->savedRegOffsets[a] > func->savedRegOffsets[b];
+              });
+
+    for (auto reg : savedRegsList) {
+        int offset = func->savedRegOffsets[reg];
+        if ((int)reg >= 32) {
+            // Float register - use fsw
+            os << "    fsw " << getRegName(reg) << ", " << offset << "(sp)\n";
         } else {
-            os << "    li t0, " << func->stackSize << "\n";
-            os << "    sub sp, sp, t0\n";
+            // Integer register - use sd
+            os << "    sd " << getRegName(reg) << ", " << offset << "(sp)\n";
         }
     }
 
-    for (auto const& [reg, off] : func->savedRegOffsets) {
-        if (off <= 2047 && off >= -2048) {
-            if (static_cast<int>(reg) >= 32) {
-                os << "    fsw " << getRegName(reg) << ", " << off << "(sp)\n";
-            } else {
-                os << "    sd " << getRegName(reg) << ", " << off << "(sp)\n";
-            }
-        } else {
-            os << "    li t0, " << off << "\n";
-            os << "    add t0, sp, t0\n";
-            if (static_cast<int>(reg) >= 32) {
-                os << "    fsw " << getRegName(reg) << ", 0(t0)\n";
-            } else {
-                os << "    sd " << getRegName(reg) << ", 0(t0)\n";
-            }
-        }
-    }
-
-    for (auto blk : func->blks) {
-        print(blk, os);
+    // Print basic blocks
+    bool isFirstBlock = true;
+    for (auto* blk : func->blks) {
+        print(blk, os, func, isFirstBlock);
+        isFirstBlock = false;
     }
 }
 
-void MCPrinter::print(MCBlk* blk, std::ostream& os) {
-    os << blk->name << ":\n";
-    for (auto inst : blk->insts) {
-        os << "    ";
+void MCPrinter::print(MCBlk* blk, std::ostream& os, MCFunc* func, bool isFirstBlock) {
+    // Print basic block label with .L prefix (skip for first block since function entry is already there)
+    if (!isFirstBlock) {
+        os << ".L" << blk->name << ":\n";
+    }
 
+    // Print instructions in this block
+    for (auto* inst : blk->insts) {
+        // Check if this is a RET instruction and we need to print epilogue
         if (inst->opc == MCInst::RET) {
-            if (blk->func) {
-                for (auto const& [reg, off] : blk->func->savedRegOffsets) {
-                    if (off <= 2047 && off >= -2048) {
-                        if (static_cast<int>(reg) >= 32) {
-                            os << "flw " << getRegName(reg) << ", " << off << "(sp)\n    ";
-                        } else {
-                            os << "ld " << getRegName(reg) << ", " << off << "(sp)\n    ";
-                        }
-                    } else {
-                        os << "li t0, " << off << "\n    ";
-                        os << "add t0, sp, t0\n    ";
-                        if (static_cast<int>(reg) >= 32) {
-                            os << "flw " << getRegName(reg) << ", 0(t0)\n    ";
-                        } else {
-                            os << "ld " << getRegName(reg) << ", 0(t0)\n    ";
-                        }
-                    }
+            // Print epilogue before ret
+            std::vector<PReg> savedRegsList;
+            for (auto reg : func->savedRegs) {
+                if (reg == PReg::sp) continue;
+                savedRegsList.push_back(reg);
+            }
+
+            // Sort saved registers by offset (smallest offset first for restore)
+            std::sort(savedRegsList.begin(), savedRegsList.end(),
+                      [&](PReg a, PReg b) {
+                          return func->savedRegOffsets[a] < func->savedRegOffsets[b];
+                      });
+
+            for (auto reg : savedRegsList) {
+                int offset = func->savedRegOffsets[reg];
+                if ((int)reg >= 32) {
+                    // Float register - use flw
+                    os << "    flw " << getRegName(reg) << ", " << offset << "(sp)\n";
+                } else {
+                    // Integer register - use ld
+                    os << "    ld " << getRegName(reg) << ", " << offset << "(sp)\n";
                 }
-                
-                if (blk->func->stackSize > 0) {
-                    if (blk->func->stackSize <= 2047) {
-                        os << "addi sp, sp, " << blk->func->stackSize << "\n    ";
-                    } else {
-                        os << "li t0, " << blk->func->stackSize << "\n    ";
-                        os << "add sp, sp, t0\n    ";
-                    }
-                }
+            }
+
+            // Restore stack pointer
+            if (func->stackSize > 0) {
+                os << "    addi sp, sp, " << func->stackSize << "\n";
             }
         }
 
         print(inst, os);
-        os << "\n";
     }
 }
 
 void MCPrinter::print(MCInst* inst, std::ostream& os) {
-    if (inst->opc == MCInst::LW || inst->opc == MCInst::SW || 
-        inst->opc == MCInst::FLW || inst->opc == MCInst::FSW ||
-        inst->opc == MCInst::LD || inst->opc == MCInst::SD) {
-        os << getOpcName(inst->opc) << " ";
-        print(inst->ops[0], os); 
-        os << ", ";
-        print(inst->ops[2], os); 
-        os << "(";
-        print(inst->ops[1], os);
-        os << ")";
-        return;
-    }
+    os << "    ";
 
-    if (inst->opc == MCInst::CALL) {
-        os << "call ";
-        print(inst->ops[0], os); 
-        return;
-    }
-    if (inst->opc == MCInst::RET) {
-        os << "ret";            
-        return;
-    }
-    if (inst->opc == MCInst::FCVT_W_S) {
-        os << "fcvt.w.s ";
-        print(inst->ops[0], os);
-        os << ", ";
-        print(inst->ops[1], os);
-        os << ", rtz";
-        return;
-    }
+    // Check if this is a RET instruction and we need to print epilogue
+    // Note: The epilogue should be handled by the register allocator
+    // or we need to track it differently. For now, just print ret.
 
-    os << getOpcName(inst->opc);
-    
-    if (inst->ops.empty()) return;
+    // Get opcode name
+    const char* opcName = getOpcName(inst->opc);
+    os << opcName;
 
-    os << " ";
+    // Print operands
     for (size_t i = 0; i < inst->ops.size(); ++i) {
-        print(inst->ops[i], os);
-        if (i != inst->ops.size() - 1) {
+        if (i == 0) {
+            os << " ";
+        } else {
             os << ", ";
         }
+
+        MCOpnd& opnd = inst->ops[i];
+
+        // Special handling for load/store instructions with offset format
+        // Format: offset(base) - but operands are stored as [dest, base, offset]
+        if ((inst->opc == MCInst::LD || inst->opc == MCInst::SD ||
+             inst->opc == MCInst::LW || inst->opc == MCInst::SW ||
+             inst->opc == MCInst::FLW || inst->opc == MCInst::FSW) &&
+            inst->ops.size() >= 3) {
+            // For load: [dest, base, offset] -> dest, offset(base)
+            // For store: [src, base, offset] -> src, offset(base)
+            if (i == 0) {
+                // First operand: destination/source register
+                print(inst->ops[0], os);
+            } else if (i == 1) {
+                // Second operand: offset(base)
+                os << inst->ops[2].val << "(";
+                print(inst->ops[1], os);
+                os << ")";
+                break;  // Skip the third operand since we already printed it
+            }
+        } else {
+            print(opnd, os);
+        }
     }
+
+    // Print rounding mode for float conversion instructions
+    if (inst->opc == MCInst::FCVT_W_S || inst->opc == MCInst::FCVT_S_W) {
+        const char* rmStr = getRoundingModeName(inst->getRoundingMode());
+        if (rmStr) {
+            os << ", " << rmStr;
+        }
+    }
+
+    os << "\n";
 }
 
 void MCPrinter::print(MCOpnd& opnd, std::ostream& os) {
     switch (opnd.ty) {
         case MCOpnd::VREG:
-            os << "%v" << opnd.val; 
+            // Should not happen after register allocation
+            os << "v" << opnd.val;
             break;
         case MCOpnd::PREG:
-            os << getRegName(static_cast<PReg>(opnd.val));
+            os << getRegName((PReg)opnd.val);
             break;
         case MCOpnd::IMM:
             os << opnd.val;
@@ -272,5 +230,180 @@ void MCPrinter::print(MCOpnd& opnd, std::ostream& os) {
         case MCOpnd::LBL:
             os << opnd.label;
             break;
+    }
+}
+
+const char* MCPrinter::getOpcName(MCInst::Opc opc) {
+    switch (opc) {
+        // rv64i
+        case MCInst::ADD: return "add";
+        case MCInst::SUB: return "sub";
+        case MCInst::SLL: return "sll";
+        case MCInst::SRL: return "srl";
+        case MCInst::SRA: return "sra";
+        case MCInst::ADDI: return "addi";
+        case MCInst::SLLI: return "slli";
+        case MCInst::SRLI: return "srli";
+        case MCInst::SRAI: return "srai";
+        case MCInst::LD: return "ld";
+        case MCInst::SD: return "sd";
+        case MCInst::LUI: return "lui";
+        case MCInst::AUIPC: return "auipc";
+
+        // rv32i (for 32-bit operations)
+        case MCInst::ADDW: return "addw";
+        case MCInst::SUBW: return "subw";
+        case MCInst::SLLW: return "sllw";
+        case MCInst::SRLW: return "srlw";
+        case MCInst::SRAW: return "sraw";
+        case MCInst::ADDIW: return "addiw";
+        case MCInst::SLLIW: return "slliw";
+        case MCInst::SRLIW: return "srliw";
+        case MCInst::SRAIW: return "sraiw";
+        case MCInst::MULW: return "mulw";
+        case MCInst::DIVW: return "divw";
+        case MCInst::REMW: return "remw";
+        case MCInst::LW: return "lw";
+        case MCInst::SW: return "sw";
+
+        // Logical operations
+        case MCInst::XOR: return "xor";
+        case MCInst::OR: return "or";
+        case MCInst::AND: return "and";
+        case MCInst::XORI: return "xori";
+        case MCInst::ORI: return "ori";
+        case MCInst::ANDI: return "andi";
+
+        // Comparison
+        case MCInst::SLT: return "slt";
+        case MCInst::SLTU: return "sltu";
+        case MCInst::SLTI: return "slti";
+        case MCInst::SLTIU: return "sltiu";
+        case MCInst::SEQZ: return "seqz";
+        case MCInst::SNEZ: return "snez";
+
+        // Branch
+        case MCInst::BEQ: return "beq";
+        case MCInst::BNE: return "bne";
+        case MCInst::BLT: return "blt";
+        case MCInst::BGE: return "bge";
+        case MCInst::BLTU: return "bltu";
+        case MCInst::BGEU: return "bgeu";
+
+        // Jump and call
+        case MCInst::J: return "j";
+        case MCInst::CALL: return "call";
+        case MCInst::RET: return "ret";
+
+        // rv32f
+        case MCInst::FADD_S: return "fadd.s";
+        case MCInst::FSUB_S: return "fsub.s";
+        case MCInst::FMUL_S: return "fmul.s";
+        case MCInst::FDIV_S: return "fdiv.s";
+        case MCInst::FCVT_W_S: return "fcvt.w.s";
+        case MCInst::FCVT_S_W: return "fcvt.s.w";
+        case MCInst::FMV_W_X: return "fmv.w.x";
+        case MCInst::FMV_X_W: return "fmv.x.w";
+        case MCInst::FEQ_S: return "feq.s";
+        case MCInst::FLT_S: return "flt.s";
+        case MCInst::FLE_S: return "fle.s";
+        case MCInst::FLW: return "flw";
+        case MCInst::FSW: return "fsw";
+
+        // Pseudo instructions
+        case MCInst::LI: return "li";
+        case MCInst::LA: return "la";
+        case MCInst::MV: return "mv";
+        case MCInst::FMV_S: return "fmv.s";
+        case MCInst::PHI: return "phi";
+        case MCInst::ALLOCA: return "alloca";
+
+        default: return "unknown";
+    }
+}
+
+const char* MCPrinter::getRoundingModeName(MCInst::RoundingMode rm) {
+    switch (rm) {
+        case MCInst::RNE: return "rne";  // Round to Nearest, ties to Even
+        case MCInst::RTZ: return "rtz";  // Round Towards Zero
+        case MCInst::RDN: return "rdn";  // Round Down
+        case MCInst::RUP: return "rup";  // Round Up
+        case MCInst::RMM: return "rmm";  // Round to Nearest, ties to Max Magnitude
+        case MCInst::DYN: return nullptr; // Dynamic (don't print, use CPU frm register)
+        default: return nullptr;
+    }
+}
+
+const char* MCPrinter::getRegName(PReg preg) {
+    switch (preg) {
+        // Integer registers (0-31)
+        case PReg::zero: return "zero";
+        case PReg::ra: return "ra";
+        case PReg::sp: return "sp";
+        case PReg::gp: return "gp";
+        case PReg::tp: return "tp";
+        case PReg::t0: return "t0";
+        case PReg::t1: return "t1";
+        case PReg::t2: return "t2";
+        case PReg::s0: return "s0";
+        case PReg::s1: return "s1";
+        case PReg::a0: return "a0";
+        case PReg::a1: return "a1";
+        case PReg::a2: return "a2";
+        case PReg::a3: return "a3";
+        case PReg::a4: return "a4";
+        case PReg::a5: return "a5";
+        case PReg::a6: return "a6";
+        case PReg::a7: return "a7";
+        case PReg::s2: return "s2";
+        case PReg::s3: return "s3";
+        case PReg::s4: return "s4";
+        case PReg::s5: return "s5";
+        case PReg::s6: return "s6";
+        case PReg::s7: return "s7";
+        case PReg::s8: return "s8";
+        case PReg::s9: return "s9";
+        case PReg::s10: return "s10";
+        case PReg::s11: return "s11";
+        case PReg::t3: return "t3";
+        case PReg::t4: return "t4";
+        case PReg::t5: return "t5";
+        case PReg::t6: return "t6";
+
+        // Float registers (32-63)
+        case PReg::ft0: return "ft0";
+        case PReg::ft1: return "ft1";
+        case PReg::ft2: return "ft2";
+        case PReg::ft3: return "ft3";
+        case PReg::ft4: return "ft4";
+        case PReg::ft5: return "ft5";
+        case PReg::ft6: return "ft6";
+        case PReg::ft7: return "ft7";
+        case PReg::fs0: return "fs0";
+        case PReg::fs1: return "fs1";
+        case PReg::fa0: return "fa0";
+        case PReg::fa1: return "fa1";
+        case PReg::fa2: return "fa2";
+        case PReg::fa3: return "fa3";
+        case PReg::fa4: return "fa4";
+        case PReg::fa5: return "fa5";
+        case PReg::fa6: return "fa6";
+        case PReg::fa7: return "fa7";
+        case PReg::fs2: return "fs2";
+        case PReg::fs3: return "fs3";
+        case PReg::fs4: return "fs4";
+        case PReg::fs5: return "fs5";
+        case PReg::fs6: return "fs6";
+        case PReg::fs7: return "fs7";
+        case PReg::fs8: return "fs8";
+        case PReg::fs9: return "fs9";
+        case PReg::fs10: return "fs10";
+        case PReg::fs11: return "fs11";
+        case PReg::ft8: return "ft8";
+        case PReg::ft9: return "ft9";
+        case PReg::ft10: return "ft10";
+        case PReg::ft11: return "ft11";
+
+        default: return "unknown";
     }
 }

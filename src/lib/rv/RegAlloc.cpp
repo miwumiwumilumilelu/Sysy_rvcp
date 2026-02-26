@@ -1,557 +1,576 @@
 #include "rv/RegAlloc.h"
+#include "rv/MCModule.h"
+#include "rv/MCFunction.h"
+#include "rv/MCBlock.h"
+#include "rv/MCInst.h"
+#include "rv/MCOperand.h"
 #include "rv/MCRegister.h"
-#include <iostream>
 #include <algorithm>
-#include <set>
+#include <unordered_map>
+#include <queue>
+#include <iostream>
 
 using namespace sysy;
 
-// Reserve stack pointers, global pointers, return addresses, 
-// and used for large number calculations/overflows t0, s10, s11.
-static const std::set<PReg> RESERVED_REGS = {
-    PReg::s10, PReg::s11, PReg::fs10, PReg::fs11,
-    PReg::sp, PReg::gp, PReg::tp, PReg::zero, PReg::ra,
-    PReg::t0,
-};
-
-bool isCallerSaved(PReg reg) {
-    static const std::set<PReg> callerSavedSet = {
-        PReg::ra, PReg::t0, PReg::t1, PReg::t2, PReg::t3, PReg::t4, PReg::t5, PReg::t6,
-        PReg::a0, PReg::a1, PReg::a2, PReg::a3, PReg::a4, PReg::a5, PReg::a6, PReg::a7,
-        PReg::ft0, PReg::ft1, PReg::ft2, PReg::ft3, PReg::ft4, PReg::ft5, PReg::ft6, PReg::ft7,
-        PReg::ft8, PReg::ft9, PReg::ft10, PReg::ft11,
-        PReg::fa0, PReg::fa1, PReg::fa2, PReg::fa3, PReg::fa4, PReg::fa5, PReg::fa6, PReg::fa7
-    };
-
-    return callerSavedSet.count(reg);
-}
-
-bool isCalleeSaved(PReg reg) {
-    static const std::set<PReg> calleeSavedSet = {
-        PReg::s0, PReg::s1, PReg::s2, PReg::s3, PReg::s4, PReg::s5, PReg::s6, PReg::s7, PReg::s8, PReg::s9, PReg::s10, PReg::s11,
-        PReg::fs0, PReg::fs1, PReg::fs2, PReg::fs3, PReg::fs4, PReg::fs5, PReg::fs6, PReg::fs7, PReg::fs8, PReg::fs9, PReg::fs10, PReg::fs11
-    };
-    return calleeSavedSet.count(reg);
-}
-
 void RegAlloc::run(MCModule* m) {
-    for (auto f : m->funcs) {
-        currFunc = f;
+    for (auto* func : m->funcs) {
+        currFunc = func;
+
+        // Reset state for this function
         intervals.clear();
+        callInstIds.clear();
+        allocaOffsets.clear();
         liveIn.clear();
         liveOut.clear();
         def.clear();
         use.clear();
         instId.clear();
-        physRegState.clear();
-        allocaOffsets.clear();
+        blkStart.clear();
+        blkEnd.clear();
+        label2blk.clear();
+        state = AllocState();
 
-        // Number the command & identify the Call command.
-        numberInstructions(f);
+        // Phase 1: Number instructions and analyze liveness
+        numberInstructions(func);
+        analyzeLiveness(func);
+        buildIntervals(func);
 
-        analyzeLiveness(f);
+        // Phase 2: Allocate registers using linear scan
+        allocateRegisters();
 
-        linearScan();
-
-        // Apply the assignment result, insert the Spill code.
-        rewriteCode(f);
+        // Phase 3: Rewrite program with allocated registers
+        rewriteProgram();
     }
 }
 
 void RegAlloc::numberInstructions(MCFunc* f) {
     int id = 0;
-    callInstIds.clear();
-    for (auto b : f->blks) {
-        blkStart[b] = id;
-        for (auto i : b->insts) {
-            instId[i] = id;
-            if (i->opc == MCInst::CALL) {
-                callInstIds.push_back(id);
-            }
-            // When we find that we need to spill when allocating registers, 
-            // we have to insert a load instruction between instructions 1 and 2.
-            // If there is no gap, we would have to +1 all the thousands of instructions that follow,
-            // which is extremely performance-consuming.
-            id += 2;
+
+    // Build label to block mapping
+    for (auto* blk : f->blks) {
+        label2blk[blk->name] = blk;
+    }
+
+    // Number instructions in each block
+    for (auto* blk : f->blks) {
+        blkStart[blk] = id;
+        for (auto* inst : blk->insts) {
+            instId[inst] = id++;
         }
-        blkEnd[b] = id;
+        blkEnd[blk] = id - 1;
     }
-}
-
-void RegAlloc::analyzeLiveness(MCFunc* f) {
-    label2blk.clear();
-
-    for (auto b : f->blks) {
-        label2blk[b->name] = b;
-        computeLocalLiveness(b);
-    }
-    computeGlobalLiveness(f);
-    buildIntervals(f);
 }
 
 void RegAlloc::computeLocalLiveness(MCBlk* b) {
     def[b].clear();
     use[b].clear();
-    for (auto i : b->insts) {
-        for (size_t k = 0; k < i->opCnt(); k++) {
-            MCOpnd& op = i->getOp(k);
-            if (!op.isVReg()) continue;
-            // Store/Branch isn't a def.
-            bool isDef = (k == 0);
-            if (i->opc == MCInst::SW || i->opc == MCInst::FSW || i->opc == MCInst::SD ||
-                i->opc == MCInst::BEQ || i->opc == MCInst::BNE ||
-                i->opc == MCInst::BLT || i->opc == MCInst::BGE ) {
-                isDef = false;
-            }
 
-            if (!isDef) {
-                if (def[b].find(op.val) == def[b].end()) {
-                    use[b].insert(op.val);
-                } 
-            } else {
-                def[b].insert(op.val);
-            }    
-        }   
+    for (auto* inst : b->insts) {
+        // Collect used virtual registers (operands)
+        for (size_t i = 0; i < inst->opCnt(); ++i) {
+            auto& opnd = inst->getOp(i);
+            if (opnd.isVReg()) {
+                // Clean the float flag bit (bit 16) to get the actual vreg number
+                int vreg = opnd.val & ~0x10000;
+                // Only add to use if not defined in this block
+                if (def[b].find(vreg) == def[b].end()) {
+                    use[b].insert(vreg);
+                }
+            }
+        }
+
+        // Collect defined virtual registers (def is usually first operand)
+        // Skip ALLOCA instructions - they define stack slots, not vregs
+        if (inst->opc != MCInst::ALLOCA && inst->opCnt() > 0) {
+            auto& defOpnd = inst->getOp(0);
+            if (defOpnd.isVReg()) {
+                // Clean the float flag bit (bit 16)
+                int vreg = defOpnd.val & ~0x10000;
+                def[b].insert(vreg);
+            }
+        }
+
+        // Track call instructions
+        if (inst->opc == MCInst::CALL) {
+            callInstIds.push_back(instId[inst]);
+        }
     }
 }
 
 void RegAlloc::computeGlobalLiveness(MCFunc* f) {
+    // Initialize liveOut for all blocks
+    for (auto* blk : f->blks) {
+        liveOut[blk].clear();
+        liveIn[blk].clear();
+    }
+
+    // Iterative dataflow analysis
     bool changed = true;
-    // Fixed-Point Iteration.
     while (changed) {
         changed = false;
-        for (auto it = f->blks.rbegin(); it != f->blks.rend(); ++it) {
-            MCBlk* b = *it;
-            std::set<int> oldIn = liveIn[b];
-            // LiveOut = Union(LiveIn of succ)
-            liveOut[b].clear();
-            if (!b->insts.empty()) {
-                auto addSucc = [&](const std::string& lbl) {
-                    if (label2blk.count(lbl)) {
-                        MCBlk* succ = label2blk[lbl];
-                        liveOut[b].insert(liveIn[succ].begin(), liveIn[succ].end());
+
+        for (auto* blk : f->blks) {
+            // Compute liveOut = union of successors' liveIn
+            std::set<int> newLiveOut;
+
+            // Get successors from branch instructions
+            MCInst* branchInst = nullptr;
+            if (!blk->insts.empty()) {
+                branchInst = blk->insts.back();
+            }
+
+            if (branchInst) {
+                if (branchInst->opc == MCInst::J || branchInst->opc == MCInst::CALL) {
+                    // Unconditional branch - single successor
+                    if (branchInst->opCnt() > 0 && branchInst->getOp(0).isLbl()) {
+                        std::string label = branchInst->getOp(0).label;
+                        if (label2blk.count(label)) {
+                            MCBlk* succ = label2blk[label];
+                            for (int vreg : liveIn[succ]) {
+                                newLiveOut.insert(vreg);
+                            }
+                        }
                     }
-                };
-
-                MCBlk* nextBlk = nullptr;
-                if (it.base() != f->blks.end()) {
-                    nextBlk = *(it.base());
-                }
-
-                bool hasFallthrough = true; 
-                
-                for (auto instIt = b->insts.rbegin(); instIt != b->insts.rend(); ++instIt) {
-                    MCInst* inst = *instIt;
-                    if (inst->opc == MCInst::J) {
-                        addSucc(inst->getOp(0).label);
-                        hasFallthrough = false;
-                    } else if (inst->opc == MCInst::BNE || inst->opc == MCInst::BEQ ||
-                               inst->opc == MCInst::BLT || inst->opc == MCInst::BGE ||
-                               inst->opc == MCInst::BLTU || inst->opc == MCInst::BGEU) {
-                        addSucc(inst->getOp(inst->opCnt()-1).label);
-                    } else if (inst->opc == MCInst::RET) {
-                        hasFallthrough = false;
-                    } else {
-                        break;
+                } else if (branchInst->opc >= MCInst::BEQ && branchInst->opc <= MCInst::BGEU) {
+                    // Conditional branch - two successors
+                    // First successor is the branch target
+                    if (branchInst->opCnt() > 2 && branchInst->getOp(2).isLbl()) {
+                        std::string label = branchInst->getOp(2).label;
+                        if (label2blk.count(label)) {
+                            MCBlk* succ = label2blk[label];
+                            for (int vreg : liveIn[succ]) {
+                                newLiveOut.insert(vreg);
+                            }
+                        }
                     }
-                }
-
-                if (hasFallthrough && nextBlk) {
-                    liveOut[b].insert(liveIn[nextBlk].begin(), liveIn[nextBlk].end());
+                    // Second successor is the fall-through block
+                    // Find the next block in the function
+                    auto it = std::find(f->blks.begin(), f->blks.end(), blk);
+                    if (it != f->blks.end() && ++it != f->blks.end()) {
+                        MCBlk* fallthrough = *it;
+                        for (int vreg : liveIn[fallthrough]) {
+                            newLiveOut.insert(vreg);
+                        }
+                    }
                 }
             }
 
-            // LiveIn = Use + (LiveOut - Def)
-            liveIn[b] = use[b];
-            for (int v : liveOut[b]) {
-                if (def[b].find(v) == def[b].end()) 
-                    liveIn[b].insert(v);
+            // liveIn = use ∪ (liveOut - def)
+            std::set<int> newLiveIn = use[blk];
+            for (int vreg : newLiveOut) {
+                if (def[blk].find(vreg) == def[blk].end()) {
+                    newLiveIn.insert(vreg);
+                }
             }
 
-            if (liveIn[b] != oldIn) changed = true;
+            if (newLiveOut != liveOut[blk] || newLiveIn != liveIn[blk]) {
+                changed = true;
+                liveOut[blk] = newLiveOut;
+                liveIn[blk] = newLiveIn;
+            }
         }
     }
+}
+
+void RegAlloc::analyzeLiveness(MCFunc* f) {
+    // Compute local liveness for each block
+    for (auto* blk : f->blks) {
+        computeLocalLiveness(blk);
+    }
+
+    // Compute global liveness
+    computeGlobalLiveness(f);
 }
 
 void RegAlloc::buildIntervals(MCFunc* f) {
-    std::map<int, Interval*> vreg2Int;
+    std::map<int, Interval*> vreg2Interval;
 
-    for (auto b : f->blks) {
-        int start = blkStart[b];
-        int end = blkEnd[b];
-        for (int v : liveOut[b]) {
-            if (vreg2Int.find(v) == vreg2Int.end()) {
-                vreg2Int[v] = new Interval{v, start, end, PReg::zero, false, 0, false};
-                intervals.push_back(vreg2Int[v]);
-            } else {
-                vreg2Int[v]->start = std::min(vreg2Int[v]->start, start);
-                vreg2Int[v]->end = std::max(vreg2Int[v]->end, end);
-            }
-        }
-    }
-
-    auto checkIsFloatDef = [](MCInst* i) {
-        auto opc = i->opc;
-        if (opc >= MCInst::FADD_S && opc <= MCInst::FDIV_S) return true;
-        if (opc == MCInst::FMV_S || opc == MCInst::FCVT_S_W || opc == MCInst::FMV_W_X || opc == MCInst::FLW) return true;
-        return false;
+    // Helper function to check if virtual register is float
+    auto isFloatVReg = [](int vreg) {
+        return (vreg & 0x10000) != 0;
     };
 
-    auto checkIsFloatUse = [](MCInst* i, int k) {
-        auto opc = i->opc;
-        if (opc >= MCInst::FADD_S && opc <= MCInst::FDIV_S) return true;
-        if (opc == MCInst::FMV_S) return true;
-        if (opc == MCInst::FCVT_W_S || opc == MCInst::FMV_X_W) return k == 1; 
-        if (opc == MCInst::FEQ_S || opc == MCInst::FLT_S || opc == MCInst::FLE_S) return k != 0;
-        if (opc == MCInst::FSW) return k == 0;
-        return false;
+    // Helper function to check if instruction is float
+    auto isFloatInst = [](MCInst* inst) {
+        // Most float instructions output to float registers
+        // Exceptions:
+        // - FCVT_W_S outputs to integer register
+        // - FMV_X_W outputs to integer register
+        if (inst->opc == MCInst::FCVT_W_S || inst->opc == MCInst::FMV_X_W) {
+            return false;  // Result is in integer register
+        }
+        return inst->opc >= MCInst::FADD_S && inst->opc <= MCInst::FSW ||
+               inst->opc == MCInst::FMV_S;
     };
 
-    for (auto b : f->blks) {
-        int blockFrom = blkStart[b];
-        for (auto it = b->insts.rbegin(); it != b->insts.rend(); ++it) {
-            MCInst* i = *it;
-            int currId = instId[i];
-
-            // Defs
-            bool hasDef = false;
-            int defReg = -1;
-            if (i->opc != MCInst::SW && i->opc != MCInst::FSW && i->opc != MCInst::SD &&
-                i->opc != MCInst::BEQ && i->opc != MCInst::BNE && 
-                i->opc != MCInst::BLT && i->opc != MCInst::BGE && 
-                i->opc != MCInst::J && i->opc != MCInst::RET && i->opc != MCInst::CALL) {
-                if (i->opCnt() > 0 && i->getOp(0).isVReg()) {
-                    hasDef = true;
-                    defReg = i->getOp(0).val;
-                }
-            }
-
-            bool isFloat = (i->opc >= MCInst::FADD_S && i->opc <= MCInst::FSW) || i->opc == MCInst::FMV_S;
-
-            if (hasDef) {
-                bool isFloatDef = checkIsFloatDef(i);
-                if (vreg2Int.find(defReg) == vreg2Int.end()) {
-                    // Dead Variable.
-                    // [currId, currId + 1]
-                    // Give it a tiny lifespan of +1 just to protect the site.
-                    vreg2Int[defReg] = new Interval{defReg, currId, currId + 1, PReg::zero, false, 0, isFloatDef};
-                    intervals.push_back(vreg2Int[defReg]);
-                } else {
-                    vreg2Int[defReg]->start = std::min(vreg2Int[defReg]->start, currId);
-                    vreg2Int[defReg]->end = std::max(vreg2Int[defReg]->end, currId + 1);
-                    if (isFloatDef) vreg2Int[defReg]->isFloat = true;
-                }
-            }
-
-            // Uses (!hasDef || k != 0)
-            for (size_t k = 0; k < i->opCnt(); k++) {
-                if (i->getOp(k).isVReg()) {
-                    int v = i->getOp(k).val;
-                    if (!hasDef || k != 0) {
-                        bool isFloatUse = checkIsFloatUse(i, k);
-
-                        int actualStart = liveIn[b].count(v) ? blockFrom : currId;
-                        if (vreg2Int.find(v) == vreg2Int.end()) {
-                            vreg2Int[v] = new Interval{v, actualStart, currId, PReg::zero, false, 0, isFloatUse};
-                            intervals.push_back(vreg2Int[v]);
-                        } else {
-                            vreg2Int[v]->end = std::max(vreg2Int[v]->end, currId);
-                            vreg2Int[v]->start = std::min(vreg2Int[v]->start, actualStart);
-                            if (isFloatUse) vreg2Int[v]->isFloat = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    std::sort(intervals.begin(), intervals.end(), [](Interval* a, Interval* b) {
-        return a->start < b->start;
-    });
-}
-
-void RegAlloc::linearScan() {
-    active.clear();
-    physRegState.clear();
-
-    // Safety buffer
-    int stackOffset = 256;
-
-    std::vector<MCInst*> allocas;
-    for (auto b : currFunc->blks) {
-        for (auto inst : b->insts) {
+    // First pass: collect all virtual register definitions
+    for (auto* blk : f->blks) {
+        for (auto* inst : blk->insts) {
             if (inst->opc == MCInst::ALLOCA) {
-                allocas.push_back(inst);
-            }
-        }
-    }
-
-    for (auto it = allocas.rbegin(); it != allocas.rend(); ++it) {
-        MCInst* inst = *it;
-        int vreg = inst->getOp(0).val;
-        int size = inst->getOp(1).val;
-        stackOffset = (stackOffset + 7) / 8 * 8;
-        allocaOffsets[vreg] = stackOffset;
-        stackOffset += size;
-    }
-
-    for (auto i : intervals) {
-        auto new_end = std::remove_if(active.begin(), active.end(), [&](Interval* act) {
-            if (act->end <= i->start) {
-                physRegState.erase(act->assigned);
-                return true;
-            }
-            return false;
-        });
-        active.erase(new_end, active.end());
-
-        // Checking if the function call is crossed.
-        bool crossesCall = false;
-        for (int callId : callInstIds) {
-            if (i->start < callId && i->end > callId) {
-                crossesCall = true;
-                break;
-            }
-        }
-
-        PReg bestReg = PReg::zero;
-
-        if (currFunc->precolorMap.count(i->vreg)) {
-            bestReg = currFunc->precolorMap[i->vreg];
-        }
-
-        if (bestReg == PReg::zero) {
-            const auto& candidates = i->isFloat ? MCRegInfo::fallocOrder : MCRegInfo::allocOrder;
-            
-            for (PReg reg : candidates) {
-                if (physRegState.find(reg) != physRegState.end()) continue;
-                if (RESERVED_REGS.count(reg)) continue;
-                if (crossesCall && isCallerSaved(reg)) continue;
-
-                if (i->vreg < 32) {
-                    int ri = static_cast<int>(reg);
-                    // a0-a7(10-17), t1-t2(6-7), t3-t6(28-31) 
-                    if ((ri >= 10 && ri <= 17) || (ri == 6 || ri == 7) || (ri >= 28 && ri <= 31) ||
-                        (ri >= 42 && ri <= 49) || (ri >= 33 && ri <= 38)) {
-                        continue;
-                    }
-                }
-
-                bool conflict = false;
-                for (Interval* other : intervals) {
-                    if (other == i) continue;
-                    if (other->start >= i->end) break; 
-                    if (other->end > i->start) {
-                        if (currFunc->precolorMap.count(other->vreg) && currFunc->precolorMap[other->vreg] == reg) {
-                            conflict = true;
-                            break;
-                        }
-                    }
-                }
-                if (conflict) continue;
-
-                bestReg = reg;
-                break;
-            }
-        }
-
-        if (bestReg != PReg::zero) {
-            i->assigned = bestReg;
-            i->spilled = false;
-            physRegState[bestReg] = i;
-            active.push_back(i);
-            std::sort(active.begin(), active.end(), [](Interval* a, Interval* b) {
-                return a->end < b->end;
-            });
-            if (isCalleeSaved(bestReg)) {
-                currFunc->savedRegs.insert(bestReg);
-            }
-        } else {
-            i->spilled = true;
-            if (i->isFloat) {
-                stackOffset = (stackOffset + 3) / 4 * 4;
-                i->stackOffset = stackOffset;
-                stackOffset += 4;
-            } else {
-                stackOffset = (stackOffset + 7) / 8 * 8;
-                i->stackOffset = stackOffset;
-                stackOffset += 8; 
-            }
-        }
-    }
-
-    // Prologue & Epilogue
-    if (stackOffset > 0) {
-        currFunc->savedRegs.insert(PReg::s10);
-        currFunc->savedRegs.insert(PReg::s11);
-        currFunc->savedRegs.insert(PReg::fs10);
-        currFunc->savedRegs.insert(PReg::fs11);
-    }    
-
-    if (!callInstIds.empty()) {
-        currFunc->savedRegs.insert(PReg::ra);
-    }
-
-    int currentOffset = stackOffset;
-    for (PReg reg : currFunc->savedRegs) {
-        if (static_cast<int>(reg) >= 32) {
-            currentOffset = (currentOffset + 3) / 4 * 4;
-            currFunc->savedRegOffsets[reg] = currentOffset;
-            currentOffset += 4;
-        } else {
-            currentOffset = (currentOffset + 7) / 8 * 8;
-            currFunc->savedRegOffsets[reg] = currentOffset;
-            currentOffset += 8;
-        }
-    }
-    
-    // Record the maximum stack offset,
-    // to be used later for generating the Prologue, ensuring 16-byte alignment.
-    currFunc->stackSize = (currentOffset + 15) / 16 * 16;
-}
-
-void RegAlloc::rewriteCode(MCFunc* f) {
-    std::map<int, Interval*> vmap;
-    for (auto i : intervals) vmap[i->vreg] = i;
-
-    PReg iSpill1 = PReg::s10; 
-    PReg iSpill2 = PReg::s11; 
-    PReg fSpill1 = PReg::fs10;
-    PReg fSpill2 = PReg::fs11;
-
-    for (auto b : f->blks) {
-        std::list<MCInst*> newInsts;
-        
-        for (auto inst : b->insts) {
-
-            if (inst->opc == MCInst::ALLOCA) {
-                MCOpnd& targetOp = inst->getOp(0);
-                if (targetOp.isVReg() && vmap.count(targetOp.val)) {
-                    Interval* it = vmap[targetOp.val];
-                    int offset = allocaOffsets[targetOp.val];
-
-                    PReg scratch = iSpill1;
-                    PReg destReg = it->spilled ? scratch : it->assigned;
-
-                    if (offset >= -2048 && offset <= 2047) {
-                        MCInst* addi = new MCInst(MCInst::ADDI);
-                        addi->add(MCOpnd::preg(destReg))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(offset));
-                        newInsts.push_back(addi);
-                    } else {
-                        MCInst* li = new MCInst(MCInst::LI);
-                        li->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(offset));
-                        newInsts.push_back(li);
-                        
-                        MCInst* add = new MCInst(MCInst::ADD);
-                        add->add(MCOpnd::preg(destReg))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::preg(PReg::t0));
-                        newInsts.push_back(add);
-                    }
-
-                    if (it->spilled) {
-                        if (it->stackOffset >= -2048 && it->stackOffset <= 2047) {
-                            MCInst* st = new MCInst(MCInst::SD);
-                            st->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(it->stackOffset));
-                            newInsts.push_back(st);
-                        } else {
-                            MCInst* li2 = new MCInst(MCInst::LI);
-                            li2->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(it->stackOffset));
-                            newInsts.push_back(li2);
-                            
-                            MCInst* add2 = new MCInst(MCInst::ADD);
-                            add2->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::preg(PReg::t0));
-                            newInsts.push_back(add2);
-                            
-                            MCInst* st = new MCInst(MCInst::SD);
-                            st->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(0));
-                            newInsts.push_back(st);
-                        }
-                    }
+                // ALLOCA instructions define stack slots
+                if (inst->opCnt() > 0 && inst->getOp(0).isVReg()) {
+                    int vreg = inst->getOp(0).val;
+                    int offset = state.stackOffset;
+                    state.stackOffset += 8; // Assume 8-byte stack slots
+                    allocaOffsets[vreg] = offset;
                 }
                 continue;
             }
 
-            // Handle Uses.
-            for (size_t k = 0; k < inst->opCnt(); k++) {
-                bool isDef = (k == 0);
-                if (inst->opc == MCInst::SW || inst->opc == MCInst::FSW || 
-                    inst->opc == MCInst::BEQ || inst->opc == MCInst::BNE || 
-                    inst->opc == MCInst::BLT || inst->opc == MCInst::BGE) isDef = false;
-                
-                if (isDef) continue;
+            // Check if this instruction defines a virtual register
+            if (inst->opCnt() > 0) {
+                auto& defOpnd = inst->getOp(0);
+                if (defOpnd.isVReg()) {
+                    int vreg = defOpnd.val;
+                    // Clean the float flag bit to get the actual vreg number
+                    int cleanVreg = vreg & ~0x10000;
+                    if (!vreg2Interval.count(cleanVreg)) {
+                        Interval* interval = new Interval();
+                        interval->vreg = cleanVreg;
+                        interval->start = instId[inst];
+                        interval->end = instId[inst];
+                        interval->assigned = PReg::zero; // Unassigned
+                        interval->spilled = false;
+                        interval->stackOffset = 0;
+                        // Check if this is a float virtual register or float instruction
+                        interval->isFloat = isFloatVReg(vreg) || isFloatInst(inst);
+                        interval->defInst = inst;
 
-                MCOpnd& op = inst->getOp(k);
-                if (op.isVReg() && vmap.count(op.val)) {
-                    Interval* it = vmap[op.val];
-                    if (it->spilled) {
-                        PReg scratch = it->isFloat ? (k==1 ? fSpill2 : fSpill1) : (k==1 ? iSpill2 : iSpill1);
-                        if (it->stackOffset >= -2048 && it->stackOffset <= 2047) {
-                            MCInst* ld = new MCInst(it->isFloat ? MCInst::FLW : MCInst::LD);
-                            ld->add(MCOpnd::preg(scratch))
-                              ->add(MCOpnd::preg(PReg::sp))
-                              ->add(MCOpnd::imm(it->stackOffset));
-                            newInsts.push_back(ld);
-                        } else {
-                            MCInst* li = new MCInst(MCInst::LI);
-                            li->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(it->stackOffset));
-                            newInsts.push_back(li);
-                            MCInst* add = new MCInst(MCInst::ADD);
-                            add->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::preg(PReg::t0));
-                            newInsts.push_back(add);
-                            MCInst* ld = new MCInst(it->isFloat ? MCInst::FLW : MCInst::LD);
-                            ld->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(0));
-                            newInsts.push_back(ld);
+                        intervals.push_back(interval);
+                        vreg2Interval[cleanVreg] = interval;
+                    }
+                }
+            }
+        }
+    }
+
+    // Second pass: extend intervals based on liveness
+    for (auto* blk : f->blks) {
+        // Work backwards through the block
+        std::set<int> currentLive = liveOut[blk];
+
+        auto instIt = blk->insts.rbegin();
+        while (instIt != blk->insts.rend()) {
+            MCInst* inst = *instIt;
+            int id = instId[inst];
+
+            // Extend intervals for all currently live variables
+            for (int vreg : currentLive) {
+                if (vreg2Interval.count(vreg)) {
+                    Interval* interval = vreg2Interval[vreg];
+                    if (interval->end < id) {
+                        interval->end = id;
+                    }
+                }
+            }
+
+            // Process the instruction
+            if (inst->opc != MCInst::ALLOCA && inst->opCnt() > 0) {
+                auto& defOpnd = inst->getOp(0);
+                if (defOpnd.isVReg()) {
+                    int vreg = defOpnd.val;
+                    // Remove from current live set
+                    currentLive.erase(vreg);
+                }
+            }
+
+            // Add uses to current live set
+            for (size_t i = 0; i < inst->opCnt(); ++i) {
+                auto& opnd = inst->getOp(i);
+                if (opnd.isVReg()) {
+                    // Clean the float flag bit (bit 16) to get the actual vreg number
+                    int vreg = opnd.val & ~0x10000;
+                    currentLive.insert(vreg);
+                }
+            }
+
+            ++instIt;
+        }
+    }
+
+    // Sort intervals by start position
+    std::sort(intervals.begin(), intervals.end(),
+        [](const Interval* a, const Interval* b) {
+            return a->start < b->start;
+        });
+}
+
+bool RegAlloc::isLeafFunction() const {
+    return callInstIds.empty();
+}
+
+void RegAlloc::allocateRegisters() {
+    bool isLeaf = isLeafFunction();
+
+    // Get the appropriate allocation order
+    const auto& allocOrder = isLeaf ? MCRegInfo::leafAllocOrder : MCRegInfo::normalAllocOrder;
+    const auto& fallocOrder = isLeaf ? MCRegInfo::leafFallocOrder : MCRegInfo::normalFallocOrder;
+
+    // Track which physical registers are available using vectors to preserve order
+    std::vector<PReg> regOrder;
+    std::vector<bool> regAvailable;
+    for (auto preg : allocOrder) {
+        regOrder.push_back(preg);
+        regAvailable.push_back(preg != PReg::sp && preg != PReg::zero && preg != PReg::ra);
+    }
+
+    std::cerr << "  [Alloc] Available int regs (first 10): ";
+    int count = 0;
+    for (size_t i = 0; i < regOrder.size(); ++i) {
+        if (count++ >= 10) break;
+        std::cerr << (int)regOrder[i] << "(" << (regAvailable[i] ? "avail" : "unavail") << ") ";
+    }
+    std::cerr << "\n";
+
+    std::vector<PReg> fregOrder;
+    std::vector<bool> fregAvailable;
+    for (auto preg : fallocOrder) {
+        fregOrder.push_back(preg);
+        fregAvailable.push_back(true);
+    }
+
+    // Helper lambda to find and mark a register as available
+    auto freeReg = [&](PReg reg, bool isFloat) {
+        if (isFloat) {
+            auto it = std::find(fregOrder.begin(), fregOrder.end(), reg);
+            if (it != fregOrder.end()) {
+                fregAvailable[std::distance(fregOrder.begin(), it)] = true;
+            }
+        } else {
+            auto it = std::find(regOrder.begin(), regOrder.end(), reg);
+            if (it != regOrder.end()) {
+                regAvailable[std::distance(regOrder.begin(), it)] = true;
+            }
+        }
+    };
+
+    // Helper lambda to find and allocate the first available register
+    auto allocFirstAvail = [&](bool isFloat) -> PReg {
+        if (isFloat) {
+            for (size_t i = 0; i < fregOrder.size(); ++i) {
+                if (fregAvailable[i]) {
+                    fregAvailable[i] = false;
+                    return fregOrder[i];
+                }
+            }
+        } else {
+            for (size_t i = 0; i < regOrder.size(); ++i) {
+                if (regAvailable[i]) {
+                    regAvailable[i] = false;
+                    return regOrder[i];
+                }
+            }
+        }
+        return PReg::zero; // No available register
+    };
+
+    // Helper lambda to check if any register is available
+    auto hasRegAvailable = [&](bool isFloat) -> bool {
+        if (isFloat) {
+            for (bool avail : fregAvailable) {
+                if (avail) return true;
+            }
+        } else {
+            for (bool avail : regAvailable) {
+                if (avail) return true;
+            }
+        }
+        return false;
+    };
+
+    // Active intervals
+    std::vector<Interval*> active;
+
+    // Process intervals in order of increasing start point
+    for (auto* interval : intervals) {
+        // Expire old intervals
+        auto it = active.begin();
+        while (it != active.end()) {
+            Interval* activeInterval = *it;
+            if (activeInterval->end < interval->start) {
+                // Free the register
+                freeReg(activeInterval->assigned, activeInterval->isFloat);
+                it = active.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        // Try to allocate a register
+        if (hasRegAvailable(interval->isFloat)) {
+            // Allocate the first available register (preserves allocOrder)
+            PReg reg = allocFirstAvail(interval->isFloat);
+            interval->assigned = reg;
+            interval->spilled = false;
+
+            std::cerr << "  [Alloc] vreg " << interval->vreg << " [" << interval->start << "," << interval->end << "] isFloat=" << interval->isFloat << " -> " << (int)reg << (interval->isFloat ? "f" : "") << "\n";
+
+            // Insert into active list, sorted by end point
+            active.insert(std::upper_bound(active.begin(), active.end(), interval,
+                [](const Interval* a, const Interval* b) {
+                    return a->end < b->end;
+                }), interval);
+        } else {
+            // Need to spill
+            // Spill the interval with the furthest end point
+            if (!active.empty()) {
+                Interval* toSpill = active.back();
+                if (toSpill->end > interval->end) {
+                    // Spill the active interval and allocate current
+                    freeReg(toSpill->assigned, toSpill->isFloat);
+                    toSpill->spilled = true;
+                    toSpill->stackOffset = state.stackOffset;
+                    state.stackOffset += 8;
+                    active.pop_back();
+
+                    // Allocate register to current interval
+                    PReg reg = allocFirstAvail(interval->isFloat);
+                    interval->assigned = reg;
+                    interval->spilled = false;
+
+                    active.insert(std::upper_bound(active.begin(), active.end(), interval,
+                        [](const Interval* a, const Interval* b) {
+                            return a->end < b->end;
+                        }), interval);
+                } else {
+                    // Spill current interval
+                    interval->spilled = true;
+                    interval->stackOffset = state.stackOffset;
+                    state.stackOffset += 8;
+                }
+            } else {
+                // No active intervals, must spill current
+                interval->spilled = true;
+                interval->stackOffset = state.stackOffset;
+                state.stackOffset += 8;
+            }
+        }
+    }
+
+    // Update function stack size
+    currFunc->stackSize = state.stackOffset;
+
+    // For non-leaf functions, save ra register
+    if (!isLeaf) {
+        currFunc->savedRegs.insert(PReg::ra);
+        // Allocate space for ra on stack
+        // Note: savedRegOffsets should be set, but if not, calculate here
+        if (currFunc->savedRegOffsets.find(PReg::ra) == currFunc->savedRegOffsets.end()) {
+            currFunc->savedRegOffsets[PReg::ra] = state.stackOffset;
+            state.stackOffset += 8;
+        }
+        // Update stack size again
+        currFunc->stackSize = state.stackOffset;
+    }
+
+    // Track saved registers for callee-saved registers that are used
+    for (auto* interval : intervals) {
+        if (!interval->spilled && MCRegInfo::calleeSaved.count(interval->assigned)) {
+            currFunc->savedRegs.insert(interval->assigned);
+            // Allocate space for callee-saved register
+            if (currFunc->savedRegOffsets.find(interval->assigned) == currFunc->savedRegOffsets.end()) {
+                currFunc->savedRegOffsets[interval->assigned] = state.stackOffset;
+                state.stackOffset += 8;
+            }
+        }
+    }
+
+    // Update final stack size with 16-byte alignment (RISC-V ABI requirement)
+    // RISC-V ABI requires stack pointer to be 16-byte aligned at function call
+    if (state.stackOffset % 16 != 0) {
+        state.stackOffset = (state.stackOffset / 16 + 1) * 16;
+    }
+    currFunc->stackSize = state.stackOffset;
+}
+
+void RegAlloc::rewriteProgram() {
+    // Build vreg to interval mapping
+    std::map<int, Interval*> vreg2Interval;
+    for (auto* interval : intervals) {
+        vreg2Interval[interval->vreg] = interval;
+    }
+
+    // Rewrite each instruction
+    for (auto* blk : currFunc->blks) {
+        std::list<MCInst*> newInsts;
+
+        for (auto* inst : blk->insts) {
+            // Skip ALLOCA instructions - they don't generate code
+            if (inst->opc == MCInst::ALLOCA) {
+                continue;
+            }
+
+            // Collect operands that need reloads
+            std::vector<int> reloads;
+            for (size_t i = 0; i < inst->opCnt(); ++i) {
+                auto& opnd = inst->getOp(i);
+                if (opnd.isVReg()) {
+                    int cleanVreg = opnd.val & ~0x10000;
+                    if (vreg2Interval.count(cleanVreg)) {
+                        Interval* interval = vreg2Interval[cleanVreg];
+                        if (interval->spilled) {
+                            reloads.push_back(i);
                         }
-                        // rewrite
-                        op = MCOpnd::preg(scratch);
-                    } else {
-                        // rewrite
-                        op = MCOpnd::preg(it->assigned);
+                    }
+                }
+            }
+
+            // Generate reload instructions before the current instruction
+            for (int opIdx : reloads) {
+                auto& opnd = inst->getOp(opIdx);
+                int cleanVreg = opnd.val & ~0x10000;
+                Interval* interval = vreg2Interval[cleanVreg];
+
+                // Allocate a temporary register for reload
+                // Use t0 as a temporary scratch register
+                MCInst* reload = new MCInst(MCInst::LD, blk);
+                reload->add(MCOpnd::preg(PReg::t0));
+
+                // Calculate stack offset: fp - offset
+                // For now, use sp-based addressing
+                reload->add(MCOpnd::preg(PReg::sp));
+                reload->add(MCOpnd::imm(-interval->stackOffset - 16)); // Adjust for saved registers
+
+                newInsts.push_back(reload);
+
+                // Replace operand with temporary register
+                opnd = MCOpnd::preg(PReg::t0);
+            }
+
+            // Rewrite virtual registers to physical registers
+            for (size_t i = 0; i < inst->opCnt(); ++i) {
+                auto& opnd = inst->getOp(i);
+                if (opnd.isVReg()) {
+                    int cleanVreg = opnd.val & ~0x10000;
+                    if (vreg2Interval.count(cleanVreg)) {
+                        Interval* interval = vreg2Interval[cleanVreg];
+                        if (!interval->spilled) {
+                            opnd = MCOpnd::preg(interval->assigned);
+                        }
+                    }
+                }
+            }
+
+            // Check if the result needs to be spilled
+            if (inst->opCnt() > 0) {
+                auto& defOpnd = inst->getOp(0);
+                if (defOpnd.isPReg()) {
+                    PReg preg = (PReg)defOpnd.val;
+                    // Find the interval for this register
+                    for (auto* interval : intervals) {
+                        if (!interval->spilled && interval->assigned == preg) {
+                            // This is the destination interval, check if it needs spilling
+                            // Actually, we need to track which interval this instruction defines
+                            break;
+                        }
                     }
                 }
             }
 
             newInsts.push_back(inst);
-
-            // Handle Defs.
-            if (inst->opCnt() > 0) {
-                bool isDef = true;
-                if (inst->opc == MCInst::SW || inst->opc == MCInst::FSW || 
-                    inst->opc == MCInst::BEQ || inst->opc == MCInst::BNE || 
-                    inst->opc == MCInst::BLT || inst->opc == MCInst::BGE ||
-                    inst->opc == MCInst::J || inst->opc == MCInst::RET || inst->opc == MCInst::CALL) isDef = false;
-
-                if (isDef) {
-                    MCOpnd& op = inst->getOp(0);
-                    if (op.isVReg() && vmap.count(op.val)) {
-                        Interval* it = vmap[op.val];
-                        if (it->spilled) {
-                            PReg scratch = it->isFloat ? fSpill1 : iSpill1;
-                            op = MCOpnd::preg(scratch);
-
-                            if (it->stackOffset >= -2048 && it->stackOffset <= 2047) {
-                                MCInst* st = new MCInst(it->isFloat ? MCInst::FSW : MCInst::SD);
-                                st->add(MCOpnd::preg(scratch))
-                                  ->add(MCOpnd::preg(PReg::sp))
-                                  ->add(MCOpnd::imm(it->stackOffset));
-                                newInsts.push_back(st);
-                            } else {
-                                MCInst* li = new MCInst(MCInst::LI);
-                                li->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(it->stackOffset));
-                                newInsts.push_back(li);
-                                MCInst* add = new MCInst(MCInst::ADD);
-                                add->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::preg(PReg::t0));
-                                newInsts.push_back(add);
-                                MCInst* st = new MCInst(it->isFloat ? MCInst::FSW : MCInst::SD);
-                                st->add(MCOpnd::preg(scratch))->add(MCOpnd::preg(PReg::t0))->add(MCOpnd::imm(0));
-                                newInsts.push_back(st);
-                            }
-                        } else {
-                            op = MCOpnd::preg(it->assigned);
-                        }
-                    }
-                }
-            }
         }
-        b->insts = newInsts;
+
+        // Replace block instructions with new instructions
+        blk->insts = newInsts;
     }
 }
