@@ -364,8 +364,29 @@ void InstSelector::selectAlloca(AllocaInst* inst) {
     MCOpnd vreg = createVReg();
     val2opnd[inst] = vreg;
 
+    // Calculate the actual size of the allocated type
+    Type* ty = inst->getAllocatedType();
+    int size = 4;  // Default to 4 bytes (i32)
+
+    // Helper function to calculate type size
+    std::function<int(Type*)> calcSize = [&](Type* t) -> int {
+        if (auto* arrTy = dyn_cast<ArrayType>(t)) {
+            int numElements = arrTy->getNumElements();
+            Type* elemTy = arrTy->getElementType();
+            int elemSize = calcSize(elemTy);
+            return numElements * elemSize;
+        }
+        // Basic type size
+        if (t->isInt() || t->isPointer() || t->isFloat()) {
+            return 4;  // i32, pointer, float are 4 bytes
+        }
+        return 4;  // Default
+    };
+
+    size = calcSize(ty);
+
     auto* alloca = new MCInst(MCInst::ALLOCA, curMCBlk);
-    alloca->add(vreg)->add(MCOpnd::imm(4)); // TODO: get actual size
+    alloca->add(vreg)->add(MCOpnd::imm(size));  // Use actual size
     curMCBlk->push(alloca);
 }
 
@@ -549,25 +570,49 @@ void InstSelector::selectGetElementPtr(GetElementPtrInst* inst) {
     Value* base = inst->getOperand(0);
     Value* index = inst->getOperand(1);
 
-    MCOpnd baseOpnd = getOpnd(base);
-    MCOpnd indexOpnd = getOpnd(index);
     MCOpnd dst = createVReg();
-
     val2opnd[inst] = dst;
 
     // Calculate offset: base + index * element_size
     // For simplicity, assume element_size is 4 (int or float)
     // TODO: Get actual element size from type
 
-    // First, multiply index by element size
-    MCOpnd temp = createVReg();
-    auto* mul = new MCInst(MCInst::ADDIW, curMCBlk);
-    mul->add(temp)->add(indexOpnd)->add(MCOpnd::imm(2)); // Multiply by 4
-    curMCBlk->push(mul);
+    // Get base address in a register
+    MCOpnd baseReg;
 
-    // Then add to base
+    // Check if base is a global variable (label)
+    MCOpnd rawBase = getOpnd(base);
+    if (rawBase.isLbl()) {
+        // Global variable: need to load address with LA instruction
+        baseReg = createVReg();
+        auto* la = new MCInst(MCInst::LA, curMCBlk);
+        la->add(baseReg)->add(rawBase);  // LA dst, label
+        curMCBlk->push(la);
+    } else {
+        // Already a register (alloca result, etc.)
+        baseReg = rawBase;
+    }
+
+    // Calculate offset: index * 4
+    MCOpnd offsetReg;
+    if (auto* ci = dyn_cast<ConstantInt>(index)) {
+        // Constant index: directly compute index * 4
+        offsetReg = createVReg();
+        auto* li = new MCInst(MCInst::LI, curMCBlk);
+        li->add(offsetReg)->add(MCOpnd::imm(ci->getValue() * 4));
+        curMCBlk->push(li);
+    } else {
+        // Variable index: need to multiply by 4 (left shift by 2)
+        MCOpnd indexReg = getOpnd(index);
+        offsetReg = createVReg();
+        auto* slli = new MCInst(MCInst::SLLIW, curMCBlk);
+        slli->add(offsetReg)->add(indexReg)->add(MCOpnd::imm(2));
+        curMCBlk->push(slli);
+    }
+
+    // Then add base and offset
     auto* add = new MCInst(MCInst::ADD, curMCBlk);
-    add->add(dst)->add(baseOpnd)->add(temp);
+    add->add(dst)->add(baseReg)->add(offsetReg);
     curMCBlk->push(add);
 }
 

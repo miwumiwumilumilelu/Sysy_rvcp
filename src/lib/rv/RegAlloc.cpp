@@ -208,10 +208,11 @@ void RegAlloc::buildIntervals(MCFunc* f) {
         for (auto* inst : blk->insts) {
             if (inst->opc == MCInst::ALLOCA) {
                 // ALLOCA instructions define stack slots
-                if (inst->opCnt() > 0 && inst->getOp(0).isVReg()) {
+                if (inst->opCnt() > 1 && inst->getOp(0).isVReg() && inst->getOp(1).isImm()) {
                     int vreg = inst->getOp(0).val;
+                    int size = inst->getOp(1).val;
                     int offset = state.stackOffset;
-                    state.stackOffset += 8; // Assume 8-byte stack slots
+                    state.stackOffset += size;  // Use the size from ALLOCA instruction
                     allocaOffsets[vreg] = offset;
                 }
                 continue;
@@ -535,6 +536,44 @@ void RegAlloc::rewriteProgram() {
 
                 // Replace operand with temporary register
                 opnd = MCOpnd::preg(PReg::t0);
+            }
+
+            // Handle alloca virtual registers (stack addresses)
+            for (size_t i = 0; i < inst->opCnt(); ++i) {
+                auto& opnd = inst->getOp(i);
+                if (opnd.isVReg()) {
+                    int cleanVreg = opnd.val & ~0x10000;
+                    // Check if this is an alloca virtual register
+                    if (allocaOffsets.count(cleanVreg)) {
+                        // Generate: addi tmp, sp, offset
+                        // Stack layout (after sp is decremented):
+                        // [saved regs][alloca0][alloca1]...    ← low addresses
+                        //                           sp ↑
+                        // offset is from the START of allocas (after saved regs)
+                        // Need to account for saved register space
+                        int offset = allocaOffsets[cleanVreg];
+
+                        // Calculate saved registers size
+                        int savedRegsSize = 0;
+                        for (auto reg : currFunc->savedRegs) {
+                            savedRegsSize += 8;
+                        }
+
+                        // The actual address is sp + savedRegsSize + offset
+                        int actualOffset = savedRegsSize + offset;
+
+                        // Create a temporary physical register for the address
+                        MCOpnd tmpReg = MCOpnd::preg(PReg::t0);
+
+                        MCInst* addi = new MCInst(MCInst::ADDI, blk);
+                        addi->add(tmpReg)->add(MCOpnd::preg(PReg::sp))->add(MCOpnd::imm(actualOffset));
+
+                        newInsts.push_back(addi);
+
+                        // Replace operand with temporary register
+                        opnd = tmpReg;
+                    }
+                }
             }
 
             // Rewrite virtual registers to physical registers

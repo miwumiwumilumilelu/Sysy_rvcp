@@ -14,10 +14,56 @@
 using namespace sysy;
 
 void MCPrinter::print(MCModule* module, std::ostream& os) {
-    // Print .data section for global variables
-    os << "  .data\n";
+    // Helper function to check if a constant is all zeros (handles nested arrays)
+    std::function<bool(Constant*)> isAllZeroConst = [&](Constant* c) -> bool {
+        if (isa<ConstantZero>(c)) return true;
+        if (auto* ci = dyn_cast<ConstantInt>(c)) return ci->getValue() == 0;
+        if (auto* ca = dyn_cast<ConstantArray>(c)) {
+            for (auto* elem : ca->getConsts()) {
+                if (!isAllZeroConst(elem)) return false;
+            }
+            return true;
+        }
+        return false;
+    };
+
+    // Helper function to flatten nested arrays into a list of integer values
+    std::function<void(Constant*, std::vector<int>&)> flattenArray = [&](Constant* c, std::vector<int>& out) {
+        if (auto* ci = dyn_cast<ConstantInt>(c)) {
+            out.push_back(ci->getValue());
+        } else if (isa<ConstantZero>(c)) {
+            out.push_back(0);
+        } else if (auto* ca = dyn_cast<ConstantArray>(c)) {
+            for (auto* elem : ca->getConsts()) {
+                flattenArray(elem, out);
+            }
+        }
+    };
+
+    // Collect globals into .data and .bss sections
+    std::vector<GlobalVariable*> dataGlobals;
+    std::vector<GlobalVariable*> bssGlobals;
 
     for (auto* gv : module->globals) {
+        bool isAllZero = true;
+
+        if (auto* init = gv->getInit()) {
+            isAllZero = isAllZeroConst(init);
+        } else {
+            // Uninitialized -> goes to .bss
+            isAllZero = true;
+        }
+
+        if (isAllZero) {
+            bssGlobals.push_back(gv);
+        } else {
+            dataGlobals.push_back(gv);
+        }
+    }
+
+    // Print .data section
+    os << "\n\n.data\n";
+    for (auto* gv : dataGlobals) {
         os << "  .globl " << gv->getName() << "\n";
         os << "  .align 2\n";
         os << gv->getName() << ":\n";
@@ -26,37 +72,67 @@ void MCPrinter::print(MCModule* module, std::ostream& os) {
             if (auto* ci = dyn_cast<ConstantInt>(init)) {
                 os << "    .word " << ci->getValue() << "\n";
             } else if (auto* ca = dyn_cast<ConstantArray>(init)) {
-                int elemSize = 4;  // Default to 4 bytes (i32)
-                int totalBytes = ca->getConsts().size() * elemSize;
-                os << "    .zero " << totalBytes << "\n";
-            } else if (isa<ConstantZero>(init)) {
-                PointerType* ptrTy = dyn_cast<PointerType>(gv->getType());
-                Type* ty = ptrTy ? ptrTy->getPointeeType() : nullptr;
-                if (ty) {
-                    if (auto* arrTy = dyn_cast<ArrayType>(ty)) {
-                        int elemSize = 4;  // Default to 4 bytes (i32)
-                        int totalBytes = arrTy->getNumElements() * elemSize;
-                        os << "    .zero " << totalBytes << "\n";
-                    } else {
-                        os << "    .word 0\n";
-                    }
-                } else {
-                    os << "    .word 0\n";
+                // Flatten the array and print as .word list
+                std::vector<int> values;
+                flattenArray(ca, values);
+
+                os << "    .word ";
+                for (size_t i = 0; i < values.size(); i++) {
+                    if (i > 0) os << ", ";
+                    os << values[i];
                 }
+                os << "\n";
             }
-        } else {
+        }
+    }
+
+    // Print .bss section for zero/uninitialized data
+    if (!bssGlobals.empty()) {
+        os << "\n.bss\n  .align 4\n";
+        for (auto* gv : bssGlobals) {
+            os << "  .globl " << gv->getName() << "\n";
+            os << gv->getName() << ":\n";
+
+            int totalBytes = 0;
             PointerType* ptrTy = dyn_cast<PointerType>(gv->getType());
             Type* ty = ptrTy ? ptrTy->getPointeeType() : nullptr;
-            if (ty) {
-                if (auto* arrTy = dyn_cast<ArrayType>(ty)) {
-                    int elemSize = 4;  // Default to 4 bytes (i32)
-                    int totalBytes = arrTy->getNumElements() * elemSize;
-                    os << "    .zero " << totalBytes << "\n";
-                } else {
-                    os << "    .word 0\n";
+
+            if (auto* init = gv->getInit()) {
+                if (auto* ca = dyn_cast<ConstantArray>(init)) {
+                    // Count total elements (including nested)
+                    std::function<int(Constant*)> countElements = [&](Constant* c) -> int {
+                        if (auto* ca = dyn_cast<ConstantArray>(c)) {
+                            int total = 0;
+                            for (auto* elem : ca->getConsts()) {
+                                total += countElements(elem);
+                            }
+                            return total;
+                        }
+                        return 1;
+                    };
+                    totalBytes = countElements(ca) * 4;
+                } else if (auto* ci = dyn_cast<ConstantInt>(init)) {
+                    totalBytes = 4;
+                } else if (isa<ConstantZero>(init)) {
+                    // Get size from type
+                    if (ty) {
+                        if (auto* arrTy = dyn_cast<ArrayType>(ty)) {
+                            totalBytes = arrTy->getNumElements() * 4;
+                        } else {
+                            totalBytes = 4;
+                        }
+                    }
                 }
-            } else {
-                os << "    .word 0\n";
+            } else if (ty) {
+                if (auto* arrTy = dyn_cast<ArrayType>(ty)) {
+                    totalBytes = arrTy->getNumElements() * 4;
+                } else {
+                    totalBytes = 4;
+                }
+            }
+
+            if (totalBytes > 0) {
+                os << "  .space " << totalBytes << "\n";
             }
         }
     }
