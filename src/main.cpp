@@ -13,11 +13,7 @@
 #include "Optimize/ConstantFold.h"
 #include "Optimize/SimplifyCFG.h"
 #include "Optimize/DCE.h"
-#include "rv/InstSelector.h"
-#include "rv/MCPrinter.h"
-#include "rv/PhiElim.h"
-#include "rv/RegAlloc.h"
-#include "rv/Peephole.h"
+#include "rv/InstSel.h"
 
 using namespace sysy;
 
@@ -109,24 +105,6 @@ int main(int argc, char **argv) {
     }
 
     std::cerr << "\n[Debug] ----- Starting Instruction Selection -----" << std::endl;
-    InstSelector selector;
-    MCModule* machineModule = selector.run(module.get());
-
-    std::cerr << "\n[Debug] ----- Running Phi Elimination -----" << std::endl;
-    PhiElim pe;
-    pe.run(machineModule);
-
-    std::cerr << "\n[Debug] ----- Running Register Allocation -----" << std::endl;
-    RegAlloc allocator;
-    allocator.run(machineModule);
-
-    std::cerr << "\n[Debug] ----- Machine IR (Virtual Assembly) -----\n" << std::endl;
-    MCPrinter printer;
-    if (!dumpLIR && !dumpHIR) {
-        printer.print(machineModule, std::cout);
-    }
-    
-
 
     return 0;
 }
