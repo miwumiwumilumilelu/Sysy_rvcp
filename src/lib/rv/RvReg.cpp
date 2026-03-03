@@ -2,7 +2,6 @@
 
 namespace sysy {
 namespace rv {
-
 /* 
 RISC-V is a Load/Store architecture. 
 The CPU cannot directly add or sub data in memory, 
