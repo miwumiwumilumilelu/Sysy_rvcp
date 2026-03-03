@@ -137,12 +137,17 @@ public:
         op->parent = parent;
     }
 
+    virtual void print(std::ostream& os) const = 0;
+
+protected:
+    // Directly calling will bypass MCBlock's head/tail updates;
+    // it must be done through MCBlock::remove()/erase().
     void remove() {
         if (prev) prev->next = next;
         if (next) next->prev = prev;
     }
 
-    virtual void print(std::ostream& os) const = 0;
+    friend class MCBlock;
 };
 
 class RVInstR : public RvOp {
