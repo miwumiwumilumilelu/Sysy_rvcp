@@ -1,5 +1,5 @@
-#ifndef SYSY_RV_REG_H
-#define SYSY_RV_REG_H
+#ifndef RVREG_H
+#define RVREG_H
 
 #include <string>
 #include <set>
@@ -8,6 +8,7 @@
 namespace sysy {
 namespace rv {
 
+// https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-cc.adoc
 #define REGS \
   X(zero) X(ra) X(sp) X(gp) X(tp) \
   X(t0) X(t1) X(t2) X(t3) X(t4) X(t5) X(t6) \
@@ -23,13 +24,12 @@ enum class Reg : int {
 #undef X
 };
 
-// 寄存器属性检查
 inline bool isFP(Reg reg) {
     return (int)reg >= (int)Reg::ft0 && (int)reg <= (int)Reg::fa7;
 }
 
 inline bool isInt(Reg reg) {
-    return (int)reg >= (int)Reg::zero && (int)reg <= (int)Reg::t6;
+    return (int)reg >= (int)Reg::zero && (int)reg <= (int)Reg::a7;
 }
 
 inline std::string showReg(Reg reg) {
@@ -41,7 +41,6 @@ inline std::string showReg(Reg reg) {
     return "<unknown>";
 }
 
-// 核心配置：完全映射参考项目的 Regs.h
 extern const Reg spillReg;
 extern const Reg spillReg2;
 extern const Reg fspillReg;
@@ -63,12 +62,9 @@ extern const Reg fargRegs[];
 extern const int leafRegCntf;
 extern const int normalRegCntf;
 
-// 获取寄存器分配顺序
 inline const Reg* getAllocOrder(bool isFloat, bool isLeaf) {
-    if (isFloat) {
-        return isLeaf ? leafOrderf : normalOrderf;
-    }
-    return isLeaf ? leafOrder : normalOrder;
+    return isFloat ? (isLeaf ? leafOrderf : normalOrderf)
+                   : (isLeaf ? leafOrder : normalOrder);
 }
 
 inline int getAllocOrderCount(bool isFloat, bool isLeaf) {
