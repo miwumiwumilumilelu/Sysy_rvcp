@@ -1,5 +1,18 @@
-#ifndef SYSY_RV_OP_H
-#define SYSY_RV_OP_H
+#ifndef RVOP_H
+#define RVOP_H
+
+// Mimic LLVM TableGen system
+/*
+def ADD : RVInstR<
+    0b0000000,        
+    0b000,              
+    OPC_OP,         
+    (outs GPR:$rd),     
+    (ins GPR:$rs1, GPR:$rs2), 
+    "add",          
+    "$rd, $rs1, $rs2"  
+>;
+*/
 
 #include "rv/RvReg.h"
 #include <variant>
@@ -13,50 +26,46 @@ namespace rv {
 
 class MCBlock;
 
-// 虚拟寄存器 ID 类型
 using VReg = uint32_t;
 constexpr VReg InvalidVReg = 0;
 
-// ============================================================================
-// RV32I + RV32F 指令宏定义
-// ============================================================================
-
 #define RV_INSTRUCTIONS \
-    /* 整数算术 */ \
     X(Addw) X(Subw) X(Mulw) X(Divw) X(Remw) \
     X(Sll) X(Srl) X(Sra) \
     X(And) X(Or) X(Xor) X(Slt) X(Sltu) \
-    /* 浮点算术 */ \
     X(FAddS) X(FSubS) X(FMulS) X(FDivS) \
+    /* call @sqrt(float %a) -> FSqrtS */ \
+    /* %res = %a < %b ? %a : %b -> FMinS */ \
     X(FSqrtS) X(FMinS) X(FMaxS) \
+    /* rd = (rs1 × rs2) + rs3 -> FMaddS */ \
+    /* rd = (rs1 × rs2) - rs3 -> FMsubS */ \
+    /* rd = -(rs1 × rs2) + rs3 -> FNmsubS */ \
+    /* rd = -(rs1 × rs2) - rs3 -> FnmaddS */ \
     X(FMaddS) X(FMsubS) X(FNmsubS) X(FnmaddS) \
-    /* 类型转换 */ \
     X(FCvtWS) X(FCvtSW) X(FCvtLS) X(FCvtSL) \
-    /* 浮点比较 */ \
     X(FEQS) X(FLTS) X(FLES) \
-    /* 内存访问 - 整数 */ \
     X(Lw) X(Lh) X(Lb) X(Lwu) X(Lhu) X(Lbu) \
     X(Sw) X(Sh) X(Sb) \
-    /* 内存访问 - 浮点 */ \
     X(FLw) X(FSw) \
-    /* 分支 */ \
     X(Beq) X(Bne) X(Blt) X(Ble) X(Bgt) X(Bge) \
     X(Beqz) X(Bnez) X(Blez) X(Bgez) X(Bltz) X(Bgtz) \
-    /* 跳转 */ \
+    /* call @main -> JAL */ \
+    /* call %ptr -> JALR */ \
+    /* br label %bb2 -> J */ \
+    /* jr ra -> Jr */ \
     X(J) X(Jr) X(JAL) X(JALR) \
-    /* 其他 */ \
     X(Li) X(La) X(Mv) \
     X(Call) X(Ret)
 
-// 操作数：使用 variant 代替手动类型判断
 class MCOperand {
-    // monostate 必须放第一个，确保默认构造
+    // val is Safe Union. See https://en.cppreference.com/w/cpp/utility/variant
     std::variant<std::monostate, VReg, Reg, int, std::string> val;
 
 public:
     MCOperand() : val(std::monostate{}) {}
 
-    // explicit 避免隐式转换造成的歧义
+    // VReg is essentially uint32_t, and the imm number is int,
+    // explicit: Avoid ambiguity caused by implicit conversions.
     explicit MCOperand(VReg v) : val(v) {}
     explicit MCOperand(Reg r) : val(r) {}
     explicit MCOperand(int i) : val(i) {}
@@ -74,7 +83,6 @@ public:
     int   getImm()    const { return std::get<int>(val); }
     const std::string& getLabel() const { return std::get<std::string>(val); }
 
-    // 类型判断辅助
     bool isIntReg() const {
         return isPReg() && !isFP(getPReg());
     }
@@ -83,17 +91,23 @@ public:
     }
 };
 
-// 基础 Op 节点：双向链表 + 所属基本块
+inline std::ostream& operator<<(std::ostream& os, const MCOperand& op) {
+    if (op.isEmpty()) return os << "invalid";
+    if (op.isVReg())  return os << "%" << op.getVReg();
+    if (op.isPReg())  return os << showReg(op.getPReg());
+    if (op.isImm())   return os << op.getImm();
+    if (op.isLabel()) return os << op.getLabel();
+    return os << "?";
+}
+
 class RvOp {
 public:
-    // 使用宏生成 Opcode 枚举（避免手动维护的遗漏和冲突）
     enum Opcode {
 #define X(name) name##Op,
         RV_INSTRUCTIONS
 #undef X
     };
 
-    // 获取 Opcode 名称（调试用）
     static const char* getOpcodeName(Opcode op) {
         switch (op) {
 #define X(name) case name##Op: return #name;
@@ -111,12 +125,10 @@ public:
     RvOp(Opcode op) : opcode(op) {}
     virtual ~RvOp() = default;
 
-    // 数据流接口 - 寄存器分配核心
     virtual MCOperand* getDef() { return nullptr; }
     virtual void collectUses(std::vector<MCOperand*>& /*uses*/) const {}
     virtual void collectAll(std::vector<MCOperand*>& /*all*/) const {}
 
-    // 链表操作
     void insertAfter(RvOp* op) {
         if (next) next->prev = op;
         op->next = next;
@@ -133,15 +145,14 @@ public:
     virtual void print(std::ostream& os) const = 0;
 };
 
-// ============================================================================
-// 整数算术指令
-// ============================================================================
-
-class AddwOp : public RvOp {
+class RVInstR : public RvOp {
 public:
     MCOperand rd, rs1, rs2;
-    AddwOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::AddwOp), rd(d), rs1(s1), rs2(s2) {}
+    const char* asmName;
+
+    RVInstR(Opcode op, const char* name, MCOperand d, MCOperand s1, MCOperand s2)
+        : RvOp(op), rd(d), rs1(s1), rs2(s2), asmName(name) {}
+
     MCOperand* getDef() override { return &rd; }
     void collectUses(std::vector<MCOperand*>& uses) const override {
         uses.push_back(const_cast<MCOperand*>(&rs1));
@@ -152,525 +163,98 @@ public:
         all.push_back(const_cast<MCOperand*>(&rs1));
         all.push_back(const_cast<MCOperand*>(&rs2));
     }
-    void print(std::ostream& os) const override;
+
+    void print(std::ostream& os) const override {
+        os << "    " << asmName << " " << rd << ", " << rs1 << ", " << rs2 << "\n";
+    }
 };
 
-class SubwOp : public RvOp {
+class AddwOp  : public RVInstR { public: AddwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::AddwOp, "addw", d, s1, s2) {} };
+class SubwOp  : public RVInstR { public: SubwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SubwOp, "subw", d, s1, s2) {} };
+class MulwOp  : public RVInstR { public: MulwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::MulwOp, "mulw", d, s1, s2) {} };
+class DivwOp  : public RVInstR { public: DivwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::DivwOp, "divw", d, s1, s2) {} };
+class RemwOp  : public RVInstR { public: RemwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::RemwOp, "remw", d, s1, s2) {} };
+class AndOp   : public RVInstR { public: AndOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::AndOp, "and", d, s1, s2) {} };
+class OrOp    : public RVInstR { public: OrOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::OrOp, "or", d, s1, s2) {} };
+class XorOp   : public RVInstR { public: XorOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::XorOp, "xor", d, s1, s2) {} };
+class SllOp   : public RVInstR { public: SllOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SllOp, "sll", d, s1, s2) {} };
+class SrlOp   : public RVInstR { public: SrlOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SrlOp, "srl", d, s1, s2) {} };
+class SraOp   : public RVInstR { public: SraOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SraOp, "sra", d, s1, s2) {} };
+class SltOp   : public RVInstR { public: SltOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SltOp, "slt", d, s1, s2) {} };
+class SltuOp  : public RVInstR { public: SltuOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SltuOp, "sltu", d, s1, s2) {} };
+class FAddSOp : public RVInstR { public: FAddSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FAddSOp, "fadd.s", d, s1, s2) {} };
+class FSubSOp : public RVInstR { public: FSubSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FSubSOp, "fsub.s", d, s1, s2) {} };
+class FMulSOp : public RVInstR { public: FMulSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FMulSOp, "fmul.s", d, s1, s2) {} };
+class FDivSOp : public RVInstR { public: FDivSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FDivSOp, "fdiv.s", d, s1, s2) {} };
+class FEQSOp  : public RVInstR { public: FEQSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FEQSOp, "feq.s", d, s1, s2) {} };
+class FLTSOp  : public RVInstR { public: FLTSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FLTSOp, "flt.s", d, s1, s2) {} };
+class FLESOp  : public RVInstR { public: FLESOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FLESOp, "fle.s", d, s1, s2) {} };
+class FMinSOp : public RVInstR { public: FMinSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FMinSOp, "fmin.s", d, s1, s2) {} };
+class FMaxSOp : public RVInstR { public: FMaxSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FMaxSOp, "fmax.s", d, s1, s2) {} };
+
+class RVInstM : public RvOp {
 public:
-    MCOperand rd, rs1, rs2;
-    SubwOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::SubwOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
+    MCOperand reg, base;
+    int offset;
+    const char* asmName;
+    // Check if need Def.
+    bool isStore;
+
+    RVInstM(Opcode op, const char* name, MCOperand r, MCOperand b, int o, bool store)
+        : RvOp(op), reg(r), base(b), offset(o), asmName(name), isStore(store) {}
+
+    MCOperand* getDef() override { return isStore ? nullptr : &reg; }
     void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
+        uses.push_back(const_cast<MCOperand*>(&base));
+        if (isStore) uses.push_back(const_cast<MCOperand*>(&reg));
     }
+    void collectAll(std::vector<MCOperand*>& all) const override {
+        all.push_back(const_cast<MCOperand*>(&reg));
+        all.push_back(const_cast<MCOperand*>(&base));
+    }
+    void print(std::ostream& os) const override {
+        os << "    " << asmName << " " << reg << ", " << offset << "(" << base << ")\n";
+    }
+};
+
+class LwOp  : public RVInstM { public: LwOp(MCOperand d, MCOperand b, int o) : RVInstM(RvOp::LwOp, "lw", d, b, o, false) {} };
+class SwOp  : public RVInstM { public: SwOp(MCOperand s, MCOperand b, int o) : RVInstM(RvOp::SwOp, "sw", s, b, o, true) {} };
+class FLwOp : public RVInstM { public: FLwOp(MCOperand d, MCOperand b, int o) : RVInstM(RvOp::FLwOp, "flw", d, b, o, false) {} };
+class FSwOp : public RVInstM { public: FSwOp(MCOperand s, MCOperand b, int o) : RVInstM(RvOp::FSwOp, "fsw", s, b, o, true) {} };
+
+class RVInstU : public RvOp {
+public:
+    MCOperand rd, rs;
+    const char* asmName;
+
+    RVInstU(Opcode op, const char* name, MCOperand d, MCOperand s)
+        : RvOp(op), rd(d), rs(s), asmName(name) {}
+
+    MCOperand* getDef() override { return &rd; }
+    void collectUses(std::vector<MCOperand*>& uses) const override { uses.push_back(const_cast<MCOperand*>(&rs)); }
     void collectAll(std::vector<MCOperand*>& all) const override {
         all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class MulwOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    MulwOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::MulwOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class DivwOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    DivwOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::DivwOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class RemwOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    RemwOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::RemwOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-// ============================================================================
-// 浮点算术指令
-// ============================================================================
-
-class FAddSOp : public RvOp {
-public:
-    MCOperand fd, fs1, fs2;
-    FAddSOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::FAddSOp), fd(d), fs1(s1), fs2(s2) {}
-    MCOperand* getDef() override { return &fd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&fs1));
-        uses.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&fd));
-        all.push_back(const_cast<MCOperand*>(&fs1));
-        all.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class FSubSOp : public RvOp {
-public:
-    MCOperand fd, fs1, fs2;
-    FSubSOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::FSubSOp), fd(d), fs1(s1), fs2(s2) {}
-    MCOperand* getDef() override { return &fd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&fs1));
-        uses.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&fd));
-        all.push_back(const_cast<MCOperand*>(&fs1));
-        all.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class FMulSOp : public RvOp {
-public:
-    MCOperand fd, fs1, fs2;
-    FMulSOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::FMulSOp), fd(d), fs1(s1), fs2(s2) {}
-    MCOperand* getDef() override { return &fd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&fs1));
-        uses.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&fd));
-        all.push_back(const_cast<MCOperand*>(&fs1));
-        all.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class FDivSOp : public RvOp {
-public:
-    MCOperand fd, fs1, fs2;
-    FDivSOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::FDivSOp), fd(d), fs1(s1), fs2(s2) {}
-    MCOperand* getDef() override { return &fd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&fs1));
-        uses.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&fd));
-        all.push_back(const_cast<MCOperand*>(&fs1));
-        all.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-// ============================================================================
-// 逻辑运算指令
-// ============================================================================
-
-class AndOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    AndOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::AndOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class OrOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    OrOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::OrOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class XorOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    XorOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::XorOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-// ============================================================================
-// 移位运算指令
-// ============================================================================
-
-class SllOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    SllOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::SllOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class SrlOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    SrlOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::SrlOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class SraOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    SraOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::SraOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-// ============================================================================
-// 比较指令
-// ============================================================================
-
-class SltOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    SltOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::SltOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class SltuOp : public RvOp {
-public:
-    MCOperand rd, rs1, rs2;
-    SltuOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::SltuOp), rd(d), rs1(s1), rs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-// ============================================================================
-// 零比较分支指令
-// ============================================================================
-
-class BeqzOp : public RvOp {
-public:
-    MCOperand rs;
-    std::string target;
-    BeqzOp(MCOperand r, std::string t)
-        : RvOp(RvOp::BeqzOp), rs(r), target(std::move(t)) {}
-    MCOperand* getDef() override { return nullptr; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
         all.push_back(const_cast<MCOperand*>(&rs));
     }
-    void print(std::ostream& os) const override;
+    void print(std::ostream& os) const override {
+        os << "    " << asmName << " " << rd << ", " << rs << "\n";
+    }
 };
 
-class BnezOp : public RvOp {
-public:
-    MCOperand rs;
-    std::string target;
-    BnezOp(MCOperand r, std::string t)
-        : RvOp(RvOp::BnezOp), rs(r), target(std::move(t)) {}
-    MCOperand* getDef() override { return nullptr; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rs));
-    }
-    void print(std::ostream& os) const override;
-};
+class MvOp     : public RVInstU { public: MvOp(MCOperand d, MCOperand s) : RVInstU(RvOp::MvOp, "mv", d, s) {} };
+class FCvtWSOp : public RVInstU { public: FCvtWSOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FCvtWSOp, "fcvt.w.s", d, s) {} };
+class FCvtSWOp : public RVInstU { public: FCvtSWOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FCvtSWOp, "fcvt.s.w", d, s) {} };
+class FSqrtSOp : public RVInstU { public: FSqrtSOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FSqrtSOp, "fsqrt.s", d, s) {} };
 
-// ============================================================================
-// 浮点类型转换指令
-// ============================================================================
-
-class FCvtWSOp : public RvOp {
-public:
-    MCOperand rd;  // 整数结果
-    MCOperand fs1; // 浮点源
-    FCvtWSOp(MCOperand d, MCOperand s)
-        : RvOp(RvOp::FCvtWSOp), rd(d), fs1(s) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&fs1));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&fs1));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class FCvtSWOp : public RvOp {
-public:
-    MCOperand fd;  // 浮点结果
-    MCOperand rs1; // 整数源
-    FCvtSWOp(MCOperand d, MCOperand s)
-        : RvOp(RvOp::FCvtSWOp), fd(d), rs1(s) {}
-    MCOperand* getDef() override { return &fd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&fd));
-        all.push_back(const_cast<MCOperand*>(&rs1));
-    }
-    void print(std::ostream& os) const override;
-};
-
-// ============================================================================
-// 浮点比较指令
-// ============================================================================
-
-class FEQSOp : public RvOp {
-public:
-    MCOperand rd, fs1, fs2;
-    FEQSOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::FEQSOp), rd(d), fs1(s1), fs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&fs1));
-        uses.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&fs1));
-        all.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class FLTSOp : public RvOp {
-public:
-    MCOperand rd, fs1, fs2;
-    FLTSOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::FLTSOp), rd(d), fs1(s1), fs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&fs1));
-        uses.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&fs1));
-        all.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class FLESOp : public RvOp {
-public:
-    MCOperand rd, fs1, fs2;
-    FLESOp(MCOperand d, MCOperand s1, MCOperand s2)
-        : RvOp(RvOp::FLESOp), rd(d), fs1(s1), fs2(s2) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&fs1));
-        uses.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&fs1));
-        all.push_back(const_cast<MCOperand*>(&fs2));
-    }
-    void print(std::ostream& os) const override;
-};
-
-// ============================================================================
-// 内存访问指令
-// ============================================================================
-
-class LwOp : public RvOp {
-public:
-    MCOperand rd, base;
-    int offset;
-    LwOp(MCOperand d, MCOperand b, int o) : RvOp(RvOp::LwOp), rd(d), base(b), offset(o) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&base));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&base));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class SwOp : public RvOp {
-public:
-    MCOperand src, base;
-    int offset;
-    SwOp(MCOperand s, MCOperand b, int o) : RvOp(RvOp::SwOp), src(s), base(b), offset(o) {}
-    MCOperand* getDef() override { return nullptr; }  // Store 不写寄存器
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&src));
-        uses.push_back(const_cast<MCOperand*>(&base));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&src));
-        all.push_back(const_cast<MCOperand*>(&base));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class FLwOp : public RvOp {
-public:
-    MCOperand fd, base;
-    int offset;
-    FLwOp(MCOperand d, MCOperand b, int o) : RvOp(RvOp::FLwOp), fd(d), base(b), offset(o) {}
-    MCOperand* getDef() override { return &fd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&base));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&fd));
-        all.push_back(const_cast<MCOperand*>(&base));
-    }
-    void print(std::ostream& os) const override;
-};
-
-class FSwOp : public RvOp {
-public:
-    MCOperand fs, base;
-    int offset;
-    FSwOp(MCOperand s, MCOperand b, int o) : RvOp(RvOp::FSwOp), fs(s), base(b), offset(o) {}
-    MCOperand* getDef() override { return nullptr; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&fs));
-        uses.push_back(const_cast<MCOperand*>(&base));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&fs));
-        all.push_back(const_cast<MCOperand*>(&base));
-    }
-    void print(std::ostream& os) const override;
-};
-
-// ============================================================================
-// 分支指令
-// ============================================================================
-
-class BeqOp : public RvOp {
+class RVInstB : public RvOp {
 public:
     MCOperand rs1, rs2;
     std::string target;
-    BeqOp(MCOperand s1, MCOperand s2, std::string t)
-        : RvOp(RvOp::BeqOp), rs1(s1), rs2(s2), target(std::move(t)) {}
+    const char* asmName;
+
+    RVInstB(Opcode op, const char* name, MCOperand s1, MCOperand s2, std::string t)
+        : RvOp(op), rs1(s1), rs2(s2), target(std::move(t)), asmName(name) {}
+
     MCOperand* getDef() override { return nullptr; }
     void collectUses(std::vector<MCOperand*>& uses) const override {
         uses.push_back(const_cast<MCOperand*>(&rs1));
@@ -680,105 +264,119 @@ public:
         all.push_back(const_cast<MCOperand*>(&rs1));
         all.push_back(const_cast<MCOperand*>(&rs2));
     }
-    void print(std::ostream& os) const override;
+    void print(std::ostream& os) const override {
+        os << "    " << asmName << " " << rs1 << ", " << rs2 << ", " << target << "\n";
+    }
 };
 
-class BneOp : public RvOp {
+class BeqOp : public RVInstB { public: BeqOp(MCOperand s1, MCOperand s2, std::string t) : RVInstB(RvOp::BeqOp, "beq", s1, s2, std::move(t)) {} };
+class BneOp : public RVInstB { public: BneOp(MCOperand s1, MCOperand s2, std::string t) : RVInstB(RvOp::BneOp, "bne", s1, s2, std::move(t)) {} };
+class BeqzOp : public RVInstB { public: BeqzOp(MCOperand r, std::string t) : RVInstB(RvOp::BeqzOp, "beq", r, MCOperand(Reg::zero), std::move(t)) {} };
+class BnezOp : public RVInstB { public: BnezOp(MCOperand r, std::string t) : RVInstB(RvOp::BnezOp, "bne", r, MCOperand(Reg::zero), std::move(t)) {} };
+class BltOp : public RVInstB { public: BltOp(MCOperand s1, MCOperand s2, std::string t) : RVInstB(RvOp::BltOp, "blt", s1, s2, std::move(t)) {} };
+class BleOp : public RVInstB { public: BleOp(MCOperand s1, MCOperand s2, std::string t) : RVInstB(RvOp::BleOp, "ble", s1, s2, std::move(t)) {} };
+class BgtOp : public RVInstB { public: BgtOp(MCOperand s1, MCOperand s2, std::string t) : RVInstB(RvOp::BgtOp, "bgt", s1, s2, std::move(t)) {} };
+class BgeOp : public RVInstB { public: BgeOp(MCOperand s1, MCOperand s2, std::string t) : RVInstB(RvOp::BgeOp, "bge", s1, s2, std::move(t)) {} };
+class BlezOp : public RVInstB { public: BlezOp(MCOperand r, std::string t) : RVInstB(RvOp::BlezOp, "ble", r, MCOperand(Reg::zero), std::move(t)) {} };
+class BgezOp : public RVInstB { public: BgezOp(MCOperand r, std::string t) : RVInstB(RvOp::BgezOp, "bge", r, MCOperand(Reg::zero), std::move(t)) {} };
+class BltzOp : public RVInstB { public: BltzOp(MCOperand r, std::string t) : RVInstB(RvOp::BltzOp, "blt", r, MCOperand(Reg::zero), std::move(t)) {} };
+class BgtzOp : public RVInstB { public: BgtzOp(MCOperand r, std::string t) : RVInstB(RvOp::BgtzOp, "bgt", r, MCOperand(Reg::zero), std::move(t)) {} };
+
+class LiOp : public RvOp {
 public:
-    MCOperand rs1, rs2;
-    std::string target;
-    BneOp(MCOperand s1, MCOperand s2, std::string t)
-        : RvOp(RvOp::BneOp), rs1(s1), rs2(s2), target(std::move(t)) {}
-    MCOperand* getDef() override { return nullptr; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs1));
-        uses.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rs1));
-        all.push_back(const_cast<MCOperand*>(&rs2));
-    }
-    void print(std::ostream& os) const override;
+    MCOperand rd; int imm;
+    LiOp(MCOperand d, int i) : RvOp(RvOp::LiOp), rd(d), imm(i) {}
+    MCOperand* getDef() override { return &rd; }
+    void collectAll(std::vector<MCOperand*>& all) const override { all.push_back(const_cast<MCOperand*>(&rd)); }
+    void print(std::ostream& os) const override { os << "    li " << rd << ", " << imm << "\n"; }
 };
 
-// ============================================================================
-// 跳转指令
-// ============================================================================
+class LaOp : public RvOp {
+public:
+    MCOperand rd; std::string symbol;
+    LaOp(MCOperand d, std::string sym) : RvOp(RvOp::LaOp), rd(d), symbol(std::move(sym)) {}
+    MCOperand* getDef() override { return &rd; }
+    void collectAll(std::vector<MCOperand*>& all) const override { all.push_back(const_cast<MCOperand*>(&rd)); }
+    void print(std::ostream& os) const override { os << "    la " << rd << ", " << symbol << "\n"; }
+};
 
 class JOp : public RvOp {
 public:
     std::string label;
     explicit JOp(std::string l) : RvOp(RvOp::JOp), label(std::move(l)) {}
-    MCOperand* getDef() override { return nullptr; }
-    void collectUses(std::vector<MCOperand*>&) const override {}  // 无寄存器操作数
-    void collectAll(std::vector<MCOperand*>&) const override {}
-    void print(std::ostream& os) const override;
+    void print(std::ostream& os) const override { os << "    j " << label << "\n"; }
 };
 
 class JrOp : public RvOp {
 public:
     MCOperand rs;
     explicit JrOp(MCOperand r) : RvOp(RvOp::JrOp), rs(r) {}
-    MCOperand* getDef() override { return nullptr; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rs));
-    }
-    void print(std::ostream& os) const override;
+    void collectUses(std::vector<MCOperand*>& uses) const override { uses.push_back(const_cast<MCOperand*>(&rs)); }
+    void collectAll(std::vector<MCOperand*>& all) const override { all.push_back(const_cast<MCOperand*>(&rs)); }
+    void print(std::ostream& os) const override { os << "    jr " << rs << "\n"; }
 };
 
-// ============================================================================
-// 其他指令
-// ============================================================================
-
-class LiOp : public RvOp {
+class JALOp : public RvOp {
 public:
-    MCOperand rd;
-    int imm;
-    LiOp(MCOperand d, int i) : RvOp(RvOp::LiOp), rd(d), imm(i) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>&) const override {}
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-    }
-    void print(std::ostream& os) const override;
+    std::string target;
+    explicit JALOp(std::string t) : RvOp(RvOp::JALOp), target(std::move(t)) {}
+    void print(std::ostream& os) const override { os << "    jal " << target << "\n"; }
 };
 
-class MvOp : public RvOp {
+class JALROp : public RvOp {
 public:
-    MCOperand rd, rs;
-    MvOp(MCOperand d, MCOperand s) : RvOp(RvOp::MvOp), rd(d), rs(s) {}
-    MCOperand* getDef() override { return &rd; }
-    void collectUses(std::vector<MCOperand*>& uses) const override {
-        uses.push_back(const_cast<MCOperand*>(&rs));
-    }
-    void collectAll(std::vector<MCOperand*>& all) const override {
-        all.push_back(const_cast<MCOperand*>(&rd));
-        all.push_back(const_cast<MCOperand*>(&rs));
-    }
-    void print(std::ostream& os) const override;
+    MCOperand rs;
+    explicit JALROp(MCOperand r) : RvOp(RvOp::JALROp), rs(r) {}
+    void collectUses(std::vector<MCOperand*>& uses) const override { uses.push_back(const_cast<MCOperand*>(&rs)); }
+    void collectAll(std::vector<MCOperand*>& all) const override { all.push_back(const_cast<MCOperand*>(&rs)); }
+    void print(std::ostream& os) const override { os << "    jalr " << rs << "\n"; }
 };
 
 class CallOp : public RvOp {
 public:
     std::string target;
     explicit CallOp(std::string t) : RvOp(RvOp::CallOp), target(std::move(t)) {}
-    MCOperand* getDef() override { return nullptr; }
-    void collectUses(std::vector<MCOperand*>&) const override {}
-    void collectAll(std::vector<MCOperand*>&) const override {}
-    void print(std::ostream& os) const override;
+    void print(std::ostream& os) const override { os << "    call " << target << "\n"; }
 };
 
 class RetOp : public RvOp {
 public:
     RetOp() : RvOp(RvOp::RetOp) {}
-    MCOperand* getDef() override { return nullptr; }
-    void collectUses(std::vector<MCOperand*>&) const override {}
-    void collectAll(std::vector<MCOperand*>&) const override {}
-    void print(std::ostream& os) const override;
+    void print(std::ostream& os) const override { os << "    ret\n"; }
 };
+
+class RVInstR4 : public RvOp {
+public:
+    MCOperand rd, rs1, rs2, rs3;
+    const char* asmName;
+
+    RVInstR4(Opcode op, const char* name, MCOperand d, MCOperand s1, MCOperand s2, MCOperand s3)
+        : RvOp(op), rd(d), rs1(s1), rs2(s2), rs3(s3), asmName(name) {}
+
+    MCOperand* getDef() override { return &rd; }
+
+    void collectUses(std::vector<MCOperand*>& uses) const override {
+        uses.push_back(const_cast<MCOperand*>(&rs1));
+        uses.push_back(const_cast<MCOperand*>(&rs2));
+        uses.push_back(const_cast<MCOperand*>(&rs3));
+    }
+
+    void collectAll(std::vector<MCOperand*>& all) const override {
+        all.push_back(const_cast<MCOperand*>(&rd));
+        all.push_back(const_cast<MCOperand*>(&rs1));
+        all.push_back(const_cast<MCOperand*>(&rs2));
+        all.push_back(const_cast<MCOperand*>(&rs3));
+    }
+
+    void print(std::ostream& os) const override {
+        os << "    " << asmName << " " << rd << ", " << rs1 << ", " << rs2 << ", " << rs3 << "\n";
+    }
+};
+
+class FMaddSOp  : public RVInstR4 { public: FMaddSOp(MCOperand d, MCOperand s1, MCOperand s2, MCOperand s3) : RVInstR4(RvOp::FMaddSOp, "fmadd.s", d, s1, s2, s3) {} };
+class FMsubSOp  : public RVInstR4 { public: FMsubSOp(MCOperand d, MCOperand s1, MCOperand s2, MCOperand s3) : RVInstR4(RvOp::FMsubSOp, "fmsub.s", d, s1, s2, s3) {} };
+class FNmsubSOp : public RVInstR4 { public: FNmsubSOp(MCOperand d, MCOperand s1, MCOperand s2, MCOperand s3) : RVInstR4(RvOp::FNmsubSOp, "fnmsub.s", d, s1, s2, s3) {} };
+class FnmaddSOp : public RVInstR4 { public: FnmaddSOp(MCOperand d, MCOperand s1, MCOperand s2, MCOperand s3) : RVInstR4(RvOp::FnmaddSOp, "fnmadd.s", d, s1, s2, s3) {} };
 
 } // namespace rv
 } // namespace sysy
