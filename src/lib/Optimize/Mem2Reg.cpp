@@ -18,6 +18,8 @@ void Mem2Reg::run() {
         this->Dom = &dom; 
         
         promoteMemoryToRegister(func, phiCounter);
+        // Unbind before the loop ends to eliminate the risk of dangling pointers.
+        this->Dom = nullptr;
     }
 }
 
@@ -116,10 +118,17 @@ void Mem2Reg::rename(BasicBlock* bb) {
     std::vector<Instruction*> instsToRemove;
     std::map<AllocaInst*, int> pushCount;
 
+    // Lazy init: Reuse the same 0 constant in the same rename() to reduce heap allocation.
+    Constant* intZero = nullptr;
+    Constant* floatZero = nullptr;
     auto getZeroConstant = [&](AllocaInst* ai) -> Constant* {
         Type* baseType = cast<PointerType>(ai->getType())->getPointeeType();
-        if (baseType->isFloat()) return new ConstantFloat(0.0f);
-        return new ConstantInt(0);
+        if (baseType->isFloat()) {
+            if (!floatZero) floatZero = new ConstantFloat(0.0f);
+            return floatZero;
+        }
+        if (!intZero) intZero = new ConstantInt(0);
+        return intZero;
     };
 
     for (auto inst : bb->getInstructions()) {
