@@ -30,7 +30,7 @@ using VReg = uint32_t;
 constexpr VReg InvalidVReg = 0;
 
 #define RV_INSTRUCTIONS \
-    X(Addw) X(Subw) X(Mulw) X(Divw) X(Remw) \
+    X(Addi) X(Addw) X(Subw) X(Mulw) X(Divw) X(Remw) \
     X(Sll) X(Srl) X(Sra) \
     X(And) X(Or) X(Xor) X(Slt) X(Sltu) \
     X(FAddS) X(FSubS) X(FMulS) X(FDivS) \
@@ -55,6 +55,9 @@ constexpr VReg InvalidVReg = 0;
     /* jr ra -> Jr */ \
     X(J) X(Jr) X(JAL) X(JALR) \
     X(Li) X(La) X(Mv) \
+    /* fmv.w.x: int reg → float reg (bit-level), used for float const materialization */ \
+    /* fmv.s:   float reg → float reg move */ \
+    X(FMvWX) X(FMvS) \
     X(Call) X(Ret)
 
 class MCOperand {
@@ -149,6 +152,28 @@ protected:
 
     friend class MCBlock;
 };
+
+class RVInstI : public RvOp {
+public:
+    MCOperand rd, rs;
+    int imm;
+    const char* asmName;
+
+    RVInstI(Opcode op, const char* name, MCOperand d, MCOperand s, int i)
+        : RvOp(op), rd(d), rs(s), imm(i), asmName(name) {}
+
+    MCOperand* getDef() override { return &rd; }
+    void collectUses(std::vector<MCOperand*>& uses) const override { uses.push_back(const_cast<MCOperand*>(&rs)); }
+    void collectAll(std::vector<MCOperand*>& all) const override {
+        all.push_back(const_cast<MCOperand*>(&rd));
+        all.push_back(const_cast<MCOperand*>(&rs));
+    }
+    void print(std::ostream& os) const override {
+        os << "    " << asmName << " " << rd << ", " << rs << ", " << imm << "\n";
+    }
+};
+
+class AddiOp : public RVInstI { public: AddiOp(MCOperand d, MCOperand s, int i) : RVInstI(RvOp::AddiOp, "addi", d, s, i) {} };
 
 class RVInstR : public RvOp {
 public:
@@ -250,6 +275,8 @@ class MvOp     : public RVInstU { public: MvOp(MCOperand d, MCOperand s) : RVIns
 class FCvtWSOp : public RVInstU { public: FCvtWSOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FCvtWSOp, "fcvt.w.s", d, s) {} };
 class FCvtSWOp : public RVInstU { public: FCvtSWOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FCvtSWOp, "fcvt.s.w", d, s) {} };
 class FSqrtSOp : public RVInstU { public: FSqrtSOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FSqrtSOp, "fsqrt.s", d, s) {} };
+class FMvWXOp  : public RVInstU { public: FMvWXOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FMvWXOp, "fmv.w.x", d, s) {} };
+class FMvSOp   : public RVInstU { public: FMvSOp(MCOperand d, MCOperand s)  : RVInstU(RvOp::FMvSOp,  "fmv.s",   d, s) {} };
 
 class RVInstB : public RvOp {
 public:
