@@ -3,20 +3,61 @@
 #include "IR/Value.h"
 #include "IR/Type.h"
 #include <iostream>
+#include <cstring>
+#include <algorithm>
+#include <cassert>
 
 namespace sysy {
 namespace rv {
 
-// ============================================================================
-// InstSelContext 实现
-// ============================================================================
-
 MCOperand InstSelContext::getVReg(Value* v, bool isFloat) {
     auto it = valueMap.find(v);
-    if (it != valueMap.end()) {
-        return it->second;
+    if (it != valueMap.end()) return it->second;
+
+    // If the current block already has a termination instruction, insert it before; otherwise, append.
+    // Prevents constant materialization instructions from falling after j/bnez during Phi digestion (dead instructions).
+    auto insertSafe = [&](RvOp* op) {
+        RvOp* term = block->getTerminator();
+        if (term) block->insertBefore(term, op);
+        else block->append(op);
+    };
+
+    if (auto* ci = dyn_cast<ConstantInt>(v)) {
+        auto vreg = newVReg(false);
+        insertSafe(new LiOp(vreg, ci->getValue()));
+        return vreg;
     }
-    // 创建新的 VReg
+
+    if (isa<ConstantZero>(v) && !isFloat) {
+        return MCOperand(Reg::zero);
+    }
+
+    // ConstantZero (float)：fmv.w.x fd, zero → 0.0f
+    if (isa<ConstantZero>(v) && isFloat) {
+        auto vreg = newVReg(true);
+        insertSafe(new FMvWXOp(vreg, MCOperand(Reg::zero)));
+        return vreg;
+    }
+
+    // bits -> intVReg -> floatVReg
+    if (auto* cf = dyn_cast<ConstantFloat>(v)) {
+        float fval = cf->getValue();
+        int bits;
+        memcpy(&bits, &fval, sizeof(int));
+        auto tmpInt = newVReg(false);
+        auto vreg   = newVReg(true);
+        insertSafe(new LiOp(tmpInt, bits));
+        insertSafe(new FMvWXOp(vreg, tmpInt));
+        return vreg;
+    }
+
+    // GlobalVariable
+    if (auto* gv = dyn_cast<GlobalVariable>(v)) {
+        auto vreg = newVReg(false);
+        insertSafe(new LaOp(vreg, gv->getName()));
+        return vreg;
+    }
+
     auto vreg = newVReg(isFloat);
     valueMap[v] = vreg;
     return vreg;
@@ -26,14 +67,8 @@ MCOperand InstSelContext::newVReg(bool isFloat) {
     return MCOperand(func->newVReg(isFloat));
 }
 
-// ============================================================================
-// InstSelPass 实现
-// ============================================================================
-
 std::vector<std::unique_ptr<MCFunction>> InstSelPass::run(Module* module) {
     std::vector<std::unique_ptr<MCFunction>> functions;
-
-    // 遍历模块中的所有函数
     for (auto* irFunc : module->getFunctions()) {
         auto* mcFunc = selectFunction(irFunc);
         if (mcFunc) {
@@ -45,42 +80,177 @@ std::vector<std::unique_ptr<MCFunction>> InstSelPass::run(Module* module) {
 }
 
 MCFunction* InstSelPass::selectFunction(Function* irFunc) {
-    // 创建 MCFunction
     auto* func = new MCFunction(irFunc->getName());
 
     InstSelContext ctx;
     ctx.func = func;
 
-    // 处理函数参数
-    for (auto* arg : irFunc->getArgs()) {
-        bool isFloat = InstSelContext::isFloatType(arg->getType());
-        auto vreg = ctx.newVReg(isFloat);
-        ctx.valueMap[arg] = vreg;
-        func->args.push_back(vreg.getVReg());
-        func->argIsFloat.push_back(isFloat);
+    // Handle arguments
+    {
+        int intIdx = 0, floatIdx = 0, stackSlot = 0;
+        for (auto* arg : irFunc->getArgs()) {
+            bool isFloat = InstSelContext::isFloatType(arg->getType());
+            auto vreg = ctx.newVReg(isFloat);
+            ctx.valueMap[arg] = vreg;
+
+            if (isFloat && floatIdx < 8) {
+                func->args.push_back(vreg.getVReg());
+                func->argIsFloat.push_back(true);
+                floatIdx++;
+            } else if (!isFloat && intIdx < 8) {
+                func->args.push_back(vreg.getVReg());
+                func->argIsFloat.push_back(false);
+                intIdx++;
+            } else {
+                func->incomingStackArgs.push_back({vreg.getVReg(), stackSlot++, isFloat});
+            }
+        }
     }
 
-    // 遍历所有基本块
-    auto* body = irFunc->getBody();
-    for (auto* bb : body->getBlocks()) {
+    for (auto* bb : irFunc->getBody()->getBlocks()) {
         selectBasicBlock(bb, ctx);
     }
 
-    // 分析是否为叶子函数
-    func->analyzeLeaf();
+    for (size_t i = 0; i < func->blocks.size(); ++i) {
+        func->blocks[i]->index = static_cast<int>(i);
+    }
 
-    // 构建 Def-Use 链
+    // Build CFG edges: Scan the jump instructions in each block.
+    // Terminate is either jump or branch.
+    for (auto& mcBB : func->blocks) {
+        mcBB->forEach([&](RvOp* op) {
+            std::string target;
+            if (op->opcode == RvOp::JOp) {
+                target = static_cast<JOp*>(op)->label;
+            } else if (op->opcode >= RvOp::BeqOp && op->opcode <= RvOp::BgtzOp) {
+                target = static_cast<RVInstB*>(op)->target;
+            } else {
+                return;
+            }
+            for (auto& b : func->blocks) {
+                if (b->name == target) {
+                    mcBB->addSucc(b.get());
+                    break;
+                }
+            }
+        });
+    }
+
+    // Phi Elimination & Critical Edge Splitting
+    // Insert Jump Block "
+    //
+    // src_to_dst: 
+    // mv ...; 
+    // j dst;
+    //
+    // " 
+    // and redirected bnez to the springboard to fix the critical edge issue
+    for (auto* irBB : irFunc->getBody()->getBlocks()) {
+        MCBlock* dstMCBlock = nullptr;
+        for (auto& mb : func->blocks) {
+            if (mb->name == irBB->getName()) { dstMCBlock = mb.get(); break; }
+        }
+        if (!dstMCBlock) continue;
+
+        for (auto* inst : irBB->getInstructions()) {
+            auto* phi = dyn_cast<PhiInst>(inst);
+            if (!phi) continue;
+
+            bool isFloat = InstSelContext::isFloatType(phi->getType());
+            MCOperand dstReg = ctx.getVReg(phi, isFloat);
+
+            // PhiInst operands: [val0, bb0, val1, bb1, ...]
+            for (int i = 0; i + 1 < phi->getNumOperands(); i += 2) {
+                Value* incomingVal = phi->getOperand(i);
+                auto* incomingBB = static_cast<BasicBlock*>(phi->getOperand(i + 1));
+
+                MCBlock* srcMCBlock = nullptr;
+                for (auto& mb : func->blocks) {
+                    if (mb->name == incomingBB->getName()) { srcMCBlock = mb.get(); break; }
+                }
+                if (!srcMCBlock) continue;
+
+                ctx.block = srcMCBlock;
+                MCOperand srcReg = ctx.getVReg(incomingVal, isFloat);
+
+                RvOp* mvOp = isFloat
+                    ? static_cast<RvOp*>(new FMvSOp(dstReg, srcReg))
+                    : static_cast<RvOp*>(new MvOp(dstReg, srcReg));
+
+                // Handles multiple PHIs on the same edge.
+                std::string trampolineName = srcMCBlock->name + "_to_" + dstMCBlock->name;
+                MCBlock* trampoline = nullptr;
+                for (auto& mb : func->blocks) {
+                    if (mb->name == trampolineName) { trampoline = mb.get(); break; }
+                }
+
+                // Multiplex PHIs on the same edge.
+                if (trampoline) {
+                    // Find JOp in the trampoline, and insert new mvOp before it.
+                    RvOp* tTerm = trampoline->getTerminator();
+                    if (tTerm) trampoline->insertBefore(tTerm, mvOp);
+                    else trampoline->append(mvOp);
+                    continue;
+                }
+
+                // Check if the edge is critical.
+                // The termination of the srcMCBlock is:
+                // bnez cond, dstLabel; j other
+                RvOp* term = srcMCBlock->getTerminator();
+                RvOp* prevTerm = term ? term->prev : nullptr;
+
+                // bnez cond, dst
+                // j other
+                bool isCritical = (term && prevTerm &&
+                    term->opcode == RvOp::JOp &&
+                    prevTerm->opcode == RvOp::BnezOp &&
+                    static_cast<RVInstB*>(prevTerm)->target == dstMCBlock->name);
+
+                if (isCritical) {
+                    // Create a springboard block.
+                    // src_to_dst: mv; j dst
+                    trampoline = func->createBlock(trampolineName);
+                    trampoline->index = static_cast<int>(func->blocks.size() - 1);
+                    trampoline->append(mvOp);
+                    trampoline->append(new JOp(dstMCBlock->name));
+
+                    static_cast<RVInstB*>(prevTerm)->target = trampolineName;
+
+                    // Fix the CFG.
+                    // srcMCBlock -> dstMCBlock
+                    // becomes:
+                    // srcMCBlock -> trampoline -> dstMCBlock
+                    srcMCBlock->succs.erase(
+                        std::remove(srcMCBlock->succs.begin(), srcMCBlock->succs.end(), dstMCBlock),
+                        srcMCBlock->succs.end());
+                    dstMCBlock->preds.erase(
+                        std::remove(dstMCBlock->preds.begin(), dstMCBlock->preds.end(), srcMCBlock),
+                        dstMCBlock->preds.end());
+                    srcMCBlock->addSucc(trampoline);
+                    trampoline->addSucc(dstMCBlock);
+                } else {
+                    // J
+                    // or
+                    // bnez cond, other;
+                    // j dst
+                    if (term) srcMCBlock->insertBefore(term, mvOp);
+                    else srcMCBlock->append(mvOp);
+                }
+            }
+        }
+    }
+
+    // Check if the func has CallOp.
+    func->analyzeLeaf();
     func->buildDefUseChains();
 
     return func;
 }
 
 void InstSelPass::selectBasicBlock(BasicBlock* irBB, InstSelContext& ctx) {
-    // 创建 MCBlock
     auto* block = ctx.func->createBlock(irBB->getName());
     ctx.block = block;
 
-    // 遍历基本块中的所有指令
     for (auto* inst : irBB->getInstructions()) {
         selectInstruction(inst, ctx);
     }
@@ -88,106 +258,89 @@ void InstSelPass::selectBasicBlock(BasicBlock* irBB, InstSelContext& ctx) {
 
 void InstSelPass::selectInstruction(Instruction* inst, InstSelContext& ctx) {
     switch (inst->getOpID()) {
-    // 算术运算
-    case Instruction::Add:
-        selectAdd(static_cast<BinaryInst*>(inst), ctx);
-        break;
-    case Instruction::Sub:
-        selectSub(static_cast<BinaryInst*>(inst), ctx);
-        break;
-    case Instruction::Mul:
-        selectMul(static_cast<BinaryInst*>(inst), ctx);
-        break;
-    case Instruction::Div:
-        selectDiv(static_cast<BinaryInst*>(inst), ctx);
-        break;
-    case Instruction::Mod:
-        selectMod(static_cast<BinaryInst*>(inst), ctx);
-        break;
+        case Instruction::Add:
+            selectAdd(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::Sub:
+            selectSub(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::Mul:
+            selectMul(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::Div:
+            selectDiv(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::Mod:
+            selectMod(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::FAdd:
+            selectFAdd(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::FSub:
+            selectFSub(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::FMul:
+            selectFMul(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::FDiv:
+            selectFDiv(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::Alloca:
+            selectAlloca(static_cast<AllocaInst*>(inst), ctx);
+            break;
+        case Instruction::Load:
+            selectLoad(static_cast<LoadInst*>(inst), ctx);
+            break;
+        case Instruction::Store:
+            selectStore(static_cast<StoreInst*>(inst), ctx);
+            break;
+        case Instruction::GetElementPtr:
+            selectGetElementPtr(static_cast<GetElementPtrInst*>(inst), ctx);
+            break;
+        case Instruction::SIToFP:
+            selectSIToFP(static_cast<CastInst*>(inst), ctx);
+            break;
+        case Instruction::FPToSI:
+            selectFPToSI(static_cast<CastInst*>(inst), ctx);
+            break;
+        case Instruction::ICmp:
+            selectICmp(static_cast<ICmpInst*>(inst), ctx);
+            break;
+        case Instruction::FCmp:
+            selectFCmp(static_cast<FCmpInst*>(inst), ctx);
+            break;
+        case Instruction::Br:
+            selectBranch(static_cast<BranchInst*>(inst), ctx);
+            break;
+        case Instruction::Ret:
+            selectReturn(static_cast<ReturnInst*>(inst), ctx);
+            break;
+        case Instruction::Call:
+            selectCall(static_cast<CallInst*>(inst), ctx);
+            break;
+        case Instruction::If:
+            selectIf(static_cast<IfInst*>(inst), ctx);
+            break;
+        case Instruction::While:
+            selectWhile(static_cast<WhileInst*>(inst), ctx);
+            break;
+        case Instruction::Break:
+            selectBreak(static_cast<BreakInst*>(inst), ctx);
+            break;
+        case Instruction::Continue:
+            selectContinue(static_cast<ContinueInst*>(inst), ctx);
+            break;
 
-    // 浮点运算
-    case Instruction::FAdd:
-        selectFAdd(static_cast<BinaryInst*>(inst), ctx);
-        break;
-    case Instruction::FSub:
-        selectFSub(static_cast<BinaryInst*>(inst), ctx);
-        break;
-    case Instruction::FMul:
-        selectFMul(static_cast<BinaryInst*>(inst), ctx);
-        break;
-    case Instruction::FDiv:
-        selectFDiv(static_cast<BinaryInst*>(inst), ctx);
-        break;
+        // Phi
+        case Instruction::Phi:
+            selectPhi(static_cast<PhiInst*>(inst), ctx);
+            break;
 
-    // 内存访问
-    case Instruction::Alloca:
-        selectAlloca(static_cast<AllocaInst*>(inst), ctx);
-        break;
-    case Instruction::Load:
-        selectLoad(static_cast<LoadInst*>(inst), ctx);
-        break;
-    case Instruction::Store:
-        selectStore(static_cast<StoreInst*>(inst), ctx);
-        break;
-    case Instruction::GetElementPtr:
-        selectGetElementPtr(static_cast<GetElementPtrInst*>(inst), ctx);
-        break;
-
-    // 类型转换
-    case Instruction::SIToFP:
-        selectSIToFP(static_cast<CastInst*>(inst), ctx);
-        break;
-    case Instruction::FPToSI:
-        selectFPToSI(static_cast<CastInst*>(inst), ctx);
-        break;
-
-    // 比较
-    case Instruction::ICmp:
-        selectICmp(static_cast<ICmpInst*>(inst), ctx);
-        break;
-    case Instruction::FCmp:
-        selectFCmp(static_cast<FCmpInst*>(inst), ctx);
-        break;
-
-    // 控制流
-    case Instruction::Br:
-        selectBranch(static_cast<BranchInst*>(inst), ctx);
-        break;
-    case Instruction::Ret:
-        selectReturn(static_cast<ReturnInst*>(inst), ctx);
-        break;
-    case Instruction::Call:
-        selectCall(static_cast<CallInst*>(inst), ctx);
-        break;
-
-    // 高级控制流
-    case Instruction::If:
-        selectIf(static_cast<IfInst*>(inst), ctx);
-        break;
-    case Instruction::While:
-        selectWhile(static_cast<WhileInst*>(inst), ctx);
-        break;
-    case Instruction::Break:
-        selectBreak(static_cast<BreakInst*>(inst), ctx);
-        break;
-    case Instruction::Continue:
-        selectContinue(static_cast<ContinueInst*>(inst), ctx);
-        break;
-
-    // Phi
-    case Instruction::Phi:
-        selectPhi(static_cast<PhiInst*>(inst), ctx);
-        break;
-
-    default:
-        std::cerr << "Unknown instruction opcode: " << inst->getOpID() << std::endl;
-        break;
+        default:
+            std::cerr << "Unknown instruction opcode: " << inst->getOpID() << std::endl;
+            break;
     }
 }
-
-// ============================================================================
-// 算术运算
-// ============================================================================
 
 void InstSelPass::selectAdd(BinaryInst* inst, InstSelContext& ctx) {
     auto* lhs = inst->getOperand(0);
@@ -226,29 +379,13 @@ void InstSelPass::selectDiv(BinaryInst* inst, InstSelContext& ctx) {
 }
 
 void InstSelPass::selectMod(BinaryInst* inst, InstSelContext& ctx) {
-    // a % b = a - (a / b) * b
     auto* lhs = inst->getOperand(0);
     auto* rhs = inst->getOperand(1);
-
+    auto rd  = ctx.getVReg(inst, false);
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
-
-    // 临时寄存器
-    auto quot = ctx.newVReg(false);
-    auto mulRes = ctx.newVReg(false);
-    auto rd = ctx.getVReg(inst, false);
-
-    // quot = a / b
-    ctx.block->append(new DivwOp(quot, rs1, rs2));
-    // mulRes = quot * b
-    ctx.block->append(new MulwOp(mulRes, quot, rs2));
-    // rd = a - mulRes
-    ctx.block->append(new SubwOp(rd, rs1, mulRes));
+    ctx.block->append(new RemwOp(rd, rs1, rs2));
 }
-
-// ============================================================================
-// 浮点运算
-// ============================================================================
 
 void InstSelPass::selectFAdd(BinaryInst* inst, InstSelContext& ctx) {
     auto* lhs = inst->getOperand(0);
@@ -286,15 +423,9 @@ void InstSelPass::selectFDiv(BinaryInst* inst, InstSelContext& ctx) {
     ctx.block->append(new FDivSOp(fd, fs1, fs2));
 }
 
-// ============================================================================
-// 内存访问
-// ============================================================================
-
 void InstSelPass::selectAlloca(AllocaInst* inst, InstSelContext& ctx) {
-    // Alloca 需要被转换为栈偏移
-    // 这里暂时创建一个虚拟寄存器，后续在栈帧布局时处理
     auto vreg = ctx.getVReg(inst, false);
-    // TODO: 计算栈偏移并存储到 ctx.func 的栈帧信息中
+    // TODO: Calculate the stack offset and store it in the stack frame information of ctx.func
 }
 
 void InstSelPass::selectLoad(LoadInst* inst, InstSelContext& ctx) {
@@ -304,7 +435,12 @@ void InstSelPass::selectLoad(LoadInst* inst, InstSelContext& ctx) {
     auto rd = ctx.getVReg(inst, isFloat);
     auto base = ctx.getVReg(ptr, false);
 
-    // 暂时使用偏移 0，GEP 会计算实际偏移
+    // GEP has been resolved offset, so there is 0.
+    // Only optimization is needed subsequently:
+    // addi tmp, base, 8; 
+    // lw rd, 0(tmp)
+    // becomes:
+    // lw rd, 8(base)
     if (isFloat) {
         ctx.block->append(new FLwOp(rd, base, 0));
     } else {
@@ -328,34 +464,55 @@ void InstSelPass::selectStore(StoreInst* inst, InstSelContext& ctx) {
 }
 
 void InstSelPass::selectGetElementPtr(GetElementPtrInst* inst, InstSelContext& ctx) {
-    // GEP: base + index * element_size
-    auto* base = inst->getOperand(0);
+    auto* base  = inst->getOperand(0);
     auto* index = inst->getOperand(1);
 
-    auto rd = ctx.getVReg(inst, false);
     auto baseReg = ctx.getVReg(base, false);
-    auto indexReg = ctx.getVReg(index, false);
 
-    // 计算元素大小（简化处理，假设 i32 = 4 字节）
     auto elemType = static_cast<PointerType*>(base->getType())->getPointeeType();
-    int elemSize = 4;  // 默认 4 字节
+    int elemSize = 4;
     if (elemType->isArray()) {
         elemSize = 4 * static_cast<ArrayType*>(elemType)->getNumElements();
     }
 
-    if (elemSize == 1) {
-        ctx.block->append(new AddwOp(rd, baseReg, indexReg));
-    } else {
+    // Constant index: compile-time computation offset, eliminating runtime multiplication.
+    if (auto* ci = dyn_cast<ConstantInt>(index)) {
+        int offset = ci->getValue() * elemSize;
+
+        // index=0（Array-Decay GEP）
+        if (offset == 0) {
+            ctx.valueMap[inst] = baseReg;
+            return;
+        }
+
+        auto rd = ctx.getVReg(inst, false);
+
+        // Offset within 12-bit signed range: an addi.
+        if (offset >= -2048 && offset <= 2047) {
+            ctx.block->append(new AddiOp(rd, baseReg, offset));
+            return;
+        }
+
+        // Large offset: li + addw.
         auto tmp = ctx.newVReg(false);
-        ctx.block->append(new LiOp(tmp, elemSize));
-        ctx.block->append(new MulwOp(tmp, indexReg, tmp));
+        ctx.block->append(new LiOp(tmp, offset));
         ctx.block->append(new AddwOp(rd, baseReg, tmp));
+        return;
+    }
+
+    auto rd = ctx.getVReg(inst, false);
+    auto indexReg = ctx.getVReg(index, false);
+
+    if (elemSize == 1) {
+        ctx.block->append(new AddwOp(rd, baseReg, indexReg)); // bool
+    } else {
+        auto tmp1 = ctx.newVReg(false);
+        auto tmp2 = ctx.newVReg(false);
+        ctx.block->append(new LiOp(tmp1, elemSize));
+        ctx.block->append(new MulwOp(tmp2, indexReg, tmp1));
+        ctx.block->append(new AddwOp(rd, baseReg, tmp2));
     }
 }
-
-// ============================================================================
-// 类型转换
-// ============================================================================
 
 void InstSelPass::selectSIToFP(CastInst* inst, InstSelContext& ctx) {
     auto* val = inst->getOperand(0);
@@ -371,10 +528,6 @@ void InstSelPass::selectFPToSI(CastInst* inst, InstSelContext& ctx) {
     ctx.block->append(new FCvtWSOp(rd, fs));
 }
 
-// ============================================================================
-// 比较
-// ============================================================================
-
 void InstSelPass::selectICmp(ICmpInst* inst, InstSelContext& ctx) {
     auto* lhs = inst->getOperand(0);
     auto* rhs = inst->getOperand(1);
@@ -384,40 +537,42 @@ void InstSelPass::selectICmp(ICmpInst* inst, InstSelContext& ctx) {
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
 
-    // 使用 slt 实现
     switch (pred) {
-    case ICmpInst::EQ: {
-        // a == b → !(a - b) < 0 且 !(a - b) > 0
-        // 使用 sltu 实现：a == b → (a+b) 无符号溢出检查
-        auto tmp = ctx.newVReg(false);
-        ctx.block->append(new XorOp(tmp, rs1, rs2));
-        ctx.block->append(new SltuOp(rd, tmp, MCOperand(1)));
-        break;
-    }
-    case ICmpInst::NE: {
-        auto lt = ctx.newVReg(false);
-        ctx.block->append(new SltOp(lt, rs1, rs2));
-        auto gt = ctx.newVReg(false);
-        ctx.block->append(new SltOp(gt, rs2, rs1));
-        ctx.block->append(new OrOp(rd, lt, gt));
-        break;
-    }
-    case ICmpInst::SLT:
-        ctx.block->append(new SltOp(rd, rs1, rs2));
-        break;
-    case ICmpInst::SGT:
-        ctx.block->append(new SltOp(rd, rs2, rs1));
-        break;
-    case ICmpInst::SLE:
-    case ICmpInst::SGE: {
-        auto tmp = ctx.newVReg(false);
-        bool le = (pred == ICmpInst::SLE);
-        ctx.block->append(new SltOp(tmp, le ? rs2 : rs1, le ? rs1 : rs2));
-        auto one = ctx.newVReg(false);
-        ctx.block->append(new LiOp(one, 1));
-        ctx.block->append(new XorOp(rd, tmp, one));
-        break;
-    }
+        case ICmpInst::EQ: {
+            // xor tmp, rs1, rs2  -> tmp==0 if rs1==rs2
+            // li  one, 1
+            // sltu rd, tmp, one  -> rd = (tmp < 1) = (tmp == 0)
+            auto tmp = ctx.newVReg(false);
+            auto one = ctx.newVReg(false);
+            ctx.block->append(new XorOp(tmp, rs1, rs2));
+            ctx.block->append(new LiOp(one, 1));
+            ctx.block->append(new SltuOp(rd, tmp, one));
+            break;
+        }
+        case ICmpInst::NE: {
+            auto lt = ctx.newVReg(false);
+            ctx.block->append(new SltOp(lt, rs1, rs2));
+            auto gt = ctx.newVReg(false);
+            ctx.block->append(new SltOp(gt, rs2, rs1));
+            ctx.block->append(new OrOp(rd, lt, gt));
+            break;
+        }
+        case ICmpInst::SLT:
+            ctx.block->append(new SltOp(rd, rs1, rs2));
+            break;
+        case ICmpInst::SGT:
+            ctx.block->append(new SltOp(rd, rs2, rs1));
+            break;
+        case ICmpInst::SLE:
+        case ICmpInst::SGE: {
+            auto tmp = ctx.newVReg(false);
+            bool le = (pred == ICmpInst::SLE);
+            ctx.block->append(new SltOp(tmp, le ? rs2 : rs1, le ? rs1 : rs2));
+            auto one = ctx.newVReg(false);
+            ctx.block->append(new LiOp(one, 1));
+            ctx.block->append(new XorOp(rd, tmp, one));
+            break;
+        }
     }
 }
 
@@ -431,51 +586,43 @@ void InstSelPass::selectFCmp(FCmpInst* inst, InstSelContext& ctx) {
     auto fs2 = ctx.getVReg(rhs, true);
 
     switch (pred) {
-    case FCmpInst::OEQ:
-        ctx.block->append(new FEQSOp(rd, fs1, fs2));
-        break;
-    case FCmpInst::ONE: {
-        auto tmp = ctx.newVReg(false);
-        ctx.block->append(new FEQSOp(tmp, fs1, fs2));
-        auto one = ctx.newVReg(false);
-        ctx.block->append(new LiOp(one, 1));
-        ctx.block->append(new XorOp(rd, tmp, one));
-        break;
-    }
-    case FCmpInst::OLT:
-        ctx.block->append(new FLTSOp(rd, fs1, fs2));
-        break;
-    case FCmpInst::OGT:
-        ctx.block->append(new FLTSOp(rd, fs2, fs1));
-        break;
-    case FCmpInst::OLE:
-    case FCmpInst::OGE: {
-        auto tmp = ctx.newVReg(false);
-        bool le = (pred == FCmpInst::OLE);
-        ctx.block->append(new FLTSOp(tmp, le ? fs2 : fs1, le ? fs1 : fs2));
-        auto one = ctx.newVReg(false);
-        ctx.block->append(new LiOp(one, 1));
-        ctx.block->append(new XorOp(rd, tmp, one));
-        break;
-    }
+        case FCmpInst::OEQ:
+            ctx.block->append(new FEQSOp(rd, fs1, fs2));
+            break;
+        case FCmpInst::ONE: {
+            auto tmp = ctx.newVReg(false);
+            ctx.block->append(new FEQSOp(tmp, fs1, fs2));
+            auto one = ctx.newVReg(false);
+            ctx.block->append(new LiOp(one, 1));
+            ctx.block->append(new XorOp(rd, tmp, one));
+            break;
+        }
+        case FCmpInst::OLT:
+            ctx.block->append(new FLTSOp(rd, fs1, fs2));
+            break;
+        case FCmpInst::OGT:
+            ctx.block->append(new FLTSOp(rd, fs2, fs1));
+            break;
+        case FCmpInst::OLE:
+        case FCmpInst::OGE: {
+            auto tmp = ctx.newVReg(false);
+            bool le = (pred == FCmpInst::OLE);
+            ctx.block->append(new FLTSOp(tmp, le ? fs2 : fs1, le ? fs1 : fs2));
+            auto one = ctx.newVReg(false);
+            ctx.block->append(new LiOp(one, 1));
+            ctx.block->append(new XorOp(rd, tmp, one));
+            break;
+        }
     }
 }
 
-// ============================================================================
-// 控制流
-// ============================================================================
-
 void InstSelPass::selectBranch(BranchInst* inst, InstSelContext& ctx) {
-    // 检查是否为无条件跳转（根据 Instruction.h 的接口）
-    // 如果只有一个操作数，则为无条件跳转到目标
-    // 如果有两个操作数，则为条件跳转
-
     if (inst->getNumOperands() == 1) {
-        // 无条件跳转
+        // j
         auto* dest = static_cast<BasicBlock*>(inst->getOperand(0));
         ctx.block->append(new JOp(dest->getName()));
     } else {
-        // 条件跳转
+        // branch
         auto* cond = inst->getOperand(0);
         auto* ifTrue = static_cast<BasicBlock*>(inst->getOperand(1));
         auto* ifFalse = static_cast<BasicBlock*>(inst->getOperand(2));
@@ -486,6 +633,7 @@ void InstSelPass::selectBranch(BranchInst* inst, InstSelContext& ctx) {
     }
 }
 
+// Using a0/fa0 as return register.
 void InstSelPass::selectReturn(ReturnInst* inst, InstSelContext& ctx) {
     if (inst->getNumOperands() > 0) {
         auto* val = inst->getOperand(0);
@@ -504,10 +652,13 @@ void InstSelPass::selectReturn(ReturnInst* inst, InstSelContext& ctx) {
 void InstSelPass::selectCall(CallInst* inst, InstSelContext& ctx) {
     auto* callee = inst->getFunction();
 
-    // 将参数移动到参数寄存器
+    auto* callOp = new CallOp(callee->getName());
+
+    // operand(0) is the called function itself, and the real argument starts with index = 1.
     int intIdx = 0;
     int floatIdx = 0;
-    for (int i = 0; i < inst->getNumOperands(); ++i) {
+    int stackSlot = 0;
+    for (int i = 1; i < inst->getNumOperands(); ++i) {
         auto* arg = inst->getOperand(i);
         bool isFloat = InstSelContext::isFloatType(arg->getType());
         auto argReg = ctx.getVReg(arg, isFloat);
@@ -520,12 +671,14 @@ void InstSelPass::selectCall(CallInst* inst, InstSelContext& ctx) {
             Reg paramReg = static_cast<Reg>(static_cast<int>(Reg::a0) + intIdx);
             ctx.block->append(new MvOp(MCOperand(paramReg), argReg));
             intIdx++;
+        } else {
+            // Overflow arg: Prologue/Epilogue pass will emit sw/fsw before the call.
+            callOp->stackArgs.push_back({argReg, stackSlot++, isFloat});
         }
     }
 
-    ctx.block->append(new CallOp(callee->getName()));
+    ctx.block->append(callOp);
 
-    // 处理返回值
     if (!inst->getType()->isVoid()) {
         bool isFloat = InstSelContext::isFloatType(inst->getType());
         if (isFloat) {
@@ -538,33 +691,27 @@ void InstSelPass::selectCall(CallInst* inst, InstSelContext& ctx) {
     }
 }
 
-// ============================================================================
-// 高级控制流 (TODO)
-// ============================================================================
+void InstSelPass::selectPhi(PhiInst* inst, InstSelContext& ctx) {
+    // After Early Phi Elimination, here is only valuemap.
+    // PhiInst is not corresponding to MCInst.
+    ctx.getVReg(inst, InstSelContext::isFloatType(inst->getType()));
+}
 
+// Through FlattenCFG, If/While/Break/Continue have all been expanded into BranchInst.
 void InstSelPass::selectIf(IfInst* inst, InstSelContext& ctx) {
-    std::cerr << "IfInst lowering not implemented yet" << std::endl;
+    assert(false && "IfInst reached InstSel: FlattenCFG should have lowered it");
 }
 
 void InstSelPass::selectWhile(WhileInst* inst, InstSelContext& ctx) {
-    std::cerr << "WhileInst lowering not implemented yet" << std::endl;
+    assert(false && "WhileInst reached InstSel: FlattenCFG should have lowered it");
 }
 
 void InstSelPass::selectBreak(BreakInst* inst, InstSelContext& ctx) {
-    std::cerr << "BreakInst lowering not implemented yet" << std::endl;
+    assert(false && "BreakInst reached InstSel: FlattenCFG should have lowered it");
 }
 
 void InstSelPass::selectContinue(ContinueInst* inst, InstSelContext& ctx) {
-    std::cerr << "ContinueInst lowering not implemented yet" << std::endl;
-}
-
-// ============================================================================
-// Phi 节点
-// ============================================================================
-
-void InstSelPass::selectPhi(PhiInst* inst, InstSelContext& ctx) {
-    // Phi 节点需要在寄存器分配后消除
-    ctx.getVReg(inst, InstSelContext::isFloatType(inst->getType()));
+    assert(false && "ContinueInst reached InstSel: FlattenCFG should have lowered it");
 }
 
 } // namespace rv
