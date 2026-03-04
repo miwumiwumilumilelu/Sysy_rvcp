@@ -146,7 +146,7 @@ Constant* ConstantFold::computeBinary(Instruction::OpID op, Constant* lhs, Const
             }
         }
     }
-    // TODO
+
     return nullptr;
 }
 
