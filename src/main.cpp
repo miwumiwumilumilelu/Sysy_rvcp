@@ -14,8 +14,10 @@
 #include "Optimize/SimplifyCFG.h"
 #include "Optimize/DCE.h"
 #include "rv/InstSel.h"
+#include "rv/RvOp.h"
 
 using namespace sysy;
+using namespace sysy::rv;
 
 int main(int argc, char **argv) {
     std::string inputFile;
@@ -105,6 +107,18 @@ int main(int argc, char **argv) {
     }
 
     std::cerr << "\n[Debug] ----- Starting Instruction Selection -----" << std::endl;
+    InstSelPass isel;
+    auto mcModules = isel.run(module.get());
+
+    for (auto& mcFunc : mcModules) {
+        std::cout << "Function: " << mcFunc->name << "\n";
+        for (auto& mcBB : mcFunc->blocks) {
+            std::cout << mcBB->name << ":\n";
+            mcBB->forEach([](RvOp* op) {
+                op->print(std::cout);
+            });
+        }
+    }
 
     return 0;
 }

@@ -1,0 +1,9 @@
+  int leaf_add(int a, int b) {                                                                                                                                                                              
+      int x = a + 5;                                                                                                                                                                                        
+      int y = b + 10;                                                                                                                                                                                       
+      return x + y;                                                                                                                                                                                         
+  }                                                                                                                                                                                                         
+                                                                                                                                                                                                            
+  int main() {                                                                                                                                                                                              
+      return leaf_add(3, 4);                                                                                                                                                                                
+  } 

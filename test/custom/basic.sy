@@ -1,0 +1,14 @@
+int count;
+
+int main() {
+  int a = 7;
+  while (a != 1) {
+    count = count + 1;
+    if (a % 2 == 0) {
+      a = a / 2;
+    } else {
+      a = a * 3 + 1;
+    }
+  }
+  return count;
+}

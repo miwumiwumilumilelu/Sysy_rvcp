@@ -1,0 +1,9 @@
+// test4.sy
+float calc(int a, float b, int c) {
+    return a + b - c;
+}
+
+int main() {
+    float res = calc(10, 2.5, 3);
+    return res; 
+}
