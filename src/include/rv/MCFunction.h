@@ -33,10 +33,22 @@ public:
     // Index access for vregInfo is O(1).
     std::vector<VRegInfo> vregInfo;
 
+    // Stack argument passing metadata.
+    struct StackArgInfo {
+        VReg vreg;     // VReg holding the incoming/outgoing value
+        int  slotIdx;  // overflow slot index (0 = first overflow arg, in declaration order)
+        bool isFloat;  // true → flw/fsw, false → lw/sw
+    };
+
+    // Callee: register-passed args (first 8 int → a0..a7, first 8 float → fa0..fa7).
+    // RegAlloc pre-colors these VRegs to the corresponding physical registers.
     std::vector<VReg> args;
     std::vector<bool> argIsFloat;
 
-    // TODO in RegAlloc.
+    // Callee: stack-passed incoming args beyond the 8-register limit.
+    // Prologue pass emits: lw/flw vreg, (frameSize + slotIdx*4)(sp)
+    std::vector<StackArgInfo> incomingStackArgs;
+
     int frameSize = 0;
     // No Call
     bool isLeaf = true;

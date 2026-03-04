@@ -367,6 +367,16 @@ public:
 class CallOp : public RvOp {
 public:
     std::string target;
+
+    // Caller-side stack args beyond the 8-register limit.
+    // Prologue/Epilogue pass emits sw/fsw before this CallOp, at sp+slotIdx*4.
+    struct StackArg {
+        MCOperand src;  
+        int  slotIdx; 
+        bool isFloat; 
+    };
+    std::vector<StackArg> stackArgs;
+
     explicit CallOp(std::string t) : RvOp(RvOp::CallOp), target(std::move(t)) {}
     void print(std::ostream& os) const override { os << "    call " << target << "\n"; }
 };
