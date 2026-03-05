@@ -171,11 +171,29 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
                 if (!srcMCBlock) continue;
 
                 ctx.block = srcMCBlock;
-                MCOperand srcReg = ctx.getVReg(incomingVal, isFloat);
 
-                RvOp* mvOp = isFloat
-                    ? static_cast<RvOp*>(new FMvSOp(dstReg, srcReg))
-                    : static_cast<RvOp*>(new MvOp(dstReg, srcReg));
+                // Constant incoming value: materialize directly into dstReg,
+                // avoiding an intermediate vreg + mv/fmv.s.
+                RvOp* mvOp = nullptr;
+                if (!isFloat) {
+                    if (auto* ci = dyn_cast<ConstantInt>(incomingVal))
+                        mvOp = new LiOp(dstReg, ci->getValue());
+                    else if (isa<ConstantZero>(incomingVal))
+                        mvOp = new MvOp(dstReg, MCOperand(Reg::zero));
+                } else if (isa<ConstantZero>(incomingVal)) {
+                    // fmv.w.x dstReg, zero  =>  0.0f
+                    mvOp = new FMvWXOp(dstReg, MCOperand(Reg::zero));
+                }
+
+                if (!mvOp) {
+                    // General case: non-constant, go through getVReg + mv/fmv.s.
+                    MCOperand srcReg = ctx.getVReg(incomingVal, isFloat);
+                    // Skip self-assignment (e.g., continue edges where phi incoming == phi dest).
+                    if (dstReg == srcReg) continue;
+                    mvOp = isFloat
+                        ? static_cast<RvOp*>(new FMvSOp(dstReg, srcReg))
+                        : static_cast<RvOp*>(new MvOp(dstReg, srcReg));
+                }
 
                 // Handles multiple PHIs on the same edge.
                 std::string trampolineName = srcMCBlock->name + "_to_" + dstMCBlock->name;
@@ -346,6 +364,20 @@ void InstSelPass::selectAdd(BinaryInst* inst, InstSelContext& ctx) {
     auto* lhs = inst->getOperand(0);
     auto* rhs = inst->getOperand(1);
     auto rd = ctx.getVReg(inst, false);
+
+    // Check if have one operand is constant, which can use addi.
+    auto tryAddi = [&](Value* base, Value* imm) -> bool {
+        auto* ci = dyn_cast<ConstantInt>(imm);
+        if (!ci) return false;
+        int v = ci->getValue();
+        if (v < -2048 || v > 2047) return false;
+        auto rs = ctx.getVReg(base, false);
+        ctx.block->append(new AddiOp(rd, rs, v));
+        return true;
+    };
+
+    if (tryAddi(lhs, rhs) || tryAddi(rhs, lhs)) return;
+
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
     ctx.block->append(new AddwOp(rd, rs1, rs2));
@@ -355,6 +387,18 @@ void InstSelPass::selectSub(BinaryInst* inst, InstSelContext& ctx) {
     auto* lhs = inst->getOperand(0);
     auto* rhs = inst->getOperand(1);
     auto rd = ctx.getVReg(inst, false);
+
+    // sub x, c  ->  addi rd, x, -c  
+    // when -c fits in 12-bit signed immediate.
+    if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
+        int neg = -ci->getValue();
+        if (neg >= -2048 && neg <= 2047) {
+            auto rs1 = ctx.getVReg(lhs, false);
+            ctx.block->append(new AddiOp(rd, rs1, neg));
+            return;
+        }
+    }
+
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
     ctx.block->append(new SubwOp(rd, rs1, rs2));
@@ -364,6 +408,21 @@ void InstSelPass::selectMul(BinaryInst* inst, InstSelContext& ctx) {
     auto* lhs = inst->getOperand(0);
     auto* rhs = inst->getOperand(1);
     auto rd = ctx.getVReg(inst, false);
+
+    // Strength reduction: x * 2^k  ->  slliw rd, x, k
+    auto tryShift = [&](Value* base, Value* imm) -> bool {
+        auto* ci = dyn_cast<ConstantInt>(imm);
+        if (!ci || ci->getValue() <= 0) return false;
+        int v = ci->getValue();
+        if (v & (v - 1)) return false;  // not a power of 2
+        // __builtin_ctz counts trailing zeros.
+        int k = __builtin_ctz(static_cast<unsigned>(v));
+        auto rs = ctx.getVReg(base, false);
+        ctx.block->append(new SlliwOp(rd, rs, k));
+        return true;
+    };
+    if (tryShift(lhs, rhs) || tryShift(rhs, lhs)) return;
+
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
     ctx.block->append(new MulwOp(rd, rs1, rs2));
@@ -493,10 +552,10 @@ void InstSelPass::selectGetElementPtr(GetElementPtrInst* inst, InstSelContext& c
             return;
         }
 
-        // Large offset: li + addw.
+        // Large offset: li + add (64-bit, pointer arithmetic must not truncate).
         auto tmp = ctx.newVReg(false);
         ctx.block->append(new LiOp(tmp, offset));
-        ctx.block->append(new AddwOp(rd, baseReg, tmp));
+        ctx.block->append(new AddOp(rd, baseReg, tmp));
         return;
     }
 
@@ -504,13 +563,18 @@ void InstSelPass::selectGetElementPtr(GetElementPtrInst* inst, InstSelContext& c
     auto indexReg = ctx.getVReg(index, false);
 
     if (elemSize == 1) {
-        ctx.block->append(new AddwOp(rd, baseReg, indexReg)); // bool
+        ctx.block->append(new AddOp(rd, baseReg, indexReg)); // bool
     } else {
-        auto tmp1 = ctx.newVReg(false);
         auto tmp2 = ctx.newVReg(false);
-        ctx.block->append(new LiOp(tmp1, elemSize));
-        ctx.block->append(new MulwOp(tmp2, indexReg, tmp1));
-        ctx.block->append(new AddwOp(rd, baseReg, tmp2));
+        if ((elemSize & (elemSize - 1)) == 0) {
+            int k = __builtin_ctz(static_cast<unsigned>(elemSize));
+            ctx.block->append(new SlliwOp(tmp2, indexReg, k));
+        } else {
+            auto tmp1 = ctx.newVReg(false);
+            ctx.block->append(new LiOp(tmp1, elemSize));
+            ctx.block->append(new MulwOp(tmp2, indexReg, tmp1));
+        }
+        ctx.block->append(new AddOp(rd, baseReg, tmp2));
     }
 }
 
@@ -534,19 +598,67 @@ void InstSelPass::selectICmp(ICmpInst* inst, InstSelContext& ctx) {
     auto pred = inst->getPredicate();
 
     auto rd = ctx.getVReg(inst, false);
+
+    // Detect integer zero without materializing a li rd, 0.
+    auto isIntZero = [](Value* v) -> bool {
+        if (isa<ConstantZero>(v)) return true;
+        if (auto* ci = dyn_cast<ConstantInt>(v)) return ci->getValue() == 0;
+        return false;
+    };
+
+    // SLT with small non-zero constant rhs: slti rd, rs, imm  (1 instruction).
+    if (pred == ICmpInst::SLT) {
+        if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
+            int v = ci->getValue();
+            if (v != 0 && v >= -2048 && v <= 2047) {
+                auto rs = ctx.getVReg(lhs, false);
+                ctx.block->append(new SltiOp(rd, rs, v));
+                return;
+            }
+        }
+    }
+
+    // SLT/SGT with zero: fold zero operand into the zero register, saving a li.
+    //   icmp slt x, 0  ->  slt rd, x, zero
+    //   icmp slt 0, x  ->  slt rd, zero, x
+    //   icmp sgt x, 0  ->  slt rd, zero, x   (reversed operands)
+    //   icmp sgt 0, x  ->  slt rd, x, zero
+    if ((pred == ICmpInst::SLT || pred == ICmpInst::SGT) &&
+        (isIntZero(lhs) || isIntZero(rhs))) {
+        bool isSgt = (pred == ICmpInst::SGT);
+        // For SGT(a,b) = SLT(b,a), swap lhs/rhs.
+        Value* sltLhs = isSgt ? rhs : lhs;
+        Value* sltRhs = isSgt ? lhs : rhs;
+        auto r1 = isIntZero(sltLhs) ? MCOperand(Reg::zero) : ctx.getVReg(sltLhs, false);
+        auto r2 = isIntZero(sltRhs) ? MCOperand(Reg::zero) : ctx.getVReg(sltRhs, false);
+        ctx.block->append(new SltOp(rd, r1, r2));
+        return;
+    }
+
+    // EQ/NE with zero: use seqz / snez (single instruction).
+    if (pred == ICmpInst::EQ && (isIntZero(lhs) || isIntZero(rhs))) {
+        // seqz rd, rs  =>  sltiu rd, rs, 1
+        auto rs = ctx.getVReg(isIntZero(rhs) ? lhs : rhs, false);
+        ctx.block->append(new SltiuOp(rd, rs, 1));
+        return;
+    }
+    if (pred == ICmpInst::NE && (isIntZero(lhs) || isIntZero(rhs))) {
+        // snez rd, rs  =>  sltu rd, zero, rs
+        auto rs = ctx.getVReg(isIntZero(rhs) ? lhs : rhs, false);
+        ctx.block->append(new SltuOp(rd, MCOperand(Reg::zero), rs));
+        return;
+    }
+
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
 
     switch (pred) {
         case ICmpInst::EQ: {
             // xor tmp, rs1, rs2  -> tmp==0 if rs1==rs2
-            // li  one, 1
-            // sltu rd, tmp, one  -> rd = (tmp < 1) = (tmp == 0)
+            // sltiu rd, tmp, 1   -> rd = (tmp == 0)
             auto tmp = ctx.newVReg(false);
-            auto one = ctx.newVReg(false);
             ctx.block->append(new XorOp(tmp, rs1, rs2));
-            ctx.block->append(new LiOp(one, 1));
-            ctx.block->append(new SltuOp(rd, tmp, one));
+            ctx.block->append(new SltiuOp(rd, tmp, 1));
             break;
         }
         case ICmpInst::NE: {
@@ -638,13 +750,27 @@ void InstSelPass::selectReturn(ReturnInst* inst, InstSelContext& ctx) {
     if (inst->getNumOperands() > 0) {
         auto* val = inst->getOperand(0);
         bool isFloat = InstSelContext::isFloatType(val->getType());
-        auto valReg = ctx.getVReg(val, isFloat);
 
-        if (isFloat) {
-            ctx.block->append(new MvOp(MCOperand(Reg::fa0), valReg));
-        } else {
-            ctx.block->append(new MvOp(MCOperand(Reg::a0), valReg));
+        // Constant return value: materialize directly into a0/fa0,
+        // avoiding an intermediate vreg + mv.
+        if (!isFloat) {
+            if (auto* ci = dyn_cast<ConstantInt>(val)) {
+                ctx.block->append(new LiOp(MCOperand(Reg::a0), ci->getValue()));
+                ctx.block->append(new RetOp());
+                return;
+            }
+            if (isa<ConstantZero>(val)) {
+                ctx.block->append(new MvOp(MCOperand(Reg::a0), MCOperand(Reg::zero)));
+                ctx.block->append(new RetOp());
+                return;
+            }
         }
+
+        auto valReg = ctx.getVReg(val, isFloat);
+        if (isFloat)
+            ctx.block->append(new FMvSOp(MCOperand(Reg::fa0), valReg));
+        else
+            ctx.block->append(new MvOp(MCOperand(Reg::a0), valReg));
     }
     ctx.block->append(new RetOp());
 }
@@ -661,18 +787,27 @@ void InstSelPass::selectCall(CallInst* inst, InstSelContext& ctx) {
     for (int i = 1; i < inst->getNumOperands(); ++i) {
         auto* arg = inst->getOperand(i);
         bool isFloat = InstSelContext::isFloatType(arg->getType());
-        auto argReg = ctx.getVReg(arg, isFloat);
 
         if (isFloat && floatIdx < 8) {
             Reg paramReg = static_cast<Reg>(static_cast<int>(Reg::fa0) + floatIdx);
-            ctx.block->append(new MvOp(MCOperand(paramReg), argReg));
+            auto argReg = ctx.getVReg(arg, true);
+            ctx.block->append(new FMvSOp(MCOperand(paramReg), argReg));
             floatIdx++;
         } else if (!isFloat && intIdx < 8) {
             Reg paramReg = static_cast<Reg>(static_cast<int>(Reg::a0) + intIdx);
-            ctx.block->append(new MvOp(MCOperand(paramReg), argReg));
+            // Constant int arg: materialize directly into a_reg, skip intermediate vreg + mv.
+            if (auto* ci = dyn_cast<ConstantInt>(arg)) {
+                ctx.block->append(new LiOp(MCOperand(paramReg), ci->getValue()));
+            } else if (isa<ConstantZero>(arg)) {
+                ctx.block->append(new MvOp(MCOperand(paramReg), MCOperand(Reg::zero)));
+            } else {
+                auto argReg = ctx.getVReg(arg, false);
+                ctx.block->append(new MvOp(MCOperand(paramReg), argReg));
+            }
             intIdx++;
         } else {
             // Overflow arg: Prologue/Epilogue pass will emit sw/fsw before the call.
+            auto argReg = ctx.getVReg(arg, isFloat);
             callOp->stackArgs.push_back({argReg, stackSlot++, isFloat});
         }
     }
@@ -683,7 +818,7 @@ void InstSelPass::selectCall(CallInst* inst, InstSelContext& ctx) {
         bool isFloat = InstSelContext::isFloatType(inst->getType());
         if (isFloat) {
             auto rd = ctx.getVReg(inst, true);
-            ctx.block->append(new MvOp(rd, MCOperand(Reg::fa0)));
+            ctx.block->append(new FMvSOp(rd, MCOperand(Reg::fa0)));
         } else {
             auto rd = ctx.getVReg(inst, false);
             ctx.block->append(new MvOp(rd, MCOperand(Reg::a0)));
