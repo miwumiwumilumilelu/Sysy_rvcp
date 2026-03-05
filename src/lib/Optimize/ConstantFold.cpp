@@ -1,4 +1,5 @@
 #include "Optimize/ConstantFold.h"
+#include <algorithm>
 #include <cmath>
 
 using namespace sysy;
@@ -24,6 +25,18 @@ void ConstantFold::run() {
     }
 }
 
+static ICmpInst::CmpOp invertPredicate(ICmpInst::CmpOp pred) {
+    switch (pred) {
+        case ICmpInst::EQ:  return ICmpInst::NE;
+        case ICmpInst::NE:  return ICmpInst::EQ;
+        case ICmpInst::SGT: return ICmpInst::SLE;
+        case ICmpInst::SGE: return ICmpInst::SLT;
+        case ICmpInst::SLT: return ICmpInst::SGE;
+        case ICmpInst::SLE: return ICmpInst::SGT;
+    }
+    return pred;
+}
+
 bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
     if (auto bin = dyn_cast<BinaryInst>(inst)) {
         auto c1 = dyn_cast<Constant>(bin->getOperand(0));
@@ -44,6 +57,35 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
         if (c1 && c2) {
             if (auto folded = computeICmp(cmp->getPredicate(), c1, c2)) {
                 inst->replaceAllUsesWith(folded);
+                currentBB->getInstructions().remove(inst);
+                return true;
+            }
+        }
+
+        // Pattern: icmp eq/ne (icmp pred X, Y), 0
+        //   eq → icmp inv_pred X, Y
+        //   ne → replace with inner directly
+        auto pred = cmp->getPredicate();
+        auto ci2 = dyn_cast<ConstantInt>(cmp->getOperand(1));
+        if ((pred == ICmpInst::EQ || pred == ICmpInst::NE) &&
+            !c1 && ci2 && ci2->getValue() == 0) {
+            if (auto inner = dyn_cast<ICmpInst>(cmp->getOperand(0))) {
+                Value* replacement;
+                if (pred == ICmpInst::NE) {
+                    replacement = inner;
+                } else {
+                    auto& instList = currentBB->getInstructions();
+                    auto pos = std::find(instList.begin(), instList.end(), inst);
+                    auto newCmp = new ICmpInst(invertPredicate(inner->getPredicate()),
+                                               inner->getOperand(0), inner->getOperand(1),
+                                               currentBB);
+                    newCmp->setName(inst->getName());
+                    instList.splice(pos, instList, std::prev(instList.end()));
+                    replacement = newCmp;
+                }
+                inst->replaceAllUsesWith(replacement);
+                for (int i = 0; i < inst->getNumOperands(); ++i)
+                    inst->setOperand(i, nullptr);
                 currentBB->getInstructions().remove(inst);
                 return true;
             }
