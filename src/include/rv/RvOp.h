@@ -30,9 +30,9 @@ using VReg = uint32_t;
 constexpr VReg InvalidVReg = 0;
 
 #define RV_INSTRUCTIONS \
-    X(Addi) X(Addw) X(Subw) X(Mulw) X(Divw) X(Remw) \
-    X(Sll) X(Srl) X(Sra) \
-    X(And) X(Or) X(Xor) X(Slt) X(Sltu) \
+    X(Addi) X(Add) X(Addw) X(Subw) X(Mulw) X(Divw) X(Remw) \
+    X(Sll) X(Srl) X(Sra) X(Slliw) \
+    X(And) X(Or) X(Xor) X(Slt) X(Sltu) X(Sltiu) X(Slti) \
     X(FAddS) X(FSubS) X(FMulS) X(FDivS) \
     /* call @sqrt(float %a) -> FSqrtS */ \
     /* %res = %a < %b ? %a : %b -> FMinS */ \
@@ -92,6 +92,9 @@ public:
     bool isFloatReg() const {
         return isPReg() && isFP(getPReg());
     }
+
+    bool operator==(const MCOperand& o) const { return val == o.val; }
+    bool operator!=(const MCOperand& o) const { return val != o.val; }
 };
 
 inline std::ostream& operator<<(std::ostream& os, const MCOperand& op) {
@@ -207,11 +210,15 @@ class RemwOp  : public RVInstR { public: RemwOp(MCOperand d, MCOperand s1, MCOpe
 class AndOp   : public RVInstR { public: AndOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::AndOp, "and", d, s1, s2) {} };
 class OrOp    : public RVInstR { public: OrOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::OrOp, "or", d, s1, s2) {} };
 class XorOp   : public RVInstR { public: XorOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::XorOp, "xor", d, s1, s2) {} };
+class AddOp   : public RVInstR { public: AddOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::AddOp, "add", d, s1, s2) {} };
 class SllOp   : public RVInstR { public: SllOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SllOp, "sll", d, s1, s2) {} };
 class SrlOp   : public RVInstR { public: SrlOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SrlOp, "srl", d, s1, s2) {} };
 class SraOp   : public RVInstR { public: SraOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SraOp, "sra", d, s1, s2) {} };
 class SltOp   : public RVInstR { public: SltOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SltOp, "slt", d, s1, s2) {} };
 class SltuOp  : public RVInstR { public: SltuOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SltuOp, "sltu", d, s1, s2) {} };
+class SltiuOp : public RVInstI { public: SltiuOp(MCOperand d, MCOperand s, int i) : RVInstI(RvOp::SltiuOp, "sltiu", d, s, i) {} };
+class SltiOp  : public RVInstI { public: SltiOp (MCOperand d, MCOperand s, int i) : RVInstI(RvOp::SltiOp,  "slti",  d, s, i) {} };
+class SlliwOp : public RVInstI { public: SlliwOp(MCOperand d, MCOperand s, int i) : RVInstI(RvOp::SlliwOp, "slliw", d, s, i) {} };
 class FAddSOp : public RVInstR { public: FAddSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FAddSOp, "fadd.s", d, s1, s2) {} };
 class FSubSOp : public RVInstR { public: FSubSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FSubSOp, "fsub.s", d, s1, s2) {} };
 class FMulSOp : public RVInstR { public: FMulSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FMulSOp, "fmul.s", d, s1, s2) {} };
@@ -272,7 +279,14 @@ public:
 };
 
 class MvOp     : public RVInstU { public: MvOp(MCOperand d, MCOperand s) : RVInstU(RvOp::MvOp, "mv", d, s) {} };
-class FCvtWSOp : public RVInstU { public: FCvtWSOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FCvtWSOp, "fcvt.w.s", d, s) {} };
+class FCvtWSOp : public RVInstU {
+public:
+    FCvtWSOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FCvtWSOp, "fcvt.w.s", d, s) {}
+    // fptosi always truncates toward zero; override print to emit rtz.
+    void print(std::ostream& os) const override {
+        os << "    fcvt.w.s " << rd << ", " << rs << ", rtz\n";
+    }
+};
 class FCvtSWOp : public RVInstU { public: FCvtSWOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FCvtSWOp, "fcvt.s.w", d, s) {} };
 class FSqrtSOp : public RVInstU { public: FSqrtSOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FSqrtSOp, "fsqrt.s", d, s) {} };
 class FMvWXOp  : public RVInstU { public: FMvWXOp(MCOperand d, MCOperand s) : RVInstU(RvOp::FMvWXOp, "fmv.w.x", d, s) {} };
