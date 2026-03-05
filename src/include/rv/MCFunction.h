@@ -179,6 +179,66 @@ public:
         });
     }
 
+    // Backward dataflow liveness analysis.
+    // Populates liveIn/liveOut for every MCBlock.
+    // Must be called after ISel (CFG edges must be set).
+    void computeLiveness() {
+        int n = static_cast<int>(blocks.size());
+
+        struct BlockInfo {
+            std::unordered_set<VReg> use, def;
+        };
+        std::vector<BlockInfo> info(n);
+
+        std::vector<MCOperand*> usesBuf;
+        for (int i = 0; i < n; i++) {
+            auto* block = blocks[i].get();
+            block->liveIn.clear();
+            block->liveOut.clear();
+            for (RvOp* op = block->head; op; op = op->next) {
+                // Uses come before def within the same instruction.
+                usesBuf.clear();
+                op->collectUses(usesBuf);
+                for (auto* operand : usesBuf) {
+                    if (operand->isVReg()) {
+                        VReg v = operand->getVReg();
+                        if (!info[i].def.count(v))
+                            info[i].use.insert(v);
+                    }
+                }
+                MCOperand* defOp = op->getDef();
+                if (defOp && defOp->isVReg())
+                    info[i].def.insert(defOp->getVReg());
+            }
+        }
+
+        // iterate to fixpoint(reverse order)
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (int i = n - 1; i >= 0; i--) {
+                auto* block = blocks[i].get();
+
+                // liveOut[b] = U (liveIn[s] for s in succs[b])
+                size_t oldLiveOutSize = block->liveOut.size();
+                for (auto* succ : block->succs)
+                    for (VReg v : succ->liveIn)
+                        block->liveOut.insert(v);
+
+                // liveIn[b] = use[b] U (liveOut[b] − def[b])
+                size_t oldLiveInSize = block->liveIn.size();
+                block->liveIn.insert(info[i].use.begin(), info[i].use.end());
+                for (VReg v : block->liveOut)
+                    if (!info[i].def.count(v))
+                        block->liveIn.insert(v);
+
+                if (block->liveIn.size() != oldLiveInSize ||
+                    block->liveOut.size() != oldLiveOutSize)
+                    changed = true;
+            }
+        }
+    }
+
     std::vector<VReg> getAllVRegs() const {
         std::vector<VReg> result;
         result.reserve(nextVReg - 1);

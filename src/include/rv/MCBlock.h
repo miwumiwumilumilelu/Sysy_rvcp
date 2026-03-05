@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <unordered_set>
 
 namespace sysy {
 namespace rv {
@@ -20,8 +21,12 @@ public:
     RvOp* tail = nullptr;
 
     // CFG
-    std::vector<MCBlock*> succs; 
+    std::vector<MCBlock*> succs;
     std::vector<MCBlock*> preds;
+
+    // Liveness sets
+    std::unordered_set<VReg> liveIn;
+    std::unordered_set<VReg> liveOut;
 
     // Used for register assignment priority.
     int loopDepth = 0;
