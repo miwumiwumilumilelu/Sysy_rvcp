@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <unordered_set>
+#include <unordered_map>
 
 namespace sysy {
 namespace rv {
@@ -20,11 +21,13 @@ public:
     struct VRegInfo {
         VReg vreg;
         bool isFloat;
-        MCOperand* defOp = nullptr;          
-        std::vector<MCOperand*> uses;         
-        Reg preg = Reg::zero;             
+        // RV64 pointer: spill uses ld/sd
+        bool isPtr = false; 
+        MCOperand* defOp = nullptr;
+        std::vector<MCOperand*> uses;
+        Reg preg = Reg::zero;
         int spillOffset = -1; // -1 is not spilled.
-        bool isSpilled = false;      
+        bool isSpilled = false;
 
         VRegInfo() : vreg(0), isFloat(false) {}
         VRegInfo(VReg v, bool f) : vreg(v), isFloat(f) {}
@@ -53,6 +56,14 @@ public:
     // No Call
     bool isLeaf = true;
     static constexpr int StackAlign = 16;
+
+    int allocaSize = 0;
+    // Relative offset
+    std::unordered_map<VReg, int> allocaLocalOffset;
+    // Each entry: (vreg, AddiOp*) where AddiOp is "addi rd, sp, 0" placeholder.
+    // Wait until RegAlloc has calculated the true FrameSize,
+    // then come back and replace this 0 with the absolutely correct physical offset.
+    std::vector<std::pair<VReg, RvOp*>> allocaAddrInsts;
 
     explicit MCFunction(std::string n) : name(std::move(n)) {
         // Pre-allocated to avoid frequent reallocation.
