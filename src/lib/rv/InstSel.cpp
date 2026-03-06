@@ -90,8 +90,13 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
         int intIdx = 0, floatIdx = 0, stackSlot = 0;
         for (auto* arg : irFunc->getArgs()) {
             bool isFloat = InstSelContext::isFloatType(arg->getType());
+            bool isPtr = arg->getType()->isPointer() || arg->getType()->isArray();
             auto vreg = ctx.newVReg(isFloat);
             ctx.valueMap[arg] = vreg;
+            if (isPtr) {
+                VReg v = vreg.getVReg();
+                if (v < func->vregInfo.size()) func->vregInfo[v].isPtr = true;
+            }
 
             if (isFloat && floatIdx < 8) {
                 func->args.push_back(vreg.getVReg());
@@ -482,9 +487,35 @@ void InstSelPass::selectFDiv(BinaryInst* inst, InstSelContext& ctx) {
     ctx.block->append(new FDivSOp(fd, fs1, fs2));
 }
 
+static int typeByteSize(Type* ty) {
+    if (ty->isArray()) {
+        auto* arr = static_cast<ArrayType*>(ty);
+        return arr->getNumElements() * typeByteSize(arr->getElementType());
+    }
+    return 4; // int, float
+}
+
 void InstSelPass::selectAlloca(AllocaInst* inst, InstSelContext& ctx) {
+    // Result is a pointer.
+    bool wasNew = ctx.valueMap.find(inst) == ctx.valueMap.end();
     auto vreg = ctx.getVReg(inst, false);
-    // TODO: Calculate the stack offset and store it in the stack frame information of ctx.func
+    VReg v = vreg.getVReg();
+    if (v < ctx.func->vregInfo.size())
+        ctx.func->vregInfo[v].isPtr = true;
+    // Already processed.
+    if (!wasNew) return; 
+
+    int bytes = typeByteSize(inst->getAllocatedType());
+    bytes = (bytes + 3) & ~3;
+
+    int localOff = ctx.func->allocaSize;
+    ctx.func->allocaSize += bytes;
+    ctx.func->allocaLocalOffset[v] = localOff;
+
+    // The immediate (0) is patched to the real sp-relative offset in emitPrologueEpilogue.
+    auto* placeholder = new AddiOp(vreg, MCOperand(Reg::sp), 0);
+    ctx.block->append(placeholder);
+    ctx.func->allocaAddrInsts.push_back({v, placeholder});
 }
 
 void InstSelPass::selectLoad(LoadInst* inst, InstSelContext& ctx) {
@@ -527,6 +558,10 @@ void InstSelPass::selectGetElementPtr(GetElementPtrInst* inst, InstSelContext& c
     auto* index = inst->getOperand(1);
 
     auto baseReg = ctx.getVReg(base, false);
+    if (baseReg.isVReg()) {
+        VReg bv = baseReg.getVReg();
+        if (bv < ctx.func->vregInfo.size()) ctx.func->vregInfo[bv].isPtr = true;
+    }
 
     auto elemType = static_cast<PointerType*>(base->getType())->getPointeeType();
     int elemSize = 4;
@@ -538,13 +573,18 @@ void InstSelPass::selectGetElementPtr(GetElementPtrInst* inst, InstSelContext& c
     if (auto* ci = dyn_cast<ConstantInt>(index)) {
         int offset = ci->getValue() * elemSize;
 
-        // index=0（Array-Decay GEP）
+        // index=0（Array-Decay GEP）: alias result to base pointer.
         if (offset == 0) {
             ctx.valueMap[inst] = baseReg;
+            // isPtr already set on baseReg's vreg above.
             return;
         }
 
         auto rd = ctx.getVReg(inst, false);
+        if (rd.isVReg()) {
+            VReg rv = rd.getVReg();
+            if (rv < ctx.func->vregInfo.size()) ctx.func->vregInfo[rv].isPtr = true;
+        }
 
         // Offset within 12-bit signed range: an addi.
         if (offset >= -2048 && offset <= 2047) {
@@ -560,6 +600,10 @@ void InstSelPass::selectGetElementPtr(GetElementPtrInst* inst, InstSelContext& c
     }
 
     auto rd = ctx.getVReg(inst, false);
+    if (rd.isVReg()) {
+        VReg rv = rd.getVReg();
+        if (rv < ctx.func->vregInfo.size()) ctx.func->vregInfo[rv].isPtr = true;
+    }
     auto indexReg = ctx.getVReg(index, false);
 
     if (elemSize == 1) {
@@ -777,38 +821,52 @@ void InstSelPass::selectReturn(ReturnInst* inst, InstSelContext& ctx) {
 
 void InstSelPass::selectCall(CallInst* inst, InstSelContext& ctx) {
     auto* callee = inst->getFunction();
-
     auto* callOp = new CallOp(callee->getName());
 
-    // operand(0) is the called function itself, and the real argument starts with index = 1.
-    int intIdx = 0;
-    int floatIdx = 0;
-    int stackSlot = 0;
-    for (int i = 1; i < inst->getNumOperands(); ++i) {
-        auto* arg = inst->getOperand(i);
-        bool isFloat = InstSelContext::isFloatType(arg->getType());
+    int numOps = inst->getNumOperands();
 
-        if (isFloat && floatIdx < 8) {
-            Reg paramReg = static_cast<Reg>(static_cast<int>(Reg::fa0) + floatIdx);
-            auto argReg = ctx.getVReg(arg, true);
-            ctx.block->append(new FMvSOp(MCOperand(paramReg), argReg));
-            floatIdx++;
-        } else if (!isFloat && intIdx < 8) {
-            Reg paramReg = static_cast<Reg>(static_cast<int>(Reg::a0) + intIdx);
-            // Constant int arg: materialize directly into a_reg, skip intermediate vreg + mv.
-            if (auto* ci = dyn_cast<ConstantInt>(arg)) {
-                ctx.block->append(new LiOp(MCOperand(paramReg), ci->getValue()));
-            } else if (isa<ConstantZero>(arg)) {
-                ctx.block->append(new MvOp(MCOperand(paramReg), MCOperand(Reg::zero)));
+    std::vector<MCOperand> argVRegs(numOps);
+    {
+        int intIdx = 0, floatIdx = 0;
+        for (int i = 1; i < numOps; ++i) {
+            auto* arg = inst->getOperand(i);
+            bool isFloat = InstSelContext::isFloatType(arg->getType());
+
+            bool isRegArg = (isFloat && floatIdx < 8) || (!isFloat && intIdx < 8);
+            if (isFloat && floatIdx < 8) floatIdx++;
+            else if (!isFloat && intIdx < 8) intIdx++;
+
+            // Constant int/zero register args: leave argVRegs[i] empty;
+            if (isRegArg && !isFloat && (isa<ConstantInt>(arg) || isa<ConstantZero>(arg)))
+                continue;
+
+            argVRegs[i] = ctx.getVReg(arg, isFloat);
+        }
+    }
+
+    {
+        int intIdx = 0, floatIdx = 0, stackSlot = 0;
+        for (int i = 1; i < numOps; ++i) {
+            auto* arg = inst->getOperand(i);
+            bool isFloat = InstSelContext::isFloatType(arg->getType());
+
+            if (isFloat && floatIdx < 8) {
+                Reg paramReg = static_cast<Reg>(static_cast<int>(Reg::fa0) + floatIdx++);
+                ctx.block->append(new FMvSOp(MCOperand(paramReg), argVRegs[i]));
+            } else if (!isFloat && intIdx < 8) {
+                Reg paramReg = static_cast<Reg>(static_cast<int>(Reg::a0) + intIdx++);
+                if (auto* ci = dyn_cast<ConstantInt>(arg))
+                    // li aX, imm
+                    ctx.block->append(new LiOp(MCOperand(paramReg), ci->getValue()));
+                else if (isa<ConstantZero>(arg))
+                    // mv aX, zero
+                    ctx.block->append(new MvOp(MCOperand(paramReg), MCOperand(Reg::zero)));
+                else
+                    // mv aX, vreg
+                    ctx.block->append(new MvOp(MCOperand(paramReg), argVRegs[i]));
             } else {
-                auto argReg = ctx.getVReg(arg, false);
-                ctx.block->append(new MvOp(MCOperand(paramReg), argReg));
+                callOp->stackArgs.push_back({argVRegs[i], stackSlot++, isFloat});
             }
-            intIdx++;
-        } else {
-            // Overflow arg: Prologue/Epilogue pass will emit sw/fsw before the call.
-            auto argReg = ctx.getVReg(arg, isFloat);
-            callOp->stackArgs.push_back({argReg, stackSlot++, isFloat});
         }
     }
 
