@@ -44,8 +44,8 @@ constexpr VReg InvalidVReg = 0;
     X(FMaddS) X(FMsubS) X(FNmsubS) X(FnmaddS) \
     X(FCvtWS) X(FCvtSW) X(FCvtLS) X(FCvtSL) \
     X(FEQS) X(FLTS) X(FLES) \
-    X(Lw) X(Lh) X(Lb) X(Lwu) X(Lhu) X(Lbu) \
-    X(Sw) X(Sh) X(Sb) \
+    X(Lw) X(Lh) X(Lb) X(Lwu) X(Lhu) X(Lbu) X(Ld) \
+    X(Sw) X(Sh) X(Sb) X(Sd) \
     X(FLw) X(FSw) \
     X(Beq) X(Bne) X(Blt) X(Ble) X(Bgt) X(Bge) \
     X(Beqz) X(Bnez) X(Blez) X(Bgez) X(Bltz) X(Bgtz) \
@@ -256,6 +256,8 @@ public:
 
 class LwOp  : public RVInstM { public: LwOp(MCOperand d, MCOperand b, int o) : RVInstM(RvOp::LwOp, "lw", d, b, o, false) {} };
 class SwOp  : public RVInstM { public: SwOp(MCOperand s, MCOperand b, int o) : RVInstM(RvOp::SwOp, "sw", s, b, o, true) {} };
+class LdOp  : public RVInstM { public: LdOp(MCOperand d, MCOperand b, int o) : RVInstM(RvOp::LdOp, "ld", d, b, o, false) {} };
+class SdOp  : public RVInstM { public: SdOp(MCOperand s, MCOperand b, int o) : RVInstM(RvOp::SdOp, "sd", s, b, o, true) {} };
 class FLwOp : public RVInstM { public: FLwOp(MCOperand d, MCOperand b, int o) : RVInstM(RvOp::FLwOp, "flw", d, b, o, false) {} };
 class FSwOp : public RVInstM { public: FSwOp(MCOperand s, MCOperand b, int o) : RVInstM(RvOp::FSwOp, "fsw", s, b, o, true) {} };
 
