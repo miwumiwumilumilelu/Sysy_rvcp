@@ -11,7 +11,7 @@
 namespace sysy {
 namespace rv {
 
-class RegAllocPass {
+class RegAlloc {
 public:
     void run(MCFunction* func);
 
@@ -41,11 +41,14 @@ private:
     void emitPrologueEpilogue(MCFunction* func);
 
     // Emit a single lw/sw/ld/sd/flw/fsw.
-    // Falls back to li+add when |offset| > 2047 using Reg::t0 as scratch.
-    // Inserts BEFORE pos (or appends if pos==nullptr).
+    // Falls back to li+add when |offset| > 2047 using scratch as the address temp.
+    // For int loads, pass the destination reg itself as scratch (safe: overwritten by load).
+    // For stores, pass a free integer spill reg (spillReg2 for int, spillReg for fp).
+    // Pro/epilogue callers leave scratch at default Reg::t0 (always safe there).
     void emitLS(MCBlock* blk, RvOp* pos,
                 bool isLoad, bool isFP, bool isPtr,
-                Reg reg, Reg base, int offset);
+                Reg reg, Reg base, int offset,
+                Reg scratch = Reg::t0);
 
     // Emit addi sp, sp, delta.  Falls back to li + add for large |delta|.
     void emitAddiSP(MCBlock* blk, RvOp* pos, int delta);
