@@ -14,7 +14,8 @@
 #include "Optimize/SimplifyCFG.h"
 #include "Optimize/DCE.h"
 #include "rv/InstSel.h"
-#include "rv/RvOp.h"
+#include "rv/RegAlloc.h"
+#include "rv/AsmPrinter.h"
 
 using namespace sysy;
 using namespace sysy::rv;
@@ -51,10 +52,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (outputFile.empty()) {
-        outputFile = inputFile + ".s";
-    }
-
     std::ifstream file(inputFile);
     if (!file.is_open()) {
         std::cerr << "Error: Could not open file " << inputFile << "\n";
@@ -83,11 +80,9 @@ int main(int argc, char **argv) {
         std::cout << module->print();
     }
 
-    std::cerr << "[Debug] Running FlattenCFG..." << std::endl;
     FlattenCFG flatten(module.get());
     flatten.run();
 
-    std::cerr << "[Debug] Running Mem2Reg (Dominators inside)..." << std::endl;
     Mem2Reg mem2reg(module.get(), nullptr); 
     mem2reg.run();
 
@@ -106,18 +101,25 @@ int main(int argc, char **argv) {
         std::cout << module->print();
     }
 
-    std::cerr << "\n[Debug] ----- Starting Instruction Selection -----" << std::endl;
     InstSelPass isel;
-    auto mcModules = isel.run(module.get());
+    auto mcFuncs = isel.run(module.get());
 
-    for (auto& mcFunc : mcModules) {
-        std::cout << "Function: " << mcFunc->name << "\n";
-        for (auto& mcBB : mcFunc->blocks) {
-            std::cout << mcBB->name << ":\n";
-            mcBB->forEach([](RvOp* op) {
-                op->print(std::cout);
-            });
+    RegAlloc regalloc;
+    for (auto& mcFunc : mcFuncs) {
+        regalloc.run(mcFunc.get());
+    }
+
+    // Emit final assembly via AsmPrinter (handles .text / .data / .bss).
+    AsmPrinter printer;
+    if (!outputFile.empty()) {
+        std::ofstream ofs(outputFile);
+        if (!ofs.is_open()) {
+            std::cerr << "Error: Could not open output file " << outputFile << "\n";
+            return 1;
         }
+        printer.run(mcFuncs, module.get(), ofs);
+    } else {
+        printer.run(mcFuncs, module.get(), std::cout);
     }
 
     return 0;
