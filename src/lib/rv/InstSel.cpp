@@ -80,6 +80,9 @@ std::vector<std::unique_ptr<MCFunction>> InstSelPass::run(Module* module) {
 }
 
 MCFunction* InstSelPass::selectFunction(Function* irFunc) {
+    // External declaration (no body) — skip, nothing to select.
+    if (irFunc->getBody()->getBlocks().empty()) return nullptr;
+
     auto* func = new MCFunction(irFunc->getName());
 
     InstSelContext ctx;
