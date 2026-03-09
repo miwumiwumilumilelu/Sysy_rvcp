@@ -2,6 +2,7 @@
 #include "IR/Type.h"
 #include "IR/Module.h"
 #include <iostream>
+#include <cassert>
 
 using namespace sysy;
 
@@ -256,8 +257,14 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
         // init-loop BBs before the setup BB, causing InstSel to see uses before the def.
         BasicBlock* entryBB = CurrentFunc->getEntryBlock();
         auto& instList = entryBB->getInstructions();
+        assert(!instList.empty());
+        {
+            auto lastOp = instList.back()->getOpID();
+            assert(lastOp != Instruction::Br && lastOp != Instruction::Ret
+                && "entry block must not be terminated before processLocalInit");
+        }
         auto insertAllocaInEntry = [&](AllocaInst* ai) {
-            instList.pop_back(); // Skip J or branch.
+            instList.pop_back(); // Remove the AllocaInst just auto-appended by constructor.
             auto it = instList.begin();
             while (it != instList.end() && (*it)->getOpID() == Instruction::Alloca) ++it;
             instList.insert(it, ai);
