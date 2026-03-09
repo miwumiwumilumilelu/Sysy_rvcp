@@ -156,7 +156,7 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
     for (auto* irBB : irFunc->getBody()->getBlocks()) {
         MCBlock* dstMCBlock = nullptr;
         for (auto& mb : func->blocks) {
-            if (mb->name == irBB->getName()) { dstMCBlock = mb.get(); break; }
+            if (mb->name == func->name + "." + irBB->getName()) { dstMCBlock = mb.get(); break; }
         }
         if (!dstMCBlock) continue;
 
@@ -174,7 +174,7 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
 
                 MCBlock* srcMCBlock = nullptr;
                 for (auto& mb : func->blocks) {
-                    if (mb->name == incomingBB->getName()) { srcMCBlock = mb.get(); break; }
+                    if (mb->name == func->name + "." + incomingBB->getName()) { srcMCBlock = mb.get(); break; }
                 }
                 if (!srcMCBlock) continue;
 
@@ -274,7 +274,7 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
 }
 
 void InstSelPass::selectBasicBlock(BasicBlock* irBB, InstSelContext& ctx) {
-    auto* block = ctx.func->createBlock(irBB->getName());
+    auto* block = ctx.func->createBlock(ctx.func->name + "." + irBB->getName());
     ctx.block = block;
 
     for (auto* inst : irBB->getInstructions()) {
@@ -524,18 +524,19 @@ void InstSelPass::selectAlloca(AllocaInst* inst, InstSelContext& ctx) {
 void InstSelPass::selectLoad(LoadInst* inst, InstSelContext& ctx) {
     auto* ptr = inst->getOperand(0);
     bool isFloat = InstSelContext::isFloatType(inst->getType());
+    bool isPtr = inst->getType()->isPointer();
 
     auto rd = ctx.getVReg(inst, isFloat);
+    if (isPtr && rd.isVReg()) {
+        VReg rv = rd.getVReg();
+        if (rv < ctx.func->vregInfo.size()) ctx.func->vregInfo[rv].isPtr = true;
+    }
     auto base = ctx.getVReg(ptr, false);
 
-    // GEP has been resolved offset, so there is 0.
-    // Only optimization is needed subsequently:
-    // addi tmp, base, 8; 
-    // lw rd, 0(tmp)
-    // becomes:
-    // lw rd, 8(base)
     if (isFloat) {
         ctx.block->append(new FLwOp(rd, base, 0));
+    } else if (isPtr) {
+        ctx.block->append(new LdOp(rd, base, 0));
     } else {
         ctx.block->append(new LwOp(rd, base, 0));
     }
@@ -545,12 +546,15 @@ void InstSelPass::selectStore(StoreInst* inst, InstSelContext& ctx) {
     auto* val = inst->getOperand(0);
     auto* ptr = inst->getOperand(1);
     bool isFloat = InstSelContext::isFloatType(val->getType());
+    bool isPtr = val->getType()->isPointer();
 
     auto src = ctx.getVReg(val, isFloat);
     auto base = ctx.getVReg(ptr, false);
 
     if (isFloat) {
         ctx.block->append(new FSwOp(src, base, 0));
+    } else if (isPtr) {
+        ctx.block->append(new SdOp(src, base, 0));
     } else {
         ctx.block->append(new SwOp(src, base, 0));
     }
@@ -567,10 +571,7 @@ void InstSelPass::selectGetElementPtr(GetElementPtrInst* inst, InstSelContext& c
     }
 
     auto elemType = static_cast<PointerType*>(base->getType())->getPointeeType();
-    int elemSize = 4;
-    if (elemType->isArray()) {
-        elemSize = 4 * static_cast<ArrayType*>(elemType)->getNumElements();
-    }
+    int elemSize = typeByteSize(elemType);
 
     // Constant index: compile-time computation offset, eliminating runtime multiplication.
     if (auto* ci = dyn_cast<ConstantInt>(index)) {
@@ -779,7 +780,7 @@ void InstSelPass::selectBranch(BranchInst* inst, InstSelContext& ctx) {
     if (inst->getNumOperands() == 1) {
         // j
         auto* dest = static_cast<BasicBlock*>(inst->getOperand(0));
-        ctx.block->append(new JOp(dest->getName()));
+        ctx.block->append(new JOp(ctx.func->name + "." + dest->getName()));
     } else {
         // branch
         auto* cond = inst->getOperand(0);
@@ -787,8 +788,8 @@ void InstSelPass::selectBranch(BranchInst* inst, InstSelContext& ctx) {
         auto* ifFalse = static_cast<BasicBlock*>(inst->getOperand(2));
 
         auto condReg = ctx.getVReg(cond, false);
-        ctx.block->append(new BnezOp(condReg, ifTrue->getName()));
-        ctx.block->append(new JOp(ifFalse->getName()));
+        ctx.block->append(new BnezOp(condReg, ctx.func->name + "." + ifTrue->getName()));
+        ctx.block->append(new JOp(ctx.func->name + "." + ifFalse->getName()));
     }
 }
 
