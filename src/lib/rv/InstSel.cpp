@@ -178,10 +178,45 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
                 }
                 if (!srcMCBlock) continue;
 
-                ctx.block = srcMCBlock;
+                // Determine the insertion block before calling getVReg.
+                std::string trampolineName = srcMCBlock->name + "_to_" + dstMCBlock->name;
+                MCBlock* trampoline = nullptr;
+                for (auto& mb : func->blocks) {
+                    if (mb->name == trampolineName) { trampoline = mb.get(); break; }
+                }
 
-                // Constant incoming value: materialize directly into dstReg,
-                // avoiding an intermediate vreg + mv/fmv.s.
+                if (!trampoline) {
+                    // Check if this is a critical edge (bnez-taken path to dstMCBlock).
+                    RvOp* term0 = srcMCBlock->getTerminator();
+                    RvOp* prev0 = term0 ? term0->prev : nullptr;
+                    bool isCritical = (term0 && prev0 &&
+                        term0->opcode == RvOp::JOp &&
+                        prev0->opcode == RvOp::BnezOp &&
+                        static_cast<RVInstB*>(prev0)->target == dstMCBlock->name);
+
+                    if (isCritical) {
+                        // Create the trampoline now, before any getVReg calls.
+                        trampoline = func->createBlock(trampolineName);
+                        trampoline->index = static_cast<int>(func->blocks.size() - 1);
+                        trampoline->append(new JOp(dstMCBlock->name));
+                        static_cast<RVInstB*>(prev0)->target = trampolineName;
+                        // Fix CFG.
+                        srcMCBlock->succs.erase(
+                            std::remove(srcMCBlock->succs.begin(), srcMCBlock->succs.end(), dstMCBlock),
+                            srcMCBlock->succs.end());
+                        dstMCBlock->preds.erase(
+                            std::remove(dstMCBlock->preds.begin(), dstMCBlock->preds.end(), srcMCBlock),
+                            dstMCBlock->preds.end());
+                        srcMCBlock->addSucc(trampoline);
+                        trampoline->addSucc(dstMCBlock);
+                    }
+                }
+
+                // Direct ctx.block to the insertion block so getVReg inserts there.
+                MCBlock* insertBlock = trampoline ? trampoline : srcMCBlock;
+                ctx.block = insertBlock;
+
+                // Build mvOp
                 RvOp* mvOp = nullptr;
                 if (!isFloat) {
                     if (auto* ci = dyn_cast<ConstantInt>(incomingVal))
@@ -189,79 +224,21 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
                     else if (isa<ConstantZero>(incomingVal))
                         mvOp = new MvOp(dstReg, MCOperand(Reg::zero));
                 } else if (isa<ConstantZero>(incomingVal)) {
-                    // fmv.w.x dstReg, zero  =>  0.0f
                     mvOp = new FMvWXOp(dstReg, MCOperand(Reg::zero));
                 }
 
                 if (!mvOp) {
-                    // General case: non-constant, go through getVReg + mv/fmv.s.
                     MCOperand srcReg = ctx.getVReg(incomingVal, isFloat);
-                    // Skip self-assignment (e.g., continue edges where phi incoming == phi dest).
                     if (dstReg == srcReg) continue;
                     mvOp = isFloat
                         ? static_cast<RvOp*>(new FMvSOp(dstReg, srcReg))
                         : static_cast<RvOp*>(new MvOp(dstReg, srcReg));
                 }
 
-                // Handles multiple PHIs on the same edge.
-                std::string trampolineName = srcMCBlock->name + "_to_" + dstMCBlock->name;
-                MCBlock* trampoline = nullptr;
-                for (auto& mb : func->blocks) {
-                    if (mb->name == trampolineName) { trampoline = mb.get(); break; }
-                }
-
-                // Multiplex PHIs on the same edge.
-                if (trampoline) {
-                    // Find JOp in the trampoline, and insert new mvOp before it.
-                    RvOp* tTerm = trampoline->getTerminator();
-                    if (tTerm) trampoline->insertBefore(tTerm, mvOp);
-                    else trampoline->append(mvOp);
-                    continue;
-                }
-
-                // Check if the edge is critical.
-                // The termination of the srcMCBlock is:
-                // bnez cond, dstLabel; j other
-                RvOp* term = srcMCBlock->getTerminator();
-                RvOp* prevTerm = term ? term->prev : nullptr;
-
-                // bnez cond, dst
-                // j other
-                bool isCritical = (term && prevTerm &&
-                    term->opcode == RvOp::JOp &&
-                    prevTerm->opcode == RvOp::BnezOp &&
-                    static_cast<RVInstB*>(prevTerm)->target == dstMCBlock->name);
-
-                if (isCritical) {
-                    // Create a springboard block.
-                    // src_to_dst: mv; j dst
-                    trampoline = func->createBlock(trampolineName);
-                    trampoline->index = static_cast<int>(func->blocks.size() - 1);
-                    trampoline->append(mvOp);
-                    trampoline->append(new JOp(dstMCBlock->name));
-
-                    static_cast<RVInstB*>(prevTerm)->target = trampolineName;
-
-                    // Fix the CFG.
-                    // srcMCBlock -> dstMCBlock
-                    // becomes:
-                    // srcMCBlock -> trampoline -> dstMCBlock
-                    srcMCBlock->succs.erase(
-                        std::remove(srcMCBlock->succs.begin(), srcMCBlock->succs.end(), dstMCBlock),
-                        srcMCBlock->succs.end());
-                    dstMCBlock->preds.erase(
-                        std::remove(dstMCBlock->preds.begin(), dstMCBlock->preds.end(), srcMCBlock),
-                        dstMCBlock->preds.end());
-                    srcMCBlock->addSucc(trampoline);
-                    trampoline->addSucc(dstMCBlock);
-                } else {
-                    // J
-                    // or
-                    // bnez cond, other;
-                    // j dst
-                    if (term) srcMCBlock->insertBefore(term, mvOp);
-                    else srcMCBlock->append(mvOp);
-                }
+                // Insert mvOp into the correct block before its terminator.
+                RvOp* tTerm = insertBlock->getTerminator();
+                if (tTerm) insertBlock->insertBefore(tTerm, mvOp);
+                else insertBlock->append(mvOp);
             }
         }
     }
@@ -500,13 +477,12 @@ static int typeByteSize(Type* ty) {
 
 void InstSelPass::selectAlloca(AllocaInst* inst, InstSelContext& ctx) {
     // Result is a pointer.
-    bool wasNew = ctx.valueMap.find(inst) == ctx.valueMap.end();
     auto vreg = ctx.getVReg(inst, false);
     VReg v = vreg.getVReg();
     if (v < ctx.func->vregInfo.size())
         ctx.func->vregInfo[v].isPtr = true;
-    // Already processed.
-    if (!wasNew) return; 
+
+    if (ctx.func->allocaLocalOffset.count(v)) return;
 
     int bytes = typeByteSize(inst->getAllocatedType());
     bytes = (bytes + 3) & ~3;
@@ -515,9 +491,12 @@ void InstSelPass::selectAlloca(AllocaInst* inst, InstSelContext& ctx) {
     ctx.func->allocaSize += bytes;
     ctx.func->allocaLocalOffset[v] = localOff;
 
-    // The immediate (0) is patched to the real sp-relative offset in emitPrologueEpilogue.
+    // MC Alloca Hoisting, insert placeholder in entrybb.
+    MCBlock* entryBlock = ctx.func->blocks.front().get();
     auto* placeholder = new AddiOp(vreg, MCOperand(Reg::sp), 0);
-    ctx.block->append(placeholder);
+    RvOp* term = entryBlock->getTerminator();
+    if (term) entryBlock->insertBefore(term, placeholder);
+    else entryBlock->append(placeholder);
     ctx.func->allocaAddrInsts.push_back({v, placeholder});
 }
 
@@ -895,19 +874,19 @@ void InstSelPass::selectPhi(PhiInst* inst, InstSelContext& ctx) {
 }
 
 // Through FlattenCFG, If/While/Break/Continue have all been expanded into BranchInst.
-void InstSelPass::selectIf(IfInst* inst, InstSelContext& ctx) {
+void InstSelPass::selectIf(IfInst*, InstSelContext&) {
     assert(false && "IfInst reached InstSel: FlattenCFG should have lowered it");
 }
 
-void InstSelPass::selectWhile(WhileInst* inst, InstSelContext& ctx) {
+void InstSelPass::selectWhile(WhileInst*, InstSelContext&) {
     assert(false && "WhileInst reached InstSel: FlattenCFG should have lowered it");
 }
 
-void InstSelPass::selectBreak(BreakInst* inst, InstSelContext& ctx) {
+void InstSelPass::selectBreak(BreakInst*, InstSelContext&) {
     assert(false && "BreakInst reached InstSel: FlattenCFG should have lowered it");
 }
 
-void InstSelPass::selectContinue(ContinueInst* inst, InstSelContext& ctx) {
+void InstSelPass::selectContinue(ContinueInst*, InstSelContext&) {
     assert(false && "ContinueInst reached InstSel: FlattenCFG should have lowered it");
 }
 
