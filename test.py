@@ -89,7 +89,24 @@ def run_test(sy_path, in_path, out_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-d", "--dir", type=str, default="test/official", help="测试用例目录")
+    parser.add_argument("-f", "--file", type=str, help="单测")
     args = parser.parse_args()
+
+    if args.file:
+        sy_path = args.file if args.file.endswith(".sy") else args.file + ".sy"
+        if not os.path.isabs(sy_path) and not os.path.exists(sy_path):
+            sy_path = os.path.join(args.dir, os.path.basename(sy_path))
+        base = sy_path[:-3]
+        in_path = base + ".in"
+        out_path = base + ".out"
+        if not os.path.exists(sy_path):
+            print(f"找不到文件: {sy_path}")
+            exit(1)
+        if not os.path.exists(out_path):
+            print(f"找不到答案文件: {out_path}")
+            exit(1)
+        run_test(sy_path, in_path, out_path)
+        exit(0)
 
     test_dir = args.dir
     if not os.path.exists(test_dir):
@@ -98,7 +115,7 @@ if __name__ == "__main__":
 
     pass_count = 0
     total_count = 0
-    failed_tests = [] 
+    failed_tests = []
 
     for file in sorted(os.listdir(test_dir)):
         if file.endswith(".sy"):
