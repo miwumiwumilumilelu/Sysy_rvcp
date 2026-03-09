@@ -251,11 +251,25 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
         BasicBlock* bodyBB = new BasicBlock(newLabelName(), CurrentFunc->getBody());
         BasicBlock* endBB = new BasicBlock(newLabelName(), CurrentFunc->getBody());
 
+        // Hoist loop counter/pointer allocas to entry block so Mem2Reg can promote them.
+        // If they stay in the current (non-entry) block, FlattenCFG may reorder the
+        // init-loop BBs before the setup BB, causing InstSel to see uses before the def.
+        BasicBlock* entryBB = CurrentFunc->getEntryBlock();
+        auto& instList = entryBB->getInstructions();
+        auto insertAllocaInEntry = [&](AllocaInst* ai) {
+            instList.pop_back(); // Skip J or branch.
+            auto it = instList.begin();
+            while (it != instList.end() && (*it)->getOpID() == Instruction::Alloca) ++it;
+            instList.insert(it, ai);
+        };
+
         // idx
-        auto idxAlloca = builder.Create<AllocaInst>(Type::getIntTy());
+        auto idxAlloca = new AllocaInst(Type::getIntTy(), entryBB);
+        insertAllocaInEntry(idxAlloca);
         builder.Create<StoreInst>(new ConstantInt(0), idxAlloca);
         // curPtr
-        auto ptrAlloca = builder.Create<AllocaInst>(ptr->getType());
+        auto ptrAlloca = new AllocaInst(ptr->getType(), entryBB);
+        insertAllocaInEntry(ptrAlloca);
         builder.Create<StoreInst>(ptr, ptrAlloca);
 
         builder.Create<BranchInst>(condBB);
