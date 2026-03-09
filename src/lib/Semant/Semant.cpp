@@ -125,6 +125,6 @@ void Semant::visit(UnaryExprAST &node) {
     if (node.getOperand()) node.getOperand()->accept(*this);
 }
 
-void Semant::visit(NumberAST &node) {
+void Semant::visit(NumberAST&) {
     // The numbers do not need to be checked.
 }

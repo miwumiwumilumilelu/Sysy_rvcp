@@ -80,9 +80,9 @@ void VarDeclAST::dump(int indent) const {
     } 
 }
 
-void BreakStmtAST::dump(int indent) const {}
+void BreakStmtAST::dump(int) const {}
 
-void ContinueStmtAST::dump(int indent) const {}
+void ContinueStmtAST::dump(int) const {}
 
 void ReturnStmtAST::dump(int indent) const {
     std::cout << std::string(indent, ' ') << "ReturnStmtAST" << std::endl;

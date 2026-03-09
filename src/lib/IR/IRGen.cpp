@@ -179,7 +179,7 @@ Constant* IRGen::getGlobalInitVal(InitValAST* init, Type* type) {
     return buildArray(type, build_idx);
 }
 
-void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std::vector<int>& indices) {
+void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std::vector<int>&) {
     std::function<int(Type*)> getFlattenedSize = [&](Type* ty) -> int {
         if (auto arrTy = dyn_cast<ArrayType>(ty)) return arrTy->getNumElements() * getFlattenedSize(arrTy->getElementType());
         return 1;
@@ -313,7 +313,7 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
     }
 }
 
-void IRGen::fillZero(Value* baseAddr, Type* type, std::vector<int>& indices) { }
+void IRGen::fillZero(Value*, Type*, std::vector<int>&) { }
 
 void IRGen::visit(CompUnitAST &node) {
     enterScope();
@@ -358,7 +358,7 @@ void IRGen::visit(FuncCallAST &node) {
             Value* argVal = LastVal;
             Type* expectedTy = nullptr;
             
-            if (callee->getArgs().size() > argIdx) {
+            if ((int)callee->getArgs().size() > argIdx) {
                 expectedTy = callee->getArgs()[argIdx]->getType();
             } else {
                 if (funcName == "putint" || funcName == "putch") {
@@ -478,7 +478,7 @@ void IRGen::visit(FuncDefAST &node) {
     CurrentFunc = nullptr;
 }
 
-void IRGen::visit(FuncFParamAST &node) {}
+void IRGen::visit(FuncFParamAST&) {}
 
 void IRGen::visit(BlockAST &node) {
     enterScope();
@@ -563,9 +563,9 @@ void IRGen::visit(VarDeclAST &node) {
     }
 }
 
-void IRGen::visit(BreakStmtAST &node) { builder.Create<BreakInst>(); }
+void IRGen::visit(BreakStmtAST&) { builder.Create<BreakInst>(); }
 
-void IRGen::visit(ContinueStmtAST &node) { builder.Create<ContinueInst>(); }
+void IRGen::visit(ContinueStmtAST&) { builder.Create<ContinueInst>(); }
 
 void IRGen::visit(AssignStmtAST &node) {
     isLValMode = true;
@@ -611,7 +611,7 @@ void IRGen::visit(LValAST &node) {
         }
     }
 
-    bool isPartial = node.getIndices().size() < maxIndices;
+    bool isPartial = (int)node.getIndices().size() < maxIndices;
 
     for (auto &indexExpr : node.getIndices()) {
         bool oldMode = isLValMode;

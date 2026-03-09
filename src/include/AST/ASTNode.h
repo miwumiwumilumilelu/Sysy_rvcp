@@ -106,7 +106,7 @@ public:
     const std::vector<std::unique_ptr<InitValAST>>& getElements() const { return Elements; }
 
     void dump(int indent) const override;
-    void accept(ASTVisitor &visitor) override {}
+    void accept(ASTVisitor&) override {}
 };
 
 class VarDeclAST : public ASTNode {

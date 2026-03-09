@@ -39,7 +39,7 @@ void Dominators::buildCFG() {
                 }
             }
         }
-        else if (auto ret = dyn_cast<ReturnInst>(term)) {
+        else if (dyn_cast<ReturnInst>(term)) {
         }
         else {
             // neither branch nor return

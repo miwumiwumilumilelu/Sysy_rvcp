@@ -152,7 +152,7 @@ bool SimplifyCFG::mergeBasicBlocks(Region* region) {
                 for (auto succIt = succInsts.begin(); succIt != succInsts.end(); ) {
                     if (auto phi = dyn_cast<PhiInst>(*succIt)) {
                         Value* incomingVal = nullptr;
-                        for (size_t i = 0; i < phi->getNumOperands(); i += 2) {
+                        for (int i = 0; i < phi->getNumOperands(); i += 2) {
                             if (phi->getOperand(i+1) == bb) {
                                 incomingVal = phi->getOperand(i); break;
                             }
@@ -231,7 +231,7 @@ bool SimplifyCFG::eliminateEmptyBlocks(Region* region) {
                     for (auto inst : succ->getInstructions()) {
                         if (auto phi = dyn_cast<PhiInst>(inst)) {
                             Value* valFromBB = nullptr;
-                            for (size_t i = 0; i < phi->getNumOperands(); i += 2) {
+                            for (int i = 0; i < phi->getNumOperands(); i += 2) {
                                 if (phi->getOperand(i+1) == bb) {
                                     valFromBB = phi->getOperand(i); break;
                                 }
@@ -274,7 +274,7 @@ bool SimplifyCFG::removeGhostPhiEdges(Region* region) {
             if (auto phi = dyn_cast<PhiInst>(inst)) {
             // Only store BasicBlock* that have been confirmed by dyn_cast, eliminate UB from C-style casting.
                 std::vector<BasicBlock*> ghosts;
-                for (size_t i = 0; i < phi->getNumOperands(); i += 2) {
+                for (int i = 0; i < phi->getNumOperands(); i += 2) {
                     BasicBlock* inBB = dyn_cast<BasicBlock>(phi->getOperand(i + 1));
                     if (inBB && std::find(bbPreds.begin(), bbPreds.end(), inBB) == bbPreds.end()) {
                         ghosts.push_back(inBB);

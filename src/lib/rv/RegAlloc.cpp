@@ -473,7 +473,6 @@ void RegAlloc::emitPrologueEpilogue(MCFunction* func) {
     calleeSavedSz = (calleeSavedSz + 7) & ~7;
 
     // Set frame layout.
-    int outBase = 0;
     int spillBase = maxOutBytes;
     int allocaBase = spillBase + spillAreaSize;
     int calleeSvBase = allocaBase + func->allocaSize;

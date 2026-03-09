@@ -18,9 +18,7 @@ public:
 private:
     Module* TheModule;
     Dominators* Dom;
-    Function* CurrentFunc;
-
-    std::map<BasicBlock*, std::vector<BasicBlock*>> DomTreeChildren;
+std::map<BasicBlock*, std::vector<BasicBlock*>> DomTreeChildren;
 
     std::vector<AllocaInst*> PromotableAllocas;
 

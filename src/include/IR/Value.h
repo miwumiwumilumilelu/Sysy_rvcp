@@ -86,7 +86,7 @@ public:
     Value* getOperand(int i) const { return Operands[i]; }
     int getNumOperands() const { return Operands.size(); }
     void setOperand(int i, Value* v) { 
-        if (i < Operands.size()) {
+        if (i < (int)Operands.size()) {
             Value* oldVal = Operands[i];
             if (oldVal) oldVal->removeUser(this);
             

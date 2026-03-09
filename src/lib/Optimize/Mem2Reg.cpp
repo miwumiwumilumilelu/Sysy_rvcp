@@ -72,7 +72,7 @@ void Mem2Reg::findPromotableAllocas(Function* func) {
     }
 }
 
-void Mem2Reg::insertPhiNodes(Function* func, int& phiCounter) {
+void Mem2Reg::insertPhiNodes(Function* /*func*/, int& phiCounter) {
     for (auto ai : PromotableAllocas) {
         std::set<BasicBlock*> defBlocks;
         for (auto user : ai->getUsers()) {
