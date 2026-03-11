@@ -28,6 +28,18 @@ MCOperand InstSelContext::getVReg(Value* v, bool isFloat) {
         return vreg;
     }
 
+    if (auto* cf = dyn_cast<ConstantFloat>(v)) {
+        if (cf->getValue() == 0.0f) {
+            if (isFloat) {
+                auto vreg = newVReg(true);
+                insertSafe(new FMvWXOp(vreg, MCOperand(Reg::zero)));
+                return vreg;
+            } else {
+                return MCOperand(Reg::zero); 
+            }
+        }
+    }
+
     if (isa<ConstantZero>(v) && !isFloat) {
         return MCOperand(Reg::zero);
     }
@@ -186,20 +198,30 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
                 }
 
                 if (!trampoline) {
-                    // Check if this is a critical edge (bnez-taken path to dstMCBlock).
+                    // Check if this is a critical edge: srcMCBlock has a BnezOp that
+                    // jumps to dstMCBlock AND a JOp that falls through to another block.
+                    // We scan backwards from the JOp because previous phi moves may have
+                    // been inserted between the BnezOp and JOp, making prev0 a MvOp.
                     RvOp* term0 = srcMCBlock->getTerminator();
-                    RvOp* prev0 = term0 ? term0->prev : nullptr;
-                    bool isCritical = (term0 && prev0 &&
-                        term0->opcode == RvOp::JOp &&
-                        prev0->opcode == RvOp::BnezOp &&
-                        static_cast<RVInstB*>(prev0)->target == dstMCBlock->name);
+                    RvOp* bnezOp = nullptr;
+                    if (term0 && term0->opcode == RvOp::JOp) {
+                        for (RvOp* op = term0->prev; op != nullptr; op = op->prev) {
+                            if (op->opcode == RvOp::BnezOp &&
+                                static_cast<RVInstB*>(op)->target == dstMCBlock->name) {
+                                bnezOp = op;
+                                break;
+                            }
+                            // Stop if we hit another terminator-like op.
+                            if (op->opcode == RvOp::JOp || op->opcode == RvOp::RetOp) break;
+                        }
+                    }
 
-                    if (isCritical) {
+                    if (bnezOp) {
                         // Create the trampoline now, before any getVReg calls.
                         trampoline = func->createBlock(trampolineName);
                         trampoline->index = static_cast<int>(func->blocks.size() - 1);
                         trampoline->append(new JOp(dstMCBlock->name));
-                        static_cast<RVInstB*>(prev0)->target = trampolineName;
+                        static_cast<RVInstB*>(bnezOp)->target = trampolineName;
                         // Fix CFG.
                         srcMCBlock->succs.erase(
                             std::remove(srcMCBlock->succs.begin(), srcMCBlock->succs.end(), dstMCBlock),
@@ -484,6 +506,7 @@ void InstSelPass::selectAlloca(AllocaInst* inst, InstSelContext& ctx) {
 
     if (ctx.func->allocaLocalOffset.count(v)) return;
 
+    if (!inst->getAllocatedType()) return;
     int bytes = typeByteSize(inst->getAllocatedType());
     bytes = (bytes + 3) & ~3;
 
