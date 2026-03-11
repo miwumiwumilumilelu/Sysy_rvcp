@@ -49,6 +49,12 @@ Value* IRGen::toCondition(Value* cond) {
     if (auto inst = dyn_cast<Instruction>(cond)) {
         if (inst->getOpID() == Instruction::ICmp || inst->getOpID() == Instruction::FCmp) return cond;
     }
+    if (auto ci = dyn_cast<ConstantInt>(cond)) {
+        return new ConstantInt(ci->getValue() != 0 ? 1 : 0);
+    }
+    if (auto cf = dyn_cast<ConstantFloat>(cond)) {
+        return new ConstantInt(cf->getValue() != 0.0f ? 1 : 0);
+    }
     if (cond->getType()->isFloat()) {
         auto zero = new ConstantFloat(0.0f);
         auto fcmp = builder.Create<FCmpInst>(FCmpInst::ONE, cond, zero);
@@ -65,6 +71,16 @@ Value* IRGen::toCondition(Value* cond) {
 Constant* IRGen::evaluateConstantExpr(Value* val) {
     if (!val) return nullptr;
     if (auto c = dyn_cast<Constant>(val)) return c;
+
+    if (auto inst = dyn_cast<Instruction>(val)) {
+        if (inst->getOpID() == Instruction::Load) {
+            if (auto gv = dyn_cast<GlobalVariable>(inst->getOperand(0))) {
+                if (gv->isConst())
+                    return evaluateConstantExpr(gv->getInit());
+            }
+        }
+    }
+
     if (auto bin = dyn_cast<BinaryInst>(val)) {
         auto lhs = evaluateConstantExpr(bin->getOperand(0));
         auto rhs = evaluateConstantExpr(bin->getOperand(1));
@@ -651,6 +667,29 @@ void IRGen::visit(BinaryExprAST &node) {
     if (opStr == "&&" || opStr == "||") {
         node.getLHS()->accept(*this);
         Value *L = toCondition(LastVal);
+
+        if (auto ci = dyn_cast<ConstantInt>(L)) {
+            if (opStr == "&&") {
+                if (ci->getValue() == 0) {
+                    LastVal = new ConstantInt(0); // false && x is false.
+                    return;
+                } else {
+                    node.getRHS()->accept(*this); // true && x is x.
+                    LastVal = toCondition(LastVal);
+                    return;
+                }
+            } else if (opStr == "||") {
+                if (ci->getValue() == 1) {
+                    LastVal = new ConstantInt(1); // true || x is true.
+                    return;
+                } else {
+                    node.getRHS()->accept(*this); // false || x is x.
+                    LastVal = toCondition(LastVal);
+                    return;
+                }
+            }
+        }
+
         BasicBlock* currentBB = builder.GetInsertPoint();
         Region* currentRegion = currentBB->getParent();
         BasicBlock* rhsBB = new BasicBlock(newLabelName(), currentRegion);
@@ -742,7 +781,7 @@ void IRGen::visit(IfStmtAST &node) {
         BasicBlock *thenBlock = new BasicBlock(newLabelName(), ifInst->getThenRegion());
         BasicBlock *originalBlock = builder.GetInsertPoint();
         builder.SetInsertPoint(thenBlock);
-        node.getThen()->accept(*this);
+        if (node.getThen()) node.getThen()->accept(*this);
         builder.SetInsertPoint(originalBlock);
     }
     if (node.getElse()) {
@@ -769,7 +808,7 @@ void IRGen::visit(WhileStmtAST &node) {
         BasicBlock *bodyBlock = new BasicBlock(newLabelName(), whileInst->getBodyRegion());
         BasicBlock *originalBlock = builder.GetInsertPoint();
         builder.SetInsertPoint(bodyBlock);
-        node.getBody()->accept(*this);
+        if (node.getBody()) node.getBody()->accept(*this);
         builder.SetInsertPoint(originalBlock);
     }
 }
