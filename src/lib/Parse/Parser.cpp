@@ -344,7 +344,15 @@ std::unique_ptr<BlockAST> Parser::parseBlock() {
             auto decls = parseDecl();
             for (auto& decl : decls) {
                 block->addItem(std::move(decl));
-            } 
+            }
+        } else if (CurTok.is(tok::kw_const)) {
+            getNextToken(); // consume 'const'
+            auto decls = parseDecl();
+            for (auto& decl : decls) {
+                block->addItem(std::move(decl));
+            }
+        } else if (CurTok.is(tok::semi)) {
+            getNextToken(); // empty statement: consume ';' and continue
         } else {
             if (auto stmt = parseStmt()) {
                 block->addItem(std::move(stmt));
