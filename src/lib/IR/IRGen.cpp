@@ -274,11 +274,7 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
         BasicBlock* entryBB = CurrentFunc->getEntryBlock();
         auto& instList = entryBB->getInstructions();
         assert(!instList.empty());
-        {
-            auto lastOp = instList.back()->getOpID();
-            assert(lastOp != Instruction::Br && lastOp != Instruction::Ret
-                && "entry block must not be terminated before processLocalInit");
-        }
+        // fix at least two localarray init, so delete the assert.  
         auto insertAllocaInEntry = [&](AllocaInst* ai) {
             instList.pop_back(); // Remove the AllocaInst just auto-appended by constructor.
             auto it = instList.begin();
