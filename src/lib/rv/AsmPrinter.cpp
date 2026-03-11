@@ -87,7 +87,7 @@ void AsmPrinter::run(const std::vector<std::unique_ptr<MCFunction>>& funcs,
 
 void AsmPrinter::emitText(const std::vector<std::unique_ptr<MCFunction>>& funcs,
                            std::ostream& os) {
-    os << ".text\n";
+    os << "\n\n\n.text\n";
     for (auto& mcFunc : funcs) {
         os << ".align 2\n"; // align to 4 bytes
         os << ".globl " << mcFunc->name << "\n";
@@ -114,7 +114,7 @@ void AsmPrinter::emitGlobals(Module* module, std::ostream& os) {
     }
 
     if (!dataSeg.empty()) {
-        os << "\n.data\n";
+        os << "\n\n\n.data\n";
         for (auto* gv : dataSeg) {
             // GlobalVariable::getType() returns PointerType(elementType); unwrap it.
             Type* ty = gv->getType();
@@ -149,7 +149,7 @@ void AsmPrinter::emitGlobals(Module* module, std::ostream& os) {
     }
 
     if (!bssSeg.empty()) {
-        os << "\n.bss\n";
+        os << "\n\n\n.bss\n";
         for (auto* gv : bssSeg) {
             Type* bssTy = gv->getType();
             if (bssTy->isPointer()) bssTy = cast<PointerType>(bssTy)->getPointeeType();

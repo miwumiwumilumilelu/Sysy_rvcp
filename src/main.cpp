@@ -83,13 +83,13 @@ int main(int argc, char **argv) {
     FlattenCFG flatten(module.get());
     flatten.run();
 
-    Mem2Reg mem2reg(module.get(), nullptr); 
+    Mem2Reg mem2reg(module.get(), nullptr);
     mem2reg.run();
 
     for (int i = 0; i < 3; i++) {
         ConstantFold constFold(module.get());
         constFold.run();
-        
+
         SimplifyCFG simplify(module.get());
         simplify.run();
 
