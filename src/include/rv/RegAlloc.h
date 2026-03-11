@@ -52,6 +52,14 @@ private:
 
     // Emit addi sp, sp, delta.  Falls back to li + add for large |delta|.
     void emitAddiSP(MCBlock* blk, RvOp* pos, int delta);
+
+    // Resolve read-after-write hazards in call argument moves (run after rewriteOperands).
+    // Reorders or breaks cycles among the mv/fmv.s/li instructions before each call.
+    //
+    // Example: call f(b, a) where a->a0, b->a1 after coloring:
+    //   mv a0, a1   # a0 = b  (overwrites a0, which held a)
+    //   mv a1, a0   # a1 = a? NO: reads new a0 = b  <- hazard
+    void fixParallelMoves(MCFunction* func);
 };
 
 } // namespace rv

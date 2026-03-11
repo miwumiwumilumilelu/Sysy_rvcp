@@ -481,6 +481,7 @@ void RegAlloc::emitPrologueEpilogue(MCFunction* func) {
     func->frameSize  = frameSize;
 
     rewriteOperands(func, spillBase, allocaBase);
+    fixParallelMoves(func);
 
     // Debug
     for (auto& [v, local] : spillLocal) {
@@ -532,20 +533,30 @@ void RegAlloc::emitPrologueEpilogue(MCFunction* func) {
         // If neither: arg was dead(no uses)，skip.
     }
 
+    // Build liveIn set for quick lookup (dead stack args need not be loaded).
+    const std::unordered_set<VReg>* entryLiveIn =
+        (!func->blocks.empty()) ? &func->blocks[0]->liveIn : nullptr;
+
     for (auto& sa : func->incomingStackArgs) {
+        // (fix)skip dead args.
+        if (entryLiveIn && !entryLiveIn->count(sa.vreg)) continue;
+
         auto* vi = func->getVRegInfo(sa.vreg);
         bool isPtr = vi && vi->isPtr;
         int off = frameSize + sa.slotIdx * 8;
 
         if (assignment.count(sa.vreg)) {
-            emitLS(entry, first, /*load=*/true, sa.isFloat, isPtr,
-                assignment[sa.vreg], Reg::sp, off);
+            Reg dst = assignment[sa.vreg];
+            Reg scratch = (dst == spillReg) ? spillReg2 : spillReg;
+            emitLS(entry, first, /*load=*/true, sa.isFloat, isPtr, dst, Reg::sp, off, scratch);
         } else if (spillLocal.count(sa.vreg)) {
             // load to tmp, store to spill slot.
             Reg tmp = sa.isFloat ? fspillReg : spillReg;
             int spillOff = spillBase + spillLocal[sa.vreg];
-            emitLS(entry, first, /*load=*/true,  sa.isFloat, isPtr, tmp, Reg::sp, off);
-            emitLS(entry, first, /*load=*/false, sa.isFloat, isPtr, tmp, Reg::sp, spillOff);
+            // Must use an integer register as address-scratch; use spillReg2 (s11).
+            Reg scratch = spillReg2;
+            emitLS(entry, first, /*load=*/true,  sa.isFloat, isPtr, tmp, Reg::sp, off, scratch);
+            emitLS(entry, first, /*load=*/false, sa.isFloat, isPtr, tmp, Reg::sp, spillOff, scratch);
         }
         // If neither: VReg was dead(unused arg), no load needed.
     }
@@ -573,6 +584,155 @@ void RegAlloc::emitPrologueEpilogue(MCFunction* func) {
             emitAddiSP(blk, ret, +frameSize);
         }
     });
+}
+
+void RegAlloc::fixParallelMoves(MCFunction* func) {
+    const int fa0Idx = static_cast<int>(Reg::fa0);
+    const int a0Idx  = static_cast<int>(Reg::a0);
+
+    for (auto& blkPtr : func->blocks) {
+        MCBlock* blk = blkPtr.get();
+
+        for (RvOp* callOp = blk->head; callOp; callOp = callOp->next) {
+            if (callOp->opcode != RvOp::CallOp) continue;
+
+            // Scan backwards to collect call-setup moves (stop at non-setup instructions).
+            std::vector<FMvSOp*> floatMoves; // fmv.s fa_i, src
+            std::vector<MvOp*> intMoves;   // mv a_i, src  (non-constant int args)
+            std::vector<LiOp*> intImms;    // li a_i, imm  (constant int args)
+
+            RvOp* cur = callOp->prev;
+            while (cur) {
+                if (cur->opcode == RvOp::FMvSOp) {
+                    auto* mv = static_cast<FMvSOp*>(cur);
+                    if (mv->rd.isPReg() && mv->rs.isPReg()) {
+                        int di = static_cast<int>(mv->rd.getPReg());
+                        if (di >= fa0Idx && di < fa0Idx + 8) {
+                            // Stop if this is a return-capture from the previous call.
+                            if (cur->prev && cur->prev->opcode == RvOp::CallOp) break;
+                            floatMoves.push_back(mv);
+                            cur = cur->prev;
+                            continue;
+                        }
+                    }
+                    break; // FMvSOp not to fa0-fa7
+                }
+                if (cur->opcode == RvOp::MvOp) {
+                    auto* mv = static_cast<MvOp*>(cur);
+                    if (mv->rd.isPReg() && mv->rs.isPReg()) {
+                        int di = static_cast<int>(mv->rd.getPReg());
+                        if (di >= a0Idx && di < a0Idx + 8) {
+                            // Stop if this is a return-capture from the previous call.
+                            if (cur->prev && cur->prev->opcode == RvOp::CallOp) break;
+                            intMoves.push_back(mv);
+                            cur = cur->prev;
+                            continue;
+                        }
+                    }
+                    break; // MvOp not to a0-a7
+                }
+                if (cur->opcode == RvOp::LiOp) {
+                    auto* li = static_cast<LiOp*>(cur);
+                    if (li->rd.isPReg()) {
+                        int di = static_cast<int>(li->rd.getPReg());
+                        if (di >= a0Idx && di < a0Idx + 8) {
+                            intImms.push_back(li);
+                            cur = cur->prev;
+                            continue;
+                        }
+                    }
+                    break; // LiOp not to a0-a7
+                }
+                break; // non-setup instruction
+            }
+
+            // Reverse to restore forward (emission) order.
+            std::reverse(floatMoves.begin(), floatMoves.end());
+            std::reverse(intMoves.begin(), intMoves.end());
+            std::reverse(intImms.begin(), intImms.end());
+
+            // Parallel-move resolution for a set of register-to-register moves.
+            // Resolves read-after-write hazards by topological reordering;
+            // breaks cycles by saving one value to a dynamically-chosen scratch register.
+            using RegPair = std::pair<Reg, Reg>;
+            auto resolve = [&](auto& moves, bool isFloat) {
+                if (moves.size() <= 1) return;
+
+                // Quick hazard check: source of move i == dest of some earlier move j.
+                bool hasHazard = false;
+                for (int i = 0; i < (int)moves.size() && !hasHazard; i++) {
+                    Reg si = moves[i]->rs.getPReg();
+                    for (int j = 0; j < i; j++)
+                        if (moves[j]->rd.getPReg() == si) { hasHazard = true; break; }
+                }
+                if (!hasHazard) return;
+
+                std::vector<RegPair> pending;
+                for (auto* mv : moves)
+                    pending.push_back({mv->rd.getPReg(), mv->rs.getPReg()});
+
+                std::vector<RegPair> resolved;
+                while (!pending.empty()) {
+                    bool progress = false;
+                    for (int i = 0; i < (int)pending.size(); i++) {
+                        Reg d = pending[i].first;
+                        // Safe to emit if d is not a source of any remaining pending move.
+                        bool dNeeded = false;
+                        for (int j = 0; j < (int)pending.size(); j++)
+                            if (j != i && pending[j].second == d) { dNeeded = true; break; }
+                        if (!dNeeded) {
+                            resolved.push_back(pending[i]);
+                            pending.erase(pending.begin() + i);
+                            progress = true;
+                            break;
+                        }
+                    }
+                    if (!progress) {
+                        // Cycle: save pending[0]'s source to a dynamically-found scratch.
+                        // The scratch must not appear as src or dest in any pending move.
+                        Reg scratch = Reg::zero; // sentinel
+                        int lo = isFloat ? (int)Reg::ft0 : (int)Reg::t0;
+                        int hi = isFloat ? (int)Reg::ft11 : (int)Reg::t6;
+                        for (int r = lo; r <= hi; r++) {
+                            Reg cand = static_cast<Reg>(r);
+                            bool used = false;
+                            for (auto& [pd, ps] : pending)
+                                if (pd == cand || ps == cand) { used = true; break; }
+                            if (!used) { scratch = cand; break; }
+                        }
+                        assert(scratch != Reg::zero && "No scratch register for cycle breaking");
+                        Reg s = pending[0].second;
+                        resolved.push_back({scratch, s});
+                        for (auto& [pd, ps] : pending)
+                            if (ps == s) ps = scratch;
+                    }
+                }
+
+                // Replace old moves with the resolved (safe) ordering.
+                for (auto* mv : moves)
+                    blk->erase(mv);
+                for (auto& [d, s] : resolved) {
+                    if (isFloat)
+                        blk->insertBefore(callOp, new FMvSOp(MCOperand(d), MCOperand(s)));
+                    else
+                        blk->insertBefore(callOp, new MvOp(MCOperand(d), MCOperand(s)));
+                }
+            };
+
+            resolve(floatMoves, /*isFloat=*/true);
+            resolve(intMoves, /*isFloat=*/false);
+
+            // LiOp (constant int args) have no register source, so no parallel-move hazard.
+            // Re-insert them last so that any MvOp that reads from the same a_i register
+            // has already executed before the LiOp overwrites it.
+            for (auto* li : intImms) {
+                int val = li->imm;
+                Reg d = li->rd.getPReg();
+                blk->erase(li);
+                blk->insertBefore(callOp, new LiOp(MCOperand(d), val));
+            }
+        }
+    }
 }
 
 void RegAlloc::run(MCFunction* func) {
