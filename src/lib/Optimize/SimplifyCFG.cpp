@@ -306,6 +306,7 @@ bool SimplifyCFG::simplifyBranches(Region* region) {
             if (br->getNumOperands() == 3) {
                 if (br->getOperand(1) == br->getOperand(2)) {
                     if (BasicBlock* dest = dyn_cast<BasicBlock>(br->getOperand(1))) {
+                        bb->getInstructions().remove(br);
 
                         br->replaceAllUsesWith(nullptr);
                         for(int i = 0; i < br->getNumOperands(); i++) br->setOperand(i, nullptr);
