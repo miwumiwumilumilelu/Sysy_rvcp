@@ -114,14 +114,16 @@ class VarDeclAST : public ASTNode {
     std::string Name;
     std::vector<std::unique_ptr<ExprAST>> Dims;
     std::unique_ptr<InitValAST> Init;
+    bool IsConst = false;
 public:
-    VarDeclAST(const std::string &type, const std::string &name, std::vector<std::unique_ptr<ExprAST>> dims, std::unique_ptr<InitValAST> init)
-        : Type(type), Name(name), Dims(std::move(dims)), Init(std::move(init)) {}
+    VarDeclAST(const std::string &type, const std::string &name, std::vector<std::unique_ptr<ExprAST>> dims, std::unique_ptr<InitValAST> init, bool isConst = false)
+        : Type(type), Name(name), Dims(std::move(dims)), Init(std::move(init)), IsConst(isConst) {}
 
     const std::string& getType() const { return Type; }
     const std::string& getName() const { return Name; }
     const std::vector<std::unique_ptr<ExprAST>>& getDims() const { return Dims; }
     InitValAST* getInit() const { return Init.get(); }
+    bool isConst() const { return IsConst; }
 
     void dump(int indent) const override;
     void accept(ASTVisitor &visitor) override;

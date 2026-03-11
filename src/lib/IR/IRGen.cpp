@@ -552,6 +552,7 @@ void IRGen::visit(VarDeclAST &node) {
         else initVal = new ConstantZero(varType);
         
         auto globalVar = new GlobalVariable(node.getName(), varType, initVal);
+        globalVar->setConst(node.isConst());
         TheModule->addGlobalVariable(globalVar);
         defineVar(node.getName(), globalVar);
         return;

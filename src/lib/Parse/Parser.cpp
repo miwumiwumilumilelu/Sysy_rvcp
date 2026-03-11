@@ -75,7 +75,7 @@ std::unique_ptr<InitValAST> Parser::parseInitVal() {
     }
 }
 
-std::vector<std::unique_ptr<VarDeclAST>> Parser::parseDecl() {
+std::vector<std::unique_ptr<VarDeclAST>> Parser::parseDecl(bool isConst) {
     std::vector<std::unique_ptr<VarDeclAST>> decls;
     std::string type = parseType();
     if (type.empty()) return decls;
@@ -104,7 +104,7 @@ std::vector<std::unique_ptr<VarDeclAST>> Parser::parseDecl() {
             init = parseInitVal();
         }
 
-        decls.push_back(std::make_unique<VarDeclAST>(type, name, std::move(dims), std::move(init)));
+        decls.push_back(std::make_unique<VarDeclAST>(type, name, std::move(dims), std::move(init), isConst));
 
         if (CurTok.is(tok::comma)) getNextToken();
         else break;
@@ -347,7 +347,7 @@ std::unique_ptr<BlockAST> Parser::parseBlock() {
             }
         } else if (CurTok.is(tok::kw_const)) {
             getNextToken(); // consume 'const'
-            auto decls = parseDecl();
+            auto decls = parseDecl(true);
             for (auto& decl : decls) {
                 block->addItem(std::move(decl));
             }
@@ -428,6 +428,11 @@ std::unique_ptr<FuncDefAST> Parser::parseFuncDef() {
 std::unique_ptr<CompUnitAST> Parser::parseCompUnit() {
     auto unit = std::make_unique<CompUnitAST>();
     while (CurTok.isNot(tok::eof)) {
+        bool isConst = false;
+        if (CurTok.is(tok::kw_const)) {
+            isConst = true;
+            getNextToken(); // consume 'const'
+        }
         std::string type = parseType();
         if (type.empty()) {
             if (CurTok.is(tok::eof)) break;
@@ -504,7 +509,7 @@ std::unique_ptr<CompUnitAST> Parser::parseCompUnit() {
                     init = parseInitVal();
                 }
 
-                unit->addChild(std::make_unique<VarDeclAST>(type, name, std::move(dims), std::move(init)));
+                unit->addChild(std::make_unique<VarDeclAST>(type, name, std::move(dims), std::move(init), isConst));
 
                 if (CurTok.is(tok::comma)) {
                     getNextToken(); // consume ','
