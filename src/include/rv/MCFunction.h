@@ -210,6 +210,14 @@ public:
                 // Uses come before def within the same instruction.
                 usesBuf.clear();
                 op->collectUses(usesBuf);
+                // Also treat CallOp stackArgs as uses for liveness purposes.
+                if (op->opcode == RvOp::CallOp) {
+                    auto* call = static_cast<CallOp*>(op);
+                    for (auto& sa : call->stackArgs) {
+                        usesBuf.push_back(const_cast<MCOperand*>(&sa.src));
+                    }
+                }
+                
                 for (auto* operand : usesBuf) {
                     if (operand->isVReg()) {
                         VReg v = operand->getVReg();
