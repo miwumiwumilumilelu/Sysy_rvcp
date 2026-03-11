@@ -62,6 +62,24 @@ void FlattenCFG::flattenRegion(Region* region, BasicBlock* loopHeader, BasicBloc
             }
         }
 
+        // After splitting bb into bb+mergeBB, any phi [val, bb] in the region
+        // that was set up by code now in mergeBB's subgraph needs to be redirected
+        // to mergeBB, since bb will get a new terminator (from handleIf/handleWhile)
+        // that won't reach those phi blocks anymore.
+        for (auto blk : region->getBlocks()) {
+            for (auto inst : blk->getInstructions()) {
+                if (auto phi = dyn_cast<PhiInst>(inst)) {
+                    for (int i = 0; i < phi->getNumOperands(); i += 2) {
+                        if (phi->getOperand(i+1) == bb) {
+                            phi->setOperand(i+1, mergeBB);
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
         if (auto ifInst = dyn_cast<IfInst>(highLevelInst)) {
             handleIf(ifInst, bb, mergeBB, loopHeader, loopExit);
         } else if (auto whileInst = dyn_cast<WhileInst>(highLevelInst)) {
