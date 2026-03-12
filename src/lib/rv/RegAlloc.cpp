@@ -588,7 +588,7 @@ void RegAlloc::emitPrologueEpilogue(MCFunction* func) {
 
 void RegAlloc::fixParallelMoves(MCFunction* func) {
     const int fa0Idx = static_cast<int>(Reg::fa0);
-    const int a0Idx  = static_cast<int>(Reg::a0);
+    const int a0Idx = static_cast<int>(Reg::a0);
 
     for (auto& blkPtr : func->blocks) {
         MCBlock* blk = blkPtr.get();
@@ -651,12 +651,13 @@ void RegAlloc::fixParallelMoves(MCFunction* func) {
             std::reverse(intMoves.begin(), intMoves.end());
             std::reverse(intImms.begin(), intImms.end());
 
-            // Parallel-move resolution for a set of register-to-register moves.
-            // Resolves read-after-write hazards by topological reordering;
+            // Resolves by topological reordering;
             // breaks cycles by saving one value to a dynamically-chosen scratch register.
             using RegPair = std::pair<Reg, Reg>;
             auto resolve = [&](auto& moves, bool isFloat) {
                 if (moves.size() <= 1) return;
+
+                bool useScratchSlot = false;
 
                 // Quick hazard check: source of move i == dest of some earlier move j.
                 bool hasHazard = false;
@@ -700,31 +701,67 @@ void RegAlloc::fixParallelMoves(MCFunction* func) {
                                 if (pd == cand || ps == cand) { used = true; break; }
                             if (!used) { scratch = cand; break; }
                         }
-                        assert(scratch != Reg::zero && "No scratch register for cycle breaking");
                         Reg s = pending[0].second;
-                        resolved.push_back({scratch, s});
-                        for (auto& [pd, ps] : pending)
-                            if (ps == s) ps = scratch;
+                        if (scratch != Reg::zero) {
+                            // Register scratch: save s into scratch, redirect sources.
+                            resolved.push_back({scratch, s});
+                            for (auto& [pd, ps] : pending)
+                                if (ps == s) ps = scratch;
+                        } else {
+                            // Memory scratch fallback: Reg::zero is sentinel for "stack slot 0(sp)".
+                            //
+                            // addi sp,sp,-8 
+                            // store
+                            // ... 
+                            // load 
+                            // addi sp,sp,+8
+                            //
+                            // are emitted in the replacement phase below.
+                            assert(!useScratchSlot && "Multiple memory scratches needed in one resolve");
+                            useScratchSlot = true;
+                            resolved.push_back({Reg::zero, s}); // sentinel: store s to 0(sp)
+                            for (auto& [pd, ps] : pending)
+                                if (ps == s) ps = Reg::zero;    // sentinel: load from 0(sp)
+                        }
                     }
                 }
 
                 // Replace old moves with the resolved (safe) ordering.
                 for (auto* mv : moves)
                     blk->erase(mv);
+                if (useScratchSlot) {
+                    // Extend the stack to open a temporary scratch slot at 0(sp).
+                    blk->insertBefore(callOp, new AddiOp(MCOperand(Reg::sp), MCOperand(Reg::sp), -8));
+                }
                 for (auto& [d, s] : resolved) {
-                    if (isFloat)
-                        blk->insertBefore(callOp, new FMvSOp(MCOperand(d), MCOperand(s)));
-                    else
-                        blk->insertBefore(callOp, new MvOp(MCOperand(d), MCOperand(s)));
+                    if (d == Reg::zero) {
+                        // Store s to scratch slot 0(sp).
+                        if (isFloat)
+                            blk->insertBefore(callOp, new FSwOp(MCOperand(s), MCOperand(Reg::sp), 0));
+                        else
+                            blk->insertBefore(callOp, new SwOp(MCOperand(s), MCOperand(Reg::sp), 0));
+                    } else if (s == Reg::zero) {
+                        // Load from scratch slot 0(sp) into d.
+                        if (isFloat)
+                            blk->insertBefore(callOp, new FLwOp(MCOperand(d), MCOperand(Reg::sp), 0));
+                        else
+                            blk->insertBefore(callOp, new LwOp(MCOperand(d), MCOperand(Reg::sp), 0));
+                    } else {
+                        if (isFloat)
+                            blk->insertBefore(callOp, new FMvSOp(MCOperand(d), MCOperand(s)));
+                        else
+                            blk->insertBefore(callOp, new MvOp(MCOperand(d), MCOperand(s)));
+                    }
+                }
+                if (useScratchSlot) {
+                    // Restore sp after the last use of the scratch slot.
+                    blk->insertBefore(callOp, new AddiOp(MCOperand(Reg::sp), MCOperand(Reg::sp), 8));
                 }
             };
 
             resolve(floatMoves, /*isFloat=*/true);
             resolve(intMoves, /*isFloat=*/false);
 
-            // LiOp (constant int args) have no register source, so no parallel-move hazard.
-            // Re-insert them last so that any MvOp that reads from the same a_i register
-            // has already executed before the LiOp overwrites it.
             for (auto* li : intImms) {
                 int val = li->imm;
                 Reg d = li->rd.getPReg();
