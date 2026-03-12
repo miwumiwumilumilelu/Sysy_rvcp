@@ -10,7 +10,7 @@ namespace sysy {
 class SimplifyCFG {
 public:
     SimplifyCFG(Module* m) : TheModule(m) {}
-    void run();
+    bool run();
 
 private:
     Module* TheModule;

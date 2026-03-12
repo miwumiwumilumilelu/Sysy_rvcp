@@ -10,7 +10,7 @@ namespace sysy {
 class ConstantFold {
 public:
     ConstantFold(Module* m) : TheModule(m) {}
-    void run();
+    bool run();
 private:
     Module* TheModule;
 

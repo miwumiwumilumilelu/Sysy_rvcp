@@ -4,7 +4,8 @@
 
 using namespace sysy;
 
-void ConstantFold::run() {
+bool ConstantFold::run() {
+    bool anyChanged = false;
     bool changed = true;
     while (changed) {
         changed = false;
@@ -18,11 +19,13 @@ void ConstantFold::run() {
                 for (auto inst : worklist) {
                     if (foldInstruction(inst, bb)) {
                         changed = true;
+                        anyChanged = true;
                     }
                 }
             }
         }
     }
+    return anyChanged;
 }
 
 static ICmpInst::CmpOp invertPredicate(ICmpInst::CmpOp pred) {

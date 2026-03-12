@@ -4,15 +4,18 @@
 
 using namespace sysy;
 
-void DCE::run() {
+bool DCE::run() {
+    bool anyChanged = false;
     for (auto func : TheModule->getFunctions()) {
         if (func->getBody()->getBlocks().empty()) continue;
 
         bool changed;
         do {
             changed = eliminateDeadCode(func);
+            anyChanged |= changed;
         } while (changed);
     }
+    return anyChanged;
 }
 
 bool DCE::isInstTrivallyDead(Instruction *inst) {

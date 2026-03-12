@@ -86,15 +86,12 @@ int main(int argc, char **argv) {
     Mem2Reg mem2reg(module.get(), nullptr);
     mem2reg.run();
 
-    for (int i = 0; i < 3; i++) {
-        ConstantFold constFold(module.get());
-        constFold.run();
-
-        SimplifyCFG simplify(module.get());
-        simplify.run();
-
-        DCE dce(module.get());
-        dce.run();
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        changed |= ConstantFold(module.get()).run();
+        changed |= SimplifyCFG(module.get()).run();
+        changed |= DCE(module.get()).run();
     }
 
     if (dumpLIR) {

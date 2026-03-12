@@ -8,7 +8,7 @@ namespace sysy {
 class DCE {
 public:
     DCE(Module* m) : TheModule(m) {}
-    void run();
+    bool run();
 private:
     Module* TheModule;
     bool eliminateDeadCode(Function* func);

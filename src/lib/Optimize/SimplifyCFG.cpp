@@ -6,13 +6,15 @@
 
 using namespace sysy;
 
-void SimplifyCFG::run() {
+bool SimplifyCFG::run() {
+    bool anyChanged = false;
     for (auto func : TheModule->getFunctions()) {
         if (func->getBody()->getBlocks().empty()) continue;
         
         bool changed;
         do {
             changed = simplifyFunction(func);
+            anyChanged |= changed;
         } while (changed);
 
         int bbCounter = 0;
@@ -20,6 +22,7 @@ void SimplifyCFG::run() {
             bb->setName("bb" + std::to_string(bbCounter++));
         }
     }
+    return anyChanged;
 }
 
 bool SimplifyCFG::simplifyFunction(Function* func) {
