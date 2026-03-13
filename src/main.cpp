@@ -8,6 +8,7 @@
 #include "Semant/Semant.h"
 #include "IR/IRGen.h"
 #include "Optimize/FlattenCFG.h"
+#include "Optimize/HighMem2Reg.h"
 #include "Optimize/Dominators.h"
 #include "Optimize/Mem2Reg.h"
 #include "Optimize/ConstantFold.h"
@@ -79,6 +80,9 @@ int main(int argc, char **argv) {
     if (dumpHIR) {
         std::cout << module->print();
     }
+
+    HighMem2Reg highMem2Reg(module.get());
+    highMem2Reg.run();
 
     FlattenCFG flatten(module.get());
     flatten.run();

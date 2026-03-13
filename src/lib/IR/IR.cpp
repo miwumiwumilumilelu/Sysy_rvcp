@@ -86,7 +86,7 @@ Instruction::Instruction(Type *ty, OpID id, BasicBlock *parent)
 Instruction::~Instruction() {}
 
 bool Instruction::isTerminator() const {
-    return OpCode == Br || OpCode == Ret || OpCode == Break || OpCode == Continue;
+    return OpCode == Br || OpCode == Ret || OpCode == Break || OpCode == Continue || OpCode == Flow;
 }
 
 CallInst::CallInst(Function* func, std::vector<Value*> args, BasicBlock* parent)
@@ -227,14 +227,31 @@ IfInst::IfInst(Value* cond, BasicBlock* parent)
     addRegion(std::make_unique<Region>(this));
 }
 
+IfInst::~IfInst() {
+    for (auto r : Results) delete r;
+}
+
 void IfInst::addElseRegion() {
     if (getRegions().size() < 2) {
         addRegion(std::make_unique<Region>(this));
     }
 }
 
+ResultValue* IfInst::createResult(Type* ty) {
+    auto* rv = new ResultValue(ty, this, Results.size());
+    Results.push_back(rv);
+    return rv;
+}
+
 std::string IfInst::toString() const {
     std::stringstream ss;
+    if (!Results.empty()) {
+        for (unsigned i = 0; i < Results.size(); ++i) {
+            if (i > 0) ss << ", ";
+            ss << Results[i]->getName();
+        }
+        ss << " = ";
+    }
     ss << "if (" << getOperand(0)->getName() << ") {\n";
     for (auto bb : getRegion(0)->getBlocks()) {
         ss << addIndent(bb->toString(), 2);
@@ -250,19 +267,50 @@ std::string IfInst::toString() const {
     return ss.str();
 }
 
-WhileInst::WhileInst(BasicBlock* parent) 
+WhileInst::WhileInst(BasicBlock* parent)
     : Instruction(Type::getVoidTy(), While, parent) {
     addRegion(std::make_unique<Region>(this)); // Region 0: Cond
     addRegion(std::make_unique<Region>(this)); // Region 1: Body
 }
 
+WhileInst::~WhileInst() {
+    for (auto r : Results) delete r;
+}
+
+ResultValue* WhileInst::createResult(Type* ty) {
+    auto* rv = new ResultValue(ty, this, Results.size());
+    Results.push_back(rv);
+    return rv;
+}
+
 std::string WhileInst::toString() const {
     std::stringstream ss;
+    if (!Results.empty()) {
+        for (unsigned i = 0; i < Results.size(); ++i) {
+            if (i > 0) ss << ", ";
+            ss << Results[i]->getName();
+        }
+        ss << " = ";
+    }
     ss << "while {\n";
     for (auto bb : getRegion(0)->getBlocks()) ss << bb->toString();
     ss << "} do {\n";
     for (auto bb : getRegion(1)->getBlocks()) ss << bb->toString();
     ss << "}";
+    return ss.str();
+}
+
+FlowInst::FlowInst(std::vector<Value*> vals, BasicBlock* parent)
+    : Instruction(Type::getVoidTy(), Flow, parent) {
+    for (auto v : vals) addOperand(v);
+}
+
+std::string FlowInst::toString() const {
+    std::stringstream ss;
+    ss << "flow";
+    for (int i = 0; i < getNumOperands(); ++i) {
+        ss << (i == 0 ? " " : ", ") << fmtOperand(getOperand(i));
+    }
     return ss.str();
 }
 

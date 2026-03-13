@@ -21,7 +21,8 @@ template<typename To, typename From>
 To* dyn_cast(From* val);
 
 class User;
-    
+class Instruction;
+
 class Value {
 public:
     enum ValueKind {
@@ -34,6 +35,7 @@ public:
         VK_ConstantZero,
         VK_ConstantArray,
         VK_Instruction,
+        VK_Result,
     };
 
 protected:
@@ -182,6 +184,23 @@ public:
 private:
     bool IsConst = false;
     Constant* InitVal;
+};
+
+class ResultValue : public Value {
+    Instruction* Owner; // Such as IfInst or WhileInst.
+    unsigned Index;
+public:
+    ResultValue(Type* ty, Instruction* owner, unsigned idx, const std::string& name = "")
+        : Value(ty, VK_Result, name), Owner(owner), Index(idx) {}
+
+    Instruction* getOwner() const { return Owner; }
+    unsigned getIndex() const { return Index; }
+
+    std::string toString() const override { return Name; }
+
+    static bool classof(const Value* v) {
+        return v->getValueKind() == VK_Result;
+    }
 };
 
 template<typename To, typename From>

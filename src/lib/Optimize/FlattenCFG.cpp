@@ -107,6 +107,31 @@ void FlattenCFG::flattenRegion(Region* region, BasicBlock* loopHeader, BasicBloc
     }
 }
 
+// Collect all FlowInst blocks in a region; replace each FlowInst with br targetBB.
+// Returns a list of (block, FlowInst-operand-values) for building phi nodes.
+static std::vector<std::pair<BasicBlock*, std::vector<Value*>>>
+collectAndReplaceFlows(Region* region, BasicBlock* targetBB, IRBuilder& builder) {
+    std::vector<std::pair<BasicBlock*, std::vector<Value*>>> result;
+    for (auto bb : region->getBlocks()) {
+        if (bb->getInstructions().empty()) continue;
+        auto* back = bb->getInstructions().back();
+        if (auto* flow = dyn_cast<FlowInst>(back)) {
+            std::vector<Value*> vals;
+            for (int i = 0; i < flow->getNumOperands(); i++)
+                vals.push_back(flow->getOperand(i));
+            result.push_back({bb, vals});
+            // Remove FlowInst and replace with br targetBB.
+            for (int i = 0; i < flow->getNumOperands(); i++) flow->setOperand(i, nullptr);
+            flow->setParent(nullptr);
+            bb->getInstructions().remove(flow);
+            delete flow;
+            builder.SetInsertPoint(bb);
+            builder.CreateBr(targetBB);
+        }
+    }
+    return result;
+}
+
 void FlattenCFG::handleIf(IfInst* inst, BasicBlock* currentBB, BasicBlock* mergeBB, BasicBlock* loopHeader, BasicBlock* loopExit) {
     Region* parentRegion = currentBB->getParent();
 
@@ -114,6 +139,9 @@ void FlattenCFG::handleIf(IfInst* inst, BasicBlock* currentBB, BasicBlock* merge
     flattenRegion(thenRegion, loopHeader, loopExit);
 
     BasicBlock* thenEntry = thenRegion->getEntryBlock();
+
+    // Handle FlowInst blocks in then region (produced by HighMem2Reg).
+    auto thenFlows = collectAndReplaceFlows(thenRegion, mergeBB, builder);
 
     for (auto bb : thenRegion->getBlocks()) {
         if (bb->getInstructions().empty() || !bb->getInstructions().back()->isTerminator()) {
@@ -124,9 +152,12 @@ void FlattenCFG::handleIf(IfInst* inst, BasicBlock* currentBB, BasicBlock* merge
 
     // If there is no Else, default jump to Merge.
     BasicBlock* elseEntry = mergeBB;
+    std::vector<std::pair<BasicBlock*, std::vector<Value*>>> elseFlows;
     if (auto elseRegion = inst->getElseRegion()) {
         flattenRegion(elseRegion, loopHeader, loopExit);
         elseEntry = elseRegion->getEntryBlock();
+
+        elseFlows = collectAndReplaceFlows(elseRegion, mergeBB, builder);
 
         for (auto bb : elseRegion->getBlocks()) {
             if (bb->getInstructions().empty() || !bb->getInstructions().back()->isTerminator()) {
@@ -140,6 +171,27 @@ void FlattenCFG::handleIf(IfInst* inst, BasicBlock* currentBB, BasicBlock* merge
     builder.SetInsertPoint(currentBB);
     builder.Create<BranchInst>(inst->getOperand(0), thenEntry, elseEntry);
 
+    // Build phi nodes at mergeBB for each IfInst result (from HighMem2Reg).
+    if (inst->getNumResults() > 0 && (!thenFlows.empty() || !elseFlows.empty())) {
+        unsigned numResults = inst->getNumResults();
+        for (unsigned i = 0; i < numResults; i++) {
+            auto* rv = inst->getResult(i);
+            auto* phi = new PhiInst(rv->getType(), nullptr);
+            phi->setParent(mergeBB);
+            mergeBB->getInstructions().push_front(phi);
+            phi->setName(rv->getName());
+
+            for (auto& [bb, vals] : thenFlows) {
+                if (i < vals.size()) phi->addIncoming(vals[i], bb);
+            }
+            for (auto& [bb, vals] : elseFlows) {
+                if (i < vals.size()) phi->addIncoming(vals[i], bb);
+            }
+
+            rv->replaceAllUsesWith(phi);
+        }
+    }
+
     moveBlocksFromRegion(thenRegion, parentRegion);
     currentBB->getInstructions().remove(inst);
 }
@@ -151,12 +203,36 @@ void FlattenCFG::handleWhile(WhileInst* inst, BasicBlock* currentBB, BasicBlock*
 
     BasicBlock* condEntry = condRegion->getEntryBlock();
 
+    // We need phi nodes at condEntry to merge the init values (from currentBB),
+    // with the loop-back values (from the body FlowInst).
+    // Build them before flattening so they appear at the front of condEntry.
+    unsigned numResults = inst->getNumResults();
+    std::vector<PhiInst*> loopPhis;
+    for (unsigned i = 0; i < numResults; i++) {
+        auto* rv = inst->getResult(i);
+        auto* phi = new PhiInst(rv->getType(), nullptr);
+        phi->setParent(condEntry);
+        condEntry->getInstructions().push_front(phi);
+        phi->setName(rv->getName());
+        // Init incoming from currentBB (the block before the loop).
+        phi->addIncoming(inst->getOperand(i), currentBB);
+        rv->replaceAllUsesWith(phi);
+        loopPhis.push_back(phi);
+    }
+
     flattenRegion(condRegion, condEntry, mergeBB);
     flattenRegion(bodyRegion, condEntry, mergeBB);
 
-    // When short-circuiting evaluation, there is a possibility that 
-    // the merge block may be generated in the middle due to priority reasons
-    // So can't just look for the last basic block
+    // Collect FlowInst blocks in the body region and add loop-back phis.
+    auto bodyFlows = collectAndReplaceFlows(bodyRegion, condEntry, builder);
+    for (auto& [bb, vals] : bodyFlows) {
+        for (unsigned i = 0; i < loopPhis.size() && i < vals.size(); i++) {
+            loopPhis[i]->addIncoming(vals[i], bb);
+        }
+    }
+
+    // When short-circuiting evaluation, there is a possibility that
+    // the merge block may be generated in the middle due to priority reasons.
     BasicBlock* condExit = nullptr;
     for (auto bb : condRegion->getBlocks()) {
         if (bb->getInstructions().empty() || !bb->getInstructions().back()->isTerminator()) {
@@ -172,17 +248,14 @@ void FlattenCFG::handleWhile(WhileInst* inst, BasicBlock* currentBB, BasicBlock*
     builder.CreateBr(condEntry);
 
     Value* condVal = nullptr;
-    if (!condExit->getInstructions().empty()) {
-        Instruction* last = condExit->getInstructions().back();
-        if (!last->isTerminator()) {
-            condVal = last;
-        } else if (condExit->getInstructions().size() >= 2) {
-            auto it = condExit->getInstructions().end();
-            condVal = *(--(--it));
-        }
+    for (auto it = condExit->getInstructions().rbegin();
+         it != condExit->getInstructions().rend(); ++it) {
+        if ((*it)->isTerminator() || isa<PhiInst>(*it)) continue;
+        condVal = *it;
+        break;
     }
 
-    // If the condition is empty, we treat it as "while (true)".
+    // If the condition region is empty (while(true)), use constant 1.
     if (!condVal) condVal = new ConstantInt(1);
 
     builder.SetInsertPoint(condExit);

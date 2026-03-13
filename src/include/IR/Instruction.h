@@ -19,7 +19,8 @@ public:
         ICmp, FCmp, Br, Ret, Call,
         If, While, Break, Continue,
         GetElementPtr,
-        Phi
+        Phi,
+        Flow
     };
 
     Instruction(Type* ty, OpID id, BasicBlock* parent);
@@ -145,11 +146,20 @@ private:
 };
 
 class IfInst : public Instruction {
+    std::vector<ResultValue*> Results;
 public:
     IfInst(Value* cond, BasicBlock* parent);
+    ~IfInst();
+
     Region* getThenRegion() { return getRegion(0); }
     Region* getElseRegion() { return getRegions().size() > 1 ? getRegion(1) : nullptr; }
     void addElseRegion();
+
+    ResultValue* createResult(Type* ty);
+    unsigned getNumResults() const { return Results.size(); }
+    ResultValue* getResult(unsigned i) const { return Results[i]; }
+    const std::vector<ResultValue*>& getResults() const { return Results; }
+
     std::string toString() const override;
 
     static bool classof(const Value* v) {
@@ -158,11 +168,19 @@ public:
 };
 
 class WhileInst : public Instruction {
+    std::vector<ResultValue*> Results;
 public:
     WhileInst(BasicBlock* parent);
-    
+    ~WhileInst();
+
     Region* getCondRegion() { return getRegion(0); }
     Region* getBodyRegion() { return getRegion(1); }
+
+    ResultValue* createResult(Type* ty);
+    unsigned getNumResults() const { return Results.size(); }
+    ResultValue* getResult(unsigned i) const { return Results[i]; }
+    const std::vector<ResultValue*>& getResults() const { return Results; }
+
     std::string toString() const override;
 
     static bool classof(const Value* v) {
@@ -243,6 +261,22 @@ public:
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Phi;
+    }
+};
+
+// FlowInst terminates a sub-region (IfInst branch or WhileInst body),
+// flowing 0 or more values upward to the enclosing Hign inst.
+class FlowInst : public Instruction {
+public:
+    FlowInst(std::vector<Value*> vals, BasicBlock* parent);
+
+    unsigned getNumValues() const { return getNumOperands(); }
+    Value* getValue(unsigned i) const { return getOperand(i); }
+
+    std::string toString() const override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Flow;
     }
 };
 
