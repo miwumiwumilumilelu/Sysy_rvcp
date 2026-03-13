@@ -255,9 +255,6 @@ void FlattenCFG::handleWhile(WhileInst* inst, BasicBlock* currentBB, BasicBlock*
         break;
     }
 
-    // If the condition region is empty (while(true)), use constant 1.
-    if (!condVal) condVal = new ConstantInt(1);
-
     builder.SetInsertPoint(condExit);
     builder.Create<BranchInst>(condVal, bodyEntry, mergeBB);
 

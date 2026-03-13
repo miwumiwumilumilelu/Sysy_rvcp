@@ -50,10 +50,16 @@ Value* IRGen::toCondition(Value* cond) {
         if (inst->getOpID() == Instruction::ICmp || inst->getOpID() == Instruction::FCmp) return cond;
     }
     if (auto ci = dyn_cast<ConstantInt>(cond)) {
-        return new ConstantInt(ci->getValue() != 0 ? 1 : 0);
+        auto zero = new ConstantInt(0);
+        auto icmp = builder.Create<ICmpInst>(ICmpInst::NE, ci, zero);
+        icmp->setName(nextValueName());
+        return icmp;
     }
     if (auto cf = dyn_cast<ConstantFloat>(cond)) {
-        return new ConstantInt(cf->getValue() != 0.0f ? 1 : 0);
+        auto zero = new ConstantFloat(0.0f);
+        auto fcmp = builder.Create<FCmpInst>(FCmpInst::ONE, cf, zero);
+        fcmp->setName(nextValueName());
+        return fcmp;
     }
     if (cond->getType()->isFloat()) {
         auto zero = new ConstantFloat(0.0f);
