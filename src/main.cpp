@@ -13,6 +13,8 @@
 #include "Optimize/Dominators.h"
 #include "Optimize/Mem2Reg.h"
 #include "Optimize/ConstantFold.h"
+#include "Optimize/CSE.h"
+#include "Optimize/InstSimplify.h"
 #include "Optimize/SimplifyCFG.h"
 #include "Optimize/DCE.h"
 #include "rv/InstSel.h"
@@ -98,6 +100,8 @@ int main(int argc, char **argv) {
     while (changed) {
         changed = false;
         changed |= ConstantFold(module.get()).run();
+        changed |= CSE(module.get()).run();
+        changed |= InstSimplify(module.get()).run();
         changed |= SimplifyCFG(module.get()).run();
         changed |= DCE(module.get()).run();
     }
