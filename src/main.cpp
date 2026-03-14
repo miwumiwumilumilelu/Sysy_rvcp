@@ -9,6 +9,7 @@
 #include "IR/IRGen.h"
 #include "Optimize/FlattenCFG.h"
 #include "Optimize/HighMem2Reg.h"
+#include "Optimize/HighLICM.h"
 #include "Optimize/Dominators.h"
 #include "Optimize/Mem2Reg.h"
 #include "Optimize/ConstantFold.h"
@@ -83,6 +84,9 @@ int main(int argc, char **argv) {
 
     HighMem2Reg highMem2Reg(module.get());
     highMem2Reg.run();
+
+    HighLICM highLICM(module.get());
+    highLICM.run();
 
     FlattenCFG flatten(module.get());
     flatten.run();
