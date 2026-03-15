@@ -1,4 +1,4 @@
-#include "Optimize/FlattenCFG.h"
+#include "Optimize/CFG/FlattenCFG.h"
 #include "IR/IRBuilder.h"
 #include "IR/Instruction.h"
 #include <iostream>

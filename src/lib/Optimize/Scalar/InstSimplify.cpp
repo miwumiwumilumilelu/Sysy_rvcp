@@ -1,4 +1,4 @@
-#include "Optimize/InstSimplify.h"
+#include "Optimize/Scalar/InstSimplify.h"
 
 using namespace sysy;
 

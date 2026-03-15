@@ -1,4 +1,4 @@
-#include "Optimize/CSE.h"
+#include "Optimize/Scalar/CSE.h"
 
 using namespace sysy;
 

@@ -1,4 +1,4 @@
-#include "Optimize/HighMem2Reg.h"
+#include "Optimize/High/HighMem2Reg.h"
 #include "IR/Type.h"
 #include <algorithm>
 

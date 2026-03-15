@@ -2,7 +2,7 @@
 #define MEM2REG_H
 
 #include "IR/Module.h"
-#include "Optimize/Dominators.h"
+#include "Optimize/Analysis/Dominators.h"
 #include <map>
 #include <vector>
 #include <set>

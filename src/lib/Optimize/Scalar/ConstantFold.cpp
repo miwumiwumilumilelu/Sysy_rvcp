@@ -1,4 +1,4 @@
-#include "Optimize/ConstantFold.h"
+#include "Optimize/Scalar/ConstantFold.h"
 #include <algorithm>
 #include <cmath>
 

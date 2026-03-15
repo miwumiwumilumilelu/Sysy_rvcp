@@ -1,4 +1,4 @@
-#include "Optimize/Mem2Reg.h"
+#include "Optimize/Scalar/Mem2Reg.h"
 #include "IR/Instruction.h"
 #include "IR/Type.h"
 #include <iostream>

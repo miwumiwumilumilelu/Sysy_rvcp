@@ -1,4 +1,4 @@
-#include "Optimize/SimplifyCFG.h"
+#include "Optimize/CFG/SimplifyCFG.h"
 #include "IR/Instruction.h"
 #include <queue>
 #include <set>

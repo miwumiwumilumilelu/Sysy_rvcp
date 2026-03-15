@@ -1,4 +1,4 @@
-#include "Optimize/DCE.h"
+#include "Optimize/Scalar/DCE.h"
 #include <vector>
 #include <set>
 

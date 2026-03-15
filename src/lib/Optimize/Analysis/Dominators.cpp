@@ -1,4 +1,4 @@
-#include "Optimize/Dominators.h"
+#include "Optimize/Analysis/Dominators.h"
 #include "IR/Instruction.h"
 #include <stack>
 #include <iostream>
