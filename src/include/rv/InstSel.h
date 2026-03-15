@@ -8,6 +8,7 @@
 #include "IR/Region.h"
 #include "rv/MCFunction.h"
 #include "rv/RvOp.h"
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -20,8 +21,11 @@ using ValueMap = std::unordered_map<Value*, MCOperand>;
 class InstSelContext {
 public:
     MCFunction* func = nullptr;
-    MCBlock* block = nullptr; 
-    ValueMap valueMap; 
+    MCBlock* block = nullptr;
+    ValueMap valueMap;
+
+    // Eliminates duplicate slliw/mulw for GEPs sharing the same index in one block.
+    std::map<std::pair<VReg, int>, MCOperand> scaledIndexCache;
 
     MCOperand getVReg(Value* v, bool isFloat = false);
     MCOperand newVReg(bool isFloat = false);

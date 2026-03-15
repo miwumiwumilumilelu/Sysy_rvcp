@@ -275,6 +275,7 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
 void InstSelPass::selectBasicBlock(BasicBlock* irBB, InstSelContext& ctx) {
     auto* block = ctx.func->createBlock(ctx.func->name + "." + irBB->getName());
     ctx.block = block;
+    ctx.scaledIndexCache.clear();
 
     for (auto* inst : irBB->getInstructions()) {
         selectInstruction(inst, ctx);
@@ -615,14 +616,35 @@ void InstSelPass::selectGetElementPtr(GetElementPtrInst* inst, InstSelContext& c
     if (elemSize == 1) {
         ctx.block->append(new AddOp(rd, baseReg, indexReg)); // bool
     } else {
-        auto tmp2 = ctx.newVReg(false);
-        if ((elemSize & (elemSize - 1)) == 0) {
-            int k = __builtin_ctz(static_cast<unsigned>(elemSize));
-            ctx.block->append(new SlliwOp(tmp2, indexReg, k));
+        MCOperand tmp2;
+        if (indexReg.isVReg()) {
+            auto cacheKey = std::make_pair(indexReg.getVReg(), elemSize);
+            auto it = ctx.scaledIndexCache.find(cacheKey);
+            if (it != ctx.scaledIndexCache.end()) {
+                tmp2 = it->second;
+            } else {
+                tmp2 = ctx.newVReg(false);
+                if ((elemSize & (elemSize - 1)) == 0) {
+                    int k = __builtin_ctz(static_cast<unsigned>(elemSize));
+                    ctx.block->append(new SlliwOp(tmp2, indexReg, k));
+                } else {
+                    auto tmp1 = ctx.newVReg(false);
+                    ctx.block->append(new LiOp(tmp1, elemSize));
+                    ctx.block->append(new MulwOp(tmp2, indexReg, tmp1));
+                }
+                ctx.scaledIndexCache[cacheKey] = tmp2;
+            }
         } else {
-            auto tmp1 = ctx.newVReg(false);
-            ctx.block->append(new LiOp(tmp1, elemSize));
-            ctx.block->append(new MulwOp(tmp2, indexReg, tmp1));
+            // Physical register: no caching, generate directly.
+            tmp2 = ctx.newVReg(false);
+            if ((elemSize & (elemSize - 1)) == 0) {
+                int k = __builtin_ctz(static_cast<unsigned>(elemSize));
+                ctx.block->append(new SlliwOp(tmp2, indexReg, k));
+            } else {
+                auto tmp1 = ctx.newVReg(false);
+                ctx.block->append(new LiOp(tmp1, elemSize));
+                ctx.block->append(new MulwOp(tmp2, indexReg, tmp1));
+            }
         }
         ctx.block->append(new AddOp(rd, baseReg, tmp2));
     }
