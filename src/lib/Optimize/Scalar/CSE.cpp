@@ -1,10 +1,12 @@
 #include "Optimize/Scalar/CSE.h"
+#include "Optimize/Analysis/PureFunc.h"
 
 using namespace sysy;
 
 bool CSE::run() {
     bool anyChanged = false;
     bool changed = true;
+    purityCache.clear();
     while (changed) {
         changed = false;
         for (auto func : TheModule->getFunctions()) {
@@ -45,9 +47,55 @@ bool CSE::localCSE(BasicBlock* bb) {
     using CSEKey = std::tuple<int, uint64_t, uint64_t>;
     // Record the first seen inst with the same key.
     std::map<CSEKey, Instruction*> seen;
+
+    // extend:
+    // Pure call CSE: key is [func_ptr, arg0_key, arg1_key, ...]
+    std::map<std::vector<uint64_t>, Instruction*> callSeen;
+    // load CSE: Find load not yet killed by store.
+    std::map<uint64_t, Instruction*> loadSeen;
+
     std::vector<Instruction*> toRemove;
 
     for (auto inst : bb->getInstructions()) {
+        if (isa<StoreInst>(inst)) {
+            loadSeen.clear();
+            continue;
+        }
+
+        // Same address, no intervening store, then replace with the same value.
+        if (isa<LoadInst>(inst)) {
+            uint64_t addrKey = operandKey(inst->getOperand(0));
+            auto it = loadSeen.find(addrKey);
+            if (it != loadSeen.end()) {
+                inst->replaceAllUsesWith(it->second);
+                toRemove.push_back(inst);
+                changed = true;
+            } else {
+                loadSeen[addrKey] = inst;
+            }
+            continue;
+        }
+
+        // same callee + same args -> same result.
+        if (auto* call = dyn_cast<CallInst>(inst)) {
+            if (!call->getType()->isVoid() && isPureFunc(call->getFunction(), purityCache)) {
+                std::vector<uint64_t> callKey;
+                callKey.push_back((uint64_t)(uintptr_t)call->getFunction());
+                for (int i = 1; i < (int)call->getNumOperands(); i++)
+                    callKey.push_back(operandKey(call->getOperand(i)));
+
+                auto it = callSeen.find(callKey);
+                if (it != callSeen.end()) {
+                    inst->replaceAllUsesWith(it->second);
+                    toRemove.push_back(inst);
+                    changed = true;
+                } else {
+                    callSeen[callKey] = inst;
+                }
+            }
+            continue;
+        }
+
         // Distinguish the conditions of the CmpInst.
         int subOp = 0;
         bool candidate = false;

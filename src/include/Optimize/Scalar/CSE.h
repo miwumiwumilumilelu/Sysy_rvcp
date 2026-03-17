@@ -5,6 +5,7 @@
 #include "IR/Instruction.h"
 #include <map>
 #include <tuple>
+#include <unordered_map>
 
 namespace sysy {
 
@@ -15,6 +16,7 @@ public:
 
 private:
     Module* TheModule;
+    std::unordered_map<Function*, bool> purityCache;
     bool localCSE(BasicBlock* bb);
 };
 
