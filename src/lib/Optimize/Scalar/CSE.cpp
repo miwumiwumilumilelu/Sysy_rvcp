@@ -16,11 +16,33 @@ bool CSE::run() {
     return anyChanged;
 }
 
+// fix:
+// operandKey is encoded by value instead of pointer to resolve Performance bug caused by the same value.
+static uint64_t operandKey(Value* v) {
+    if (!v) return 0;
+    if (auto* ci = dyn_cast<ConstantInt>(v))
+        // int64_t is used to get the value.
+        // uint32_t is used to truncate the value to 32 bits.
+        // uint64_t is used to zero-extend the value to 64 bits.
+        return (1ULL << 63) | (uint64_t)(uint32_t)(int64_t)ci->getValue();
+    if (isa<ConstantZero>(v))
+        return (1ULL << 63);  // same as ConstantInt(0)
+    if (auto* cf = dyn_cast<ConstantFloat>(v)) {
+        uint32_t bits = 0;
+        float f = cf->getValue();
+        __builtin_memcpy(&bits, &f, 4);
+        // bit62 is used to distinguish ConstantFloat from ConstantInt.
+        // 3ULL <-> 11
+        return (3ULL << 62) | bits;
+    }
+    return (uint64_t)(uintptr_t)v;
+}
+
 // Eliminate duplicate pure computations within the bb.
 bool CSE::localCSE(BasicBlock* bb) {
     bool changed = false;
-    // Key: (opID, lhs, rhs)
-    using CSEKey = std::tuple<int, Value*, Value*>;
+    // Key: (opID+subOp, operand0_key, operand1_key)
+    using CSEKey = std::tuple<int, uint64_t, uint64_t>;
     // Record the first seen inst with the same key.
     std::map<CSEKey, Instruction*> seen;
     std::vector<Instruction*> toRemove;
@@ -44,7 +66,7 @@ bool CSE::localCSE(BasicBlock* bb) {
 
         Value* lhs = inst->getNumOperands() > 0 ? inst->getOperand(0) : nullptr;
         Value* rhs = inst->getNumOperands() > 1 ? inst->getOperand(1) : nullptr;
-        CSEKey key{(int)inst->getOpID() * 4399 + subOp, lhs, rhs};
+        CSEKey key{(int)inst->getOpID() * 4399 + subOp, operandKey(lhs), operandKey(rhs)};
 
         auto it = seen.find(key);
         if (it != seen.end()) {
