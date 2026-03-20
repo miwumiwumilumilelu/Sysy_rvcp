@@ -51,8 +51,7 @@ static bool isReadOnlyFunc(Function* f, std::unordered_map<Function*, bool>& cac
 }
 
 // Clone inst into target before its terminator, remapping operands via vmap.
-static Instruction* cloneInst(Instruction* inst, BasicBlock* tgt,
-                               const std::unordered_map<Value*, Value*>& vmap) {
+static Instruction* cloneInst(Instruction* inst, BasicBlock* tgt, const std::unordered_map<Value*, Value*>& vmap) {
     auto remap = [&](Value* v) -> Value* {
         auto it = vmap.find(v);
         return it != vmap.end() ? it->second : v;
@@ -130,23 +129,85 @@ bool LICM::runFunc(Function* f) {
     return changed;
 }
 
+// Merge multiple back-edges
+static BasicBlock* mergeLatches(Loop* L) {
+    // Collect every block that has a back-edge to head.
+    std::vector<BasicBlock*> lats;
+    for (auto bb : L->blocks) {
+        auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
+        if (!br) continue;
+        for (int k = 0; k < (int)br->getNumOperands(); k++)
+            if (dyn_cast<BasicBlock>(br->getOperand(k)) == L->head) {
+                lats.push_back(bb); break;
+            }
+    }
+    if (lats.empty()) return nullptr;
+    if (lats.size() == 1) return lats[0];
+
+    std::vector<PhiInst*> hphis;
+    for (auto inst : L->head->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+        hphis.push_back(phi);
+    }
+
+    // Create synthetic latch block.
+    Region* region = L->head->getParent();
+    auto* nl = new BasicBlock("latch_merge_" + L->head->getName(), region);
+    L->blocks.push_back(nl);
+
+    for (auto* hp : hphis) {
+        auto* fwd = new PhiInst(hp->getType(), nullptr);
+        fwd->setParent(nl);
+        for (auto* lat : lats) {
+            Value* val = nullptr;
+            for (int k = 0; k < (int)hp->getNumOperands(); k += 2)
+                if (hp->getOperand(k + 1) == lat) { val = hp->getOperand(k); break; }
+            if (!val) return nullptr;
+            fwd->addIncoming(val, lat);
+        }
+        nl->getInstructions().push_back(fwd);
+        for (auto* lat : lats) hp->removeIncomingByBlock(lat);
+        hp->addIncoming(fwd, nl);
+    }
+
+    new BranchInst(L->head, nl);
+
+    for (auto* lat : lats) {
+        auto* br = cast<BranchInst>(lat->getInstructions().back());
+        for (int k = 0; k < (int)br->getNumOperands(); k++)
+            if (dyn_cast<BasicBlock>(br->getOperand(k)) == L->head)
+                br->setOperand(k, nl);
+    }
+
+    L->latch = nl;
+    return nl;
+}
+
 // Rotate loop: pre→head(cond→body/exit), latch→head(uncond)
 //          -> pre(cond->head/exit), head->body(uncond), latch(cond->head/exit)
 bool LICM::rotateLoop(Loop* L, Function* f) {
     if (!L->head || !L->latch || !L->pre) return false;
 
-    // Require unique back-edge from latch (single unconditional branch to head).
-    {
-        int cnt = 0;
-        for (auto bb : L->blocks) {
-            auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
-            if (!br) continue;
-            for (int k = 0; k < (int)br->getNumOperands(); k++)
-                if (auto* s = dyn_cast<BasicBlock>(br->getOperand(k)))
-                    if (s == L->head) { cnt++; break; }
-        }
-        if (cnt != 1) return false;
-    }
+    // Merge multiple back-edges from continue statements into one latch.
+    if (!mergeLatches(L)) return false;
+
+// Before rotate:
+// 
+//   preheader                                                                                                                                                                                                 
+//   │                                                                                                                                                                                                     
+//   ▼                                                                                                                                                                                                     
+// [head] ◄─────────────────────┐                          
+//   │  br cond, body, exit      │                                                                                                                                                                         
+//   ├──────────────► [exit]     │                                                                                                                                                                         
+//   │                           │                                                                                                                                                                         
+//   ▼                           │                                                                                                                                                                         
+// [body]                        │                                                                                                                                                                         
+//   │                           │                         
+//   ▼                           │                                                                                                                                                                         
+// [latch]  br head              │                         
+//   └───────────────────────────┘  
+//
     auto* lbr = dyn_cast<BranchInst>(L->latch->getInstructions().back());
     if (!lbr || lbr->getNumOperands() != 1) return false;
     if (cast<BasicBlock>(lbr->getOperand(0)) != L->head) return false;
@@ -204,10 +265,6 @@ bool LICM::rotateLoop(Loop* L, Function* f) {
     for (auto* inst : chain) {
         if (isa<LoadInst>(inst) || isa<StoreInst>(inst) || isa<CallInst>(inst))
             return false;
-        if (isa<BinaryInst>(inst)) {
-            auto op = inst->getOpID();
-            if (op == Instruction::Div || op == Instruction::Mod) return false;
-        }
     }
 
     // Head must contain only phis + chain + branch.
@@ -223,12 +280,12 @@ bool LICM::rotateLoop(Loop* L, Function* f) {
         Value* iv = nullptr, *lv = nullptr;
         for (int k = 0; k < (int)phi->getNumOperands(); k += 2) {
             auto* src = cast<BasicBlock>(phi->getOperand(k + 1));
-            if (src == L->pre)   iv = phi->getOperand(k);
+            if (src == L->pre) iv = phi->getOperand(k);
             else if (src == L->latch) lv = phi->getOperand(k);
         }
         if (!iv || !lv) return false;
         initMap[pi] = iv;
-        latMap[pi]  = lv;
+        latMap[pi] = lv;
     }
 
     // Topological sort of chain.
@@ -258,7 +315,7 @@ bool LICM::rotateLoop(Loop* L, Function* f) {
 
     // Emit cloned chain into target block before its terminator.
     auto emitChain = [&](BasicBlock* tgt, std::unordered_map<Value*, Value*> vm)
-                     -> std::pair<bool, Value*> {
+                        -> std::pair<bool, Value*> {
         for (auto* orig : chainOrd) {
             auto* cl = cloneInst(orig, nullptr, vm);
             if (!cl) return {false, nullptr};
@@ -275,22 +332,23 @@ bool LICM::rotateLoop(Loop* L, Function* f) {
         return {true, rc};
     };
 
+    // Check when entering for the first time. -> if(cond)
     auto [pok, pcond] = emitChain(L->pre,   initMap);
     if (!pok) return false;
+    // Check when at the end of each cycle. -> {}while(cond)
     auto [lok, lcond] = emitChain(L->latch, latMap);
     if (!lok) return false;
 
     // Rebuild full vmap (phis + chain clones) for SSA fixup.
     auto buildMap = [&](BasicBlock* tgt, std::unordered_map<Value*, Value*> vm)
                     -> std::unordered_map<Value*, Value*> {
-        std::vector<Instruction*> all(tgt->getInstructions().begin(),
-                                      tgt->getInstructions().end());
+        std::vector<Instruction*> all(tgt->getInstructions().begin(), tgt->getInstructions().end());
         int n = (int)chainOrd.size(), total = (int)all.size();
         for (int i = 0; i < n; i++)
             vm[chainOrd[i]] = all[total - 1 - n + i];
         return vm;
     };
-    auto preMap = buildMap(L->pre,   initMap);
+    auto preMap = buildMap(L->pre, initMap);
     auto latMap2 = buildMap(L->latch, latMap);
 
     // SSA fixup: head no longer dominates exit after rotation.
@@ -318,7 +376,7 @@ bool LICM::rotateLoop(Loop* L, Function* f) {
                     if (phi->getOperand(k + 1) == L->head) { ov = phi->getOperand(k); break; }
                 if (!ov) continue;
                 phi->removeIncomingByBlock(L->head);
-                phi->addIncoming(remap(ov, preMap),  L->pre);
+                phi->addIncoming(remap(ov, preMap), L->pre);
                 phi->addIncoming(remap(ov, latMap2), L->latch);
             }
         }
