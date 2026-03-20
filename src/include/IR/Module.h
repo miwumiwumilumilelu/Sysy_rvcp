@@ -39,6 +39,7 @@ public:
     void addInstruction(Instruction *inst) { InstList.push_back(inst); }
 
     Region* getParent() const { return Parent; }
+    void setParent(Region* r) { Parent = r; }
     Function* getParentFunc() const;
 
     std::string toString() const override;

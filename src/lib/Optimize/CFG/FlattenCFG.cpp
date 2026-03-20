@@ -21,6 +21,7 @@ void FlattenCFG::run() {
 void moveBlocksFromRegion(Region* src, Region* dest) {
     auto& srcBlocks = src->getBlocks();
     auto& destBlocks = dest->getBlocks();
+    for (auto bb : srcBlocks) bb->setParent(dest);
     destBlocks.splice(destBlocks.end(), srcBlocks);
 }
 
