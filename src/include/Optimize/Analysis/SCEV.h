@@ -66,6 +66,7 @@ public:
     bool pos(SE* s); // s > 0
     bool nneg(SE* s); // s >= 0 (non-negative)
     bool distinct(SE* a, SE* b); // address(a) != address(b)
+    bool equal(SE* a, SE* b);
 
 private:
     LoopInfo& LI;

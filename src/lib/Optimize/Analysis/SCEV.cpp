@@ -222,3 +222,29 @@ bool SCEV::distinct(SE* a, SE* b) {
     SE* diff = sub(a, b);
     return pos(diff) || pos(neg(diff));
 }
+
+bool SCEV::equal(SE* a, SE* b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->kind != b->kind) return false;
+    
+    if (auto* ca = dyn_cast<SEConst>(a))
+        return ca->val == cast<SEConst>(b)->val;
+    if (auto* ma = dyn_cast<SEMul>(a)) {
+        auto* mb = cast<SEMul>(b);
+        return ma->factor == mb->factor && equal(ma->base, mb->base);
+    }
+    if (auto* ara = dyn_cast<SEAddRec>(a)) {
+        auto* arb = cast<SEAddRec>(b);
+        return ara->loop == arb->loop && ara->step == arb->step && equal(ara->start, arb->start);
+    }
+    if (auto* aa = dyn_cast<SEAdd>(a)) {
+        auto* ab = cast<SEAdd>(b);
+        if (aa->ops.size() != ab->ops.size()) return false;
+        for (size_t i = 0; i < aa->ops.size(); i++)
+            if (!equal(aa->ops[i], ab->ops[i])) return false;
+        return true;
+    }
+
+    return cast<SEUnknown>(a)->v == cast<SEUnknown>(b)->v;
+}

@@ -100,14 +100,15 @@ bool LICM::runFunc(Function* f) {
         } while (rot);
     }
 
-    // instruction-level LICM, inner-first.
     {
         Dominators dt(f); dt.run();
         LoopInfo li(f, dt);
         SCEV scev(f, li);
         std::function<void(Loop*)> visit = [&](Loop* L) {
             for (auto sub : L->sub) visit(sub);
+            changed |= unifyIndVars(L, scev);
             changed |= hoistLoop(L, dt, scev);
+            changed |= promoteLoop(L, dt);
         };
         for (auto top : li.tops()) visit(top);
     }
@@ -165,14 +166,14 @@ bool LICM::rotateLoop(Loop* L, Function* f) {
     if (!pbr || pbr->getNumOperands() != 1) return false;
     if (cast<BasicBlock>(pbr->getOperand(0)) != L->head) return false;
 
-    // Single-exit: no loop block other than head may branch to exit.
+    // Single-exit: no loop block other than head may branch outside the loop.
     for (auto bb : loopBBs) {
         if (bb == L->head) continue;
         auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
         if (!br) continue;
         for (int k = 0; k < (int)br->getNumOperands(); k++)
             if (auto* s = dyn_cast<BasicBlock>(br->getOperand(k)))
-                if (s == exit) return false;
+                if (!loopBBs.count(s)) return false;
     }
 
     Value* cond = hbr->getOperand(0);
@@ -199,10 +200,15 @@ bool LICM::rotateLoop(Loop* L, Function* f) {
         }
     }
 
-    // Refuse if chain contains memory ops (unsafe to speculate).
-    for (auto* inst : chain)
+    // Refuse if chain contains ops that are unsafe to speculate.
+    for (auto* inst : chain) {
         if (isa<LoadInst>(inst) || isa<StoreInst>(inst) || isa<CallInst>(inst))
             return false;
+        if (isa<BinaryInst>(inst)) {
+            auto op = inst->getOpID();
+            if (op == Instruction::Div || op == Instruction::Mod) return false;
+        }
+    }
 
     // Head must contain only phis + chain + branch.
     for (auto inst : L->head->getInstructions()) {
@@ -614,5 +620,181 @@ bool LICM::hoistLoop(Loop* L, Dominators& dt, SCEV& scev) {
     };
 
     visit(L->head, true);
+    return any;
+}
+
+// Replace duplicate induction variable phis(same SCEV expression), 
+// at the loop header with a single canonical phi.
+bool LICM::unifyIndVars(Loop* L, SCEV& scev) {
+    if (!L->head) return false;
+
+    // Collect all phi nodes at the loop header.
+    std::vector<PhiInst*> phis;
+    for (auto inst : L->head->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+        phis.push_back(phi);
+    }
+    if (phis.size() < 2) return false;
+
+    // Build SCEV for each phi, skipping Unknown (no pattern match).
+    std::vector<SE*> ses;
+    ses.reserve(phis.size());
+    for (auto* phi : phis)
+        ses.push_back(scev.get(phi));
+
+    bool any = false;
+    // For each pair (i, j) with i < j, if equal SCEVs → replace j with i.
+    std::vector<bool> dead(phis.size(), false);
+    for (size_t i = 0; i < phis.size(); i++) {
+        if (dead[i]) continue;
+        if (isa<SEUnknown>(ses[i])) continue;
+        for (size_t j = i + 1; j < phis.size(); j++) {
+            if (dead[j]) continue;
+            if (phis[i]->getType() != phis[j]->getType()) continue;
+            if (!scev.equal(ses[i], ses[j])) continue;
+            // phis[j] has same evolution as phis[i]: replace all uses.
+            phis[j]->replaceAllUsesWith(phis[i]);
+            dead[j] = true;
+            any = true;
+        }
+    }
+
+    // Remove dead phis from the header (back-to-front to preserve iterators).
+    for (int k = (int)phis.size() - 1; k >= 0; k--) {
+        if (!dead[k]) continue;
+        L->head->getInstructions().remove(phis[k]);
+    }
+    return any;
+}
+
+bool LICM::promoteLoop(Loop* L, Dominators& dt) {
+    if (!L->pre || !L->latch || !L->head) return false;
+
+    auto* pbr = dyn_cast<BranchInst>(L->pre->getInstructions().back());
+    if (!pbr || pbr->getNumOperands() != 3) return false;
+    auto* lbr = dyn_cast<BranchInst>(L->latch->getInstructions().back());
+    if (!lbr || lbr->getNumOperands() != 3) return false;
+
+    std::set<BasicBlock*> lbbs(L->blocks.begin(), L->blocks.end());
+
+    // Identify the single exit block (pre and latch must exit to the same block).
+    auto exitOf = [&](BranchInst* br) -> BasicBlock* {
+        auto* t1 = cast<BasicBlock>(br->getOperand(1));
+        auto* t2 = cast<BasicBlock>(br->getOperand(2));
+        return lbbs.count(t1) ? t2 : t1;
+    };
+    BasicBlock* exitBB = exitOf(pbr);
+    if (exitBB != exitOf(lbr)) return false;
+
+    // Single-exit check: no loop block may branch to outside the loop except to exitBB.
+    // Handles break/return inside the loop body (would leave store un-executed).
+    for (auto bb : L->blocks) {
+        auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
+        if (!br) continue;
+        int start = (br->getNumOperands() == 1) ? 0 : 1;
+        for (int k = start; k < (int)br->getNumOperands(); k++) {
+            auto* succ = dyn_cast<BasicBlock>(br->getOperand(k));
+            if (succ && !lbbs.count(succ) && succ != exitBB) return false;
+        }
+    }
+
+    // Check if any call with side effects could alias the promoted address.
+    for (auto bb : L->blocks)
+        for (auto inst : bb->getInstructions())
+            if (auto* c = dyn_cast<CallInst>(inst))
+                if (!isPureFunc(c->getFunction(), purityCache)) return false;
+
+    auto outside = [&](Value* v) -> bool {
+        if (auto* i = dyn_cast<Instruction>(v)) return !L->has(i->getParent());
+        return true;
+    };
+
+    // Collect slots
+    struct Slot { std::vector<LoadInst*> lds; std::vector<StoreInst*> sts; };
+    std::map<Value*, Slot> slots;
+    for (auto bb : L->blocks) {
+        for (auto inst : bb->getInstructions()) {
+            if (auto* ld = dyn_cast<LoadInst>(inst))
+                if (outside(ld->getOperand(0)))
+                    slots[ld->getOperand(0)].lds.push_back(ld);
+            if (auto* st = dyn_cast<StoreInst>(inst))
+                if (outside(st->getOperand(1)))
+                    slots[st->getOperand(1)].sts.push_back(st);
+        }
+    }
+
+    bool any = false;
+    for (auto& [addr, slot] : slots) {
+        if (slot.lds.empty() || slot.sts.size() != 1) continue;
+
+        StoreInst* st = slot.sts[0];
+        Value* sval = st->getOperand(0);
+
+        // Store block must dominate latch so sval is available at latch.
+        BasicBlock* stBB = st->getParent();
+        if (stBB != L->latch && !dt.dominates(stBB, L->latch)) continue;
+
+        // Alias check: no other store or untracked load to the same base object.
+        Value* base = getBaseObject(addr);
+        bool alias = false;
+        for (auto bb : L->blocks) {
+            for (auto inst : bb->getInstructions()) {
+                if (auto* s = dyn_cast<StoreInst>(inst)) {
+                    if (s == st) continue;
+                    if (getBaseObject(s->getOperand(1)) == base) { alias = true; break; }
+                }
+                if (auto* l = dyn_cast<LoadInst>(inst)) {
+                    if (std::find(slot.lds.begin(), slot.lds.end(), l) != slot.lds.end()) continue;
+                    if (getBaseObject(l->getOperand(0)) == base) { alias = true; break; }
+                }
+            }
+            if (alias) break;
+        }
+        if (alias) continue;
+
+        Type* ty = slot.lds[0]->getType();
+
+        // Insert preload in preheader before its branch.
+        auto* preload = new LoadInst(addr, nullptr);
+        preload->setParent(L->pre);
+        { auto& ins = L->pre->getInstructions(); ins.insert(std::prev(ins.end()), preload); }
+
+        // Insert loop header phi: phi(preload[pre], sval[latch]).
+        auto* hphi = new PhiInst(ty, nullptr);
+        hphi->setParent(L->head);
+        hphi->addIncoming(preload, L->pre);
+        hphi->addIncoming(sval, L->latch);
+        L->head->getInstructions().push_front(hphi);
+
+        // Replace all loop loads with hphi; remove the store.
+        for (auto* ld : slot.lds) {
+            ld->replaceAllUsesWith(hphi);
+            ld->getParent()->getInstructions().remove(ld);
+        }
+        st->getParent()->getInstructions().remove(st);
+
+        auto* ephi = new PhiInst(ty, nullptr);
+        ephi->setParent(exitBB);
+        ephi->addIncoming(preload, L->pre);
+        ephi->addIncoming(sval, L->latch);
+        {
+            auto& ins = exitBB->getInstructions();
+            auto it = ins.begin();
+            while (it != ins.end() && isa<PhiInst>(*it)) ++it;
+            ins.insert(it, ephi);
+        }
+
+        auto* estore = new StoreInst(ephi, addr, nullptr);
+        estore->setParent(exitBB);
+        {
+            auto& ins = exitBB->getInstructions();
+            auto it = ins.begin();
+            while (it != ins.end() && isa<PhiInst>(*it)) ++it;
+            ins.insert(it, estore);
+        }
+
+        any = true;
+    }
     return any;
 }

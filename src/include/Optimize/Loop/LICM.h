@@ -21,10 +21,12 @@ private:
     bool runFunc(Function* f);
     bool rotateLoop(Loop* L, Function* f);
     bool hoistLoop(Loop* L, Dominators& dt, SCEV& scev);
-    // Hoist an entire outer-invariant inner loop before the outer loop.
+    // Promote loop-invariant load/store pairs to registers.
+    // Inserts preload before loop, loop phi at header, store at exit.
+    bool promoteLoop(Loop* L, Dominators& dt);
     bool tryHoistSubloop(Loop* outer);
-    // Defined in a block that belongs to outer but not to inner.
     bool isFullyOuterInvariant(Loop* outer, Loop* inner);
+    bool unifyIndVars(Loop* L, SCEV& scev);
 };
 
 }
