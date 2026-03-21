@@ -432,9 +432,18 @@ bool LICM::rotateLoop(Loop* L, Function* f) {
     }
 
     // Rewrite terminators.
-    { auto& ins = L->pre->getInstructions(); ins.erase(std::prev(ins.end())); new BranchInst(pcond, L->head, exit, L->pre); }
-    { auto& ins = L->head->getInstructions(); ins.erase(std::prev(ins.end())); new BranchInst(body, L->head); }
-    { auto& ins = L->latch->getInstructions(); ins.erase(std::prev(ins.end())); new BranchInst(lcond, L->head, exit, L->latch); }
+    // delete before erase: ~User() calls removeUser on each operand,
+    // clearing the old branch from the ICmpInst's UseList so DCE works correctly.
+    auto replaceTerminator = [](BasicBlock* bb, auto makeNew) {
+        auto& ins = bb->getInstructions();
+        auto it = std::prev(ins.end());
+        delete *it;
+        ins.erase(it);
+        makeNew();
+    };
+    replaceTerminator(L->pre, [&]{ new BranchInst(pcond, L->head, exit, L->pre); });
+    replaceTerminator(L->head, [&]{ new BranchInst(body, L->head); });
+    replaceTerminator(L->latch, [&]{ new BranchInst(lcond, L->head, exit, L->latch); });
 
     return true;
 }
