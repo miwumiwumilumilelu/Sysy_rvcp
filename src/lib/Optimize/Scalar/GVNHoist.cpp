@@ -13,7 +13,6 @@ using namespace sysy;
 
 // Safe to execute speculatively (no side effects, no div-by-zero risk).
 static bool isSafe(Instruction* inst) {
-    auto op = inst->getOpID();
     return isa<BinaryInst>(inst) || isa<ICmpInst>(inst) || isa<FCmpInst>(inst) || 
             isa<CastInst>(inst) || isa<GetElementPtrInst>(inst);
 }
