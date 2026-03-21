@@ -7,16 +7,19 @@
 #include "Parse/Parser.h"
 #include "Semant/Semant.h"
 #include "IR/IRGen.h"
-#include "Optimize/FlattenCFG.h"
-#include "Optimize/HighMem2Reg.h"
-#include "Optimize/HighLICM.h"
-#include "Optimize/Dominators.h"
-#include "Optimize/Mem2Reg.h"
-#include "Optimize/ConstantFold.h"
-#include "Optimize/CSE.h"
-#include "Optimize/InstSimplify.h"
-#include "Optimize/SimplifyCFG.h"
-#include "Optimize/DCE.h"
+#include "Optimize/CFG/FlattenCFG.h"
+#include "Optimize/High/HighMem2Reg.h"
+#include "Optimize/High/HighLICM.h"
+#include "Optimize/Analysis/Dominators.h"
+#include "Optimize/Scalar/Mem2Reg.h"
+#include "Optimize/Scalar/ConstantFold.h"
+#include "Optimize/Scalar/CSE.h"
+#include "Optimize/Scalar/GVN.h"
+#include "Optimize/Scalar/GVNHoist.h"
+#include "Optimize/Scalar/InstSimplify.h"
+#include "Optimize/CFG/SimplifyCFG.h"
+#include "Optimize/Scalar/DCE.h"
+#include "Optimize/Loop/LICM.h"
 #include "rv/InstSel.h"
 #include "rv/RegAlloc.h"
 #include "rv/AsmPrinter.h"
@@ -101,9 +104,25 @@ int main(int argc, char **argv) {
         changed = false;
         changed |= ConstantFold(module.get()).run();
         changed |= CSE(module.get()).run();
+        changed |= GVN(module.get()).run();
+        changed |= GVNHoist(module.get()).run();
         changed |= InstSimplify(module.get()).run();
         changed |= SimplifyCFG(module.get()).run();
         changed |= DCE(module.get()).run();
+    }
+
+    while (LICM(module.get()).run()) {
+        bool c = true;
+        while (c) {
+            c = false;
+            c |= ConstantFold(module.get()).run();
+            c |= CSE(module.get()).run();
+            c |= GVN(module.get()).run();
+            c |= GVNHoist(module.get()).run();
+            c |= InstSimplify(module.get()).run();
+            c |= SimplifyCFG(module.get()).run();
+            c |= DCE(module.get()).run();
+        }
     }
 
     if (dumpLIR) {
