@@ -122,6 +122,19 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
             }
         }
     }
+    // load from a const global variable → replace with the initializer constant.
+    else if (auto* ld = dyn_cast<LoadInst>(inst)) {
+        if (auto* gv = dyn_cast<GlobalVariable>(ld->getOperand(0))) {
+            if (gv->isConst()) {
+                Constant* init = gv->getInit();
+                if (isa<ConstantInt>(init) || isa<ConstantFloat>(init)) {
+                    ld->replaceAllUsesWith(init);
+                    currentBB->getInstructions().remove(ld);
+                    return true;
+                }
+            }
+        }
+    }
     // if (true) {
     //     block1;
     // } else {
