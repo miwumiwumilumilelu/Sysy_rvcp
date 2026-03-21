@@ -24,10 +24,10 @@ bool GVN::runFunc(Function* f) {
     dt.run();
 
     std::map<BasicBlock*, std::vector<BasicBlock*>> domCh;
-    for (auto bb : f->getBody()->getBlocks()) {
+    for (auto bb : f->getBody()->getBlocks())
         domCh[bb] = {};
+    for (auto bb : f->getBody()->getBlocks())
         if (auto* idom = dt.getIDom(bb)) domCh[idom].push_back(bb);
-    }
 
     std::map<ExprKey, Instruction*> exprTab;
     std::map<CallKey, Instruction*> callTab;
