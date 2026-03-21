@@ -1,10 +1,12 @@
 #include "Optimize/Scalar/GVNHoist.h"
 #include "Optimize/Scalar/ExprKey.h"
 #include "Optimize/Analysis/Dominators.h"
+#include "Optimize/Analysis/PureFunc.h"
 #include "IR/Instruction.h"
 #include <functional>
 #include <map>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 using namespace sysy;
@@ -31,6 +33,12 @@ static Instruction* cloneToBlock(Instruction* inst, BasicBlock* tgt) {
         cl = new CastInst(op, o(0), inst->getType(), nullptr);
     else if (isa<GetElementPtrInst>(inst))
         cl = new GetElementPtrInst(o(0), o(1), nullptr);
+    else if (auto* call = dyn_cast<CallInst>(inst)) {
+        std::vector<Value*> args;
+        for (int i = 1; i < (int)call->getNumOperands(); i++)
+            args.push_back(call->getOperand(i));
+        cl = new CallInst(call->getFunction(), args, nullptr);
+    }
     if (!cl) return nullptr;
     cl->setParent(tgt);
     auto& ins = tgt->getInstructions();
@@ -52,12 +60,15 @@ bool GVNHoist::runFunc(Function* f) {
     dt.run();
 
     std::map<BasicBlock*, std::vector<BasicBlock*>> domCh;
+
     // LCA needs depth of each node.
     std::map<BasicBlock*, int> depth;
-    for (auto bb : f->getBody()->getBlocks()) {
+    for (auto bb : f->getBody()->getBlocks()) 
         domCh[bb] = {};
-        if (auto* idom = dt.getIDom(bb)) domCh[idom].push_back(bb);
-    }
+    for (auto bb : f->getBody()->getBlocks())
+        if (auto* idom = dt.getIDom(bb)) 
+            domCh[idom].push_back(bb);
+
     std::function<void(BasicBlock*, int)> computeDepth = [&](BasicBlock* bb, int d) {
         depth[bb] = d;
         for (auto ch : domCh[bb]) computeDepth(ch, d + 1);
@@ -86,7 +97,41 @@ bool GVNHoist::runFunc(Function* f) {
         return true;
     };
 
+    // Hoist a group of equivalent instructions to their LCA block.
+    auto hoistGroup = [&](std::vector<Instruction*>& insts, 
+                        std::vector<Instruction*>& toRemove) 
+                        -> bool {
+
+        if (insts.size() < 2) return false;
+
+        std::set<BasicBlock*> blockSet;
+        for (auto inst : insts) blockSet.insert(inst->getParent());
+
+        // All in same block -> CSE handles. Skip.
+        if (blockSet.size() < 2) return false;
+
+        // Find LCA of all blocks.
+        BasicBlock* L = *blockSet.begin();
+        for (auto bb : blockSet) L = lca(L, bb);
+
+        if (!L) return false;
+
+        // LCA is one of the blocks -> GVN handles (dominator case). Skip.
+        if (blockSet.count(L)) return false;
+
+        if (!operandsAvailAt(insts[0], L)) return false;
+
+        auto* hoisted = cloneToBlock(insts[0], L);
+        if (!hoisted) return false;
+        for (auto inst : insts) {
+            inst->replaceAllUsesWith(hoisted);
+            toRemove.push_back(inst);
+        }
+        return true;
+    };
+
     // fix-point iteration
+    std::unordered_map<Function*, bool> purityCache;
     bool anyTotal = false;
     bool changed = true;
     while (changed) {
@@ -94,8 +139,20 @@ bool GVNHoist::runFunc(Function* f) {
 
         // Rebuild groups each iteration since instruction positions changed.
         std::map<ExprKey, std::vector<Instruction*>> groups;
+        std::map<CallKey, std::vector<Instruction*>> callGroups;
+
         for (auto bb : f->getBody()->getBlocks()) {
             for (auto inst : bb->getInstructions()) {
+                if (auto* call = dyn_cast<CallInst>(inst)) {
+                    if (call->getType()->isVoid()) continue;
+                    if (!isPureFunc(call->getFunction(), purityCache)) continue;
+                    CallKey k;
+                    k.push_back((uint64_t)(uintptr_t)call->getFunction());
+                    for (int i = 1; i < (int)call->getNumOperands(); i++)
+                        k.push_back(vnKey(call->getOperand(i)));
+                    callGroups[k].push_back(inst);
+                    continue;
+                }
                 if (!isSafe(inst)) continue;
                 ExprKey k = makeExprKey(inst);
                 if (k == ExprKey{0, 0, 0}) continue;
@@ -105,36 +162,11 @@ bool GVNHoist::runFunc(Function* f) {
 
         std::vector<Instruction*> toRemove;
 
-        for (auto& [key, insts] : groups) {
-            if (insts.size() < 2) continue;
+        for (auto& [key, insts] : groups)
+            if (hoistGroup(insts, toRemove)) changed = anyTotal = true;
 
-            std::set<BasicBlock*> blockSet;
-            for (auto inst : insts) blockSet.insert(inst->getParent());
-            
-            // All insts from groups be in the same block, 
-            // thus CSE handles. Skip.
-            if (blockSet.size() < 2) continue;
-
-            // Find the closest common ancestor of all these blocks through LCA.
-            BasicBlock* L = *blockSet.begin();
-            for (auto bb : blockSet) L = lca(L, bb);
-            if (!L) continue;
-
-            // If the LCA itself is the block of an instance, 
-            // it means there is an instance that dominates all other instances,
-            // thus GVN handles. Skip.
-            if (blockSet.count(L)) continue;
-
-            if (!operandsAvailAt(insts[0], L)) continue;
-
-            auto* hoisted = cloneToBlock(insts[0], L);
-            if (!hoisted) continue;
-            for (auto inst : insts) {
-                inst->replaceAllUsesWith(hoisted);
-                toRemove.push_back(inst);
-            }
-            changed = anyTotal = true;
-        }
+        for (auto& [key, insts] : callGroups)
+            if (hoistGroup(insts, toRemove)) changed = anyTotal = true;
 
         for (auto inst : toRemove)
             inst->getParent()->getInstructions().remove(inst);
