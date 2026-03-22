@@ -1,12 +1,10 @@
 #include "Optimize/Scalar/GVNHoist.h"
 #include "Optimize/Scalar/ExprKey.h"
 #include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/PureFunc.h"
 #include "IR/Instruction.h"
 #include <functional>
 #include <map>
 #include <set>
-#include <unordered_map>
 #include <vector>
 
 using namespace sysy;
@@ -130,7 +128,6 @@ bool GVNHoist::runFunc(Function* f) {
     };
 
     // fix-point iteration
-    std::unordered_map<Function*, bool> purityCache;
     bool anyTotal = false;
     bool changed = true;
     while (changed) {
@@ -138,20 +135,9 @@ bool GVNHoist::runFunc(Function* f) {
 
         // Rebuild groups each iteration since instruction positions changed.
         std::map<ExprKey, std::vector<Instruction*>> groups;
-        std::map<CallKey, std::vector<Instruction*>> callGroups;
 
         for (auto bb : f->getBody()->getBlocks()) {
             for (auto inst : bb->getInstructions()) {
-                if (auto* call = dyn_cast<CallInst>(inst)) {
-                    if (call->getType()->isVoid()) continue;
-                    if (!isPureFunc(call->getFunction(), purityCache)) continue;
-                    CallKey k;
-                    k.push_back((uint64_t)(uintptr_t)call->getFunction());
-                    for (int i = 1; i < (int)call->getNumOperands(); i++)
-                        k.push_back(vnKey(call->getOperand(i)));
-                    callGroups[k].push_back(inst);
-                    continue;
-                }
                 if (!isSafe(inst)) continue;
                 ExprKey k = makeExprKey(inst);
                 if (k == ExprKey{0, 0, 0}) continue;
@@ -162,9 +148,6 @@ bool GVNHoist::runFunc(Function* f) {
         std::vector<Instruction*> toRemove;
 
         for (auto& [key, insts] : groups)
-            if (hoistGroup(insts, toRemove)) changed = anyTotal = true;
-
-        for (auto& [key, insts] : callGroups)
             if (hoistGroup(insts, toRemove)) changed = anyTotal = true;
 
         for (auto inst : toRemove)
