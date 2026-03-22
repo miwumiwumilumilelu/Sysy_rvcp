@@ -1,18 +1,58 @@
 #include "Optimize/Scalar/GVNHoist.h"
 #include "Optimize/Scalar/ExprKey.h"
 #include "Optimize/Analysis/Dominators.h"
+#include "Optimize/Analysis/PureFunc.h"
 #include "IR/Instruction.h"
 #include <functional>
 #include <map>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 using namespace sysy;
 
-// Safe to execute speculatively (no side effects, no div-by-zero risk).
+// Safe to execute speculatively (no side effects).
+// CallInst is excluded here; call hoisting uses isAnticipatable() instead.
 static bool isSafe(Instruction* inst) {
-    return isa<BinaryInst>(inst) || isa<ICmpInst>(inst) || isa<FCmpInst>(inst) || 
+    return isa<BinaryInst>(inst) || isa<ICmpInst>(inst) || isa<FCmpInst>(inst) ||
             isa<CastInst>(inst) || isa<GetElementPtrInst>(inst);
+}
+
+// Return the CFG successors of bb (from its BranchInst terminator).
+static std::vector<BasicBlock*> getSuccessors(BasicBlock* bb) {
+    std::vector<BasicBlock*> succs;
+    auto& insts = bb->getInstructions();
+    if (insts.empty()) return succs;
+    auto* term = insts.back();
+    auto* br = dyn_cast<BranchInst>(term);
+    if (!br) return succs;   
+    if (br->getNumOperands() == 1)
+        succs.push_back(cast<BasicBlock>(br->getOperand(0)));
+    else {
+        succs.push_back(cast<BasicBlock>(br->getOperand(1)));  // ifTrue
+        succs.push_back(cast<BasicBlock>(br->getOperand(2)));  // ifFalse
+    }
+    return succs;
+}
+
+// If the DFS completes without finding any uncovered exit -> anticipatable.
+static bool isAnticipatable(const std::set<BasicBlock*>& callBlocks, BasicBlock* L) {
+    std::set<BasicBlock*> visited;
+    std::vector<BasicBlock*> worklist;
+    for (auto* succ : getSuccessors(L)) {
+        if (visited.insert(succ).second)
+            worklist.push_back(succ);
+    }
+    while (!worklist.empty()) {
+        auto* bb = worklist.back(); worklist.pop_back();
+        if (callBlocks.count(bb)) continue;       // covered — prune this path
+        auto succs = getSuccessors(bb);
+        if (succs.empty()) return false;           // reached exit uncovered
+        for (auto* s : succs)
+            if (visited.insert(s).second)
+                worklist.push_back(s);
+    }
+    return true;
 }
 
 // Clone inst (same operands) into tgt before its terminator.
@@ -128,6 +168,7 @@ bool GVNHoist::runFunc(Function* f) {
     };
 
     // fix-point iteration
+    std::unordered_map<Function*, bool> purityCache;
     bool anyTotal = false;
     bool changed = true;
     while (changed) {
@@ -135,9 +176,20 @@ bool GVNHoist::runFunc(Function* f) {
 
         // Rebuild groups each iteration since instruction positions changed.
         std::map<ExprKey, std::vector<Instruction*>> groups;
+        std::map<CallKey, std::vector<Instruction*>> callGroups;
 
         for (auto bb : f->getBody()->getBlocks()) {
             for (auto inst : bb->getInstructions()) {
+                if (auto* call = dyn_cast<CallInst>(inst)) {
+                    if (call->getType()->isVoid()) continue;
+                    if (!isPureFunc(call->getFunction(), purityCache)) continue;
+                    CallKey k;
+                    k.push_back((uint64_t)(uintptr_t)call->getFunction());
+                    for (int i = 1; i < (int)call->getNumOperands(); i++)
+                        k.push_back(vnKey(call->getOperand(i)));
+                    callGroups[k].push_back(inst);
+                    continue;
+                }
                 if (!isSafe(inst)) continue;
                 ExprKey k = makeExprKey(inst);
                 if (k == ExprKey{0, 0, 0}) continue;
@@ -149,6 +201,27 @@ bool GVNHoist::runFunc(Function* f) {
 
         for (auto& [key, insts] : groups)
             if (hoistGroup(insts, toRemove)) changed = anyTotal = true;
+
+        for (auto& [key, insts] : callGroups) {
+            if (insts.size() < 2) continue;
+            std::set<BasicBlock*> blockSet;
+            for (auto* i : insts) blockSet.insert(i->getParent());
+            if (blockSet.size() < 2) continue;
+            BasicBlock* L = *blockSet.begin();
+            for (auto* bb : blockSet) {
+                BasicBlock* a = L, *b = bb;
+                while (a != b) {
+                    if (!a || !b) { L = nullptr; break; }
+                    if (depth[a] < depth[b]) std::swap(a, b);
+                    a = dt.getIDom(a);
+                }
+                L = a;
+                if (!L) break;
+            }
+            if (!L || blockSet.count(L)) continue;
+            if (!isAnticipatable(blockSet, L)) continue;
+            if (hoistGroup(insts, toRemove)) changed = anyTotal = true;
+        }
 
         for (auto inst : toRemove)
             inst->getParent()->getInstructions().remove(inst);
