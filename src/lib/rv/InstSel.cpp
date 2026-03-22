@@ -580,10 +580,18 @@ void InstSelPass::selectGetElementPtr(GetElementPtrInst* inst, InstSelContext& c
     if (auto* ci = dyn_cast<ConstantInt>(index)) {
         int offset = ci->getValue() * elemSize;
 
-        // index=0（Array-Decay GEP）: alias result to base pointer.
         if (offset == 0) {
-            ctx.valueMap[inst] = baseReg;
-            // isPtr already set on baseReg's vreg above.
+            auto existing_it = ctx.valueMap.find(inst);
+            if (existing_it != ctx.valueMap.end()) {
+                if (existing_it->second != baseReg) {
+                    auto* mvOp = new MvOp(existing_it->second, baseReg);
+                    auto* term = ctx.block->getTerminator();
+                    if (term) ctx.block->insertBefore(term, mvOp);
+                    else ctx.block->append(mvOp);
+                }
+            } else {
+                ctx.valueMap[inst] = baseReg;
+            }
             return;
         }
 
