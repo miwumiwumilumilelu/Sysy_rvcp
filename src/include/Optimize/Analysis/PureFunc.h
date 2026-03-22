@@ -25,9 +25,9 @@ inline bool isPureFunc(Function* f, std::unordered_map<Function*, bool>& cache) 
 
     for (auto bb : f->getBody()->getBlocks()) {
         for (auto inst : bb->getInstructions()) {
-            
-            // Any store makes the function non-pure
-            if (isa<StoreInst>(inst)) {
+
+            // Any store or load (of global/heap memory) makes the function non-pure
+            if (isa<StoreInst>(inst) || isa<LoadInst>(inst)) {
                 cache[f] = false;
                 return false;
             }
