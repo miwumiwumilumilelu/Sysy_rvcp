@@ -26,10 +26,13 @@ inline bool isPureFunc(Function* f, std::unordered_map<Function*, bool>& cache) 
     for (auto bb : f->getBody()->getBlocks()) {
         for (auto inst : bb->getInstructions()) {
 
-            // Any store or load (of global/heap memory) makes the function non-pure
-            if (isa<StoreInst>(inst) || isa<LoadInst>(inst)) {
-                cache[f] = false;
-                return false;
+            for (int i = 0; i < (int)inst->getNumOperands(); i++) {
+                if (auto* gv = dyn_cast<GlobalVariable>(inst->getOperand(i))) {
+                    if (!gv->isConst()) {
+                        cache[f] = false;
+                        return false;
+                    }
+                }
             }
 
             // All Callee are also pure functions (transitive pure)
