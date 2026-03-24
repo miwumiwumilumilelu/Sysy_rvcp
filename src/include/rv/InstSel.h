@@ -23,6 +23,8 @@ public:
     MCFunction* func = nullptr;
     MCBlock* block = nullptr;
     ValueMap valueMap;
+    // Materialized constants.
+    ValueMap constMap;
 
     // Eliminates duplicate slliw/mulw for GEPs sharing the same index in one block.
     std::map<std::pair<VReg, int>, MCOperand> scaledIndexCache;

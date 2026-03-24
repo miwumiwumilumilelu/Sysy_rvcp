@@ -23,19 +23,27 @@ MCOperand InstSelContext::getVReg(Value* v, bool isFloat) {
     };
 
     if (auto* ci = dyn_cast<ConstantInt>(v)) {
+        // Fold integer zero to the hardware zero register, no li needed.
+        if (ci->getValue() == 0) return MCOperand(Reg::zero);
+        auto cit = constMap.find(v);
+        if (cit != constMap.end()) return cit->second;
         auto vreg = newVReg(false);
         insertSafe(new LiOp(vreg, ci->getValue()));
+        constMap[v] = vreg;
         return vreg;
     }
 
     if (auto* cf = dyn_cast<ConstantFloat>(v)) {
         if (cf->getValue() == 0.0f) {
             if (isFloat) {
+                auto cit = constMap.find(v);
+                if (cit != constMap.end()) return cit->second;
                 auto vreg = newVReg(true);
                 insertSafe(new FMvWXOp(vreg, MCOperand(Reg::zero)));
+                constMap[v] = vreg;
                 return vreg;
             } else {
-                return MCOperand(Reg::zero); 
+                return MCOperand(Reg::zero);
             }
         }
     }
@@ -46,13 +54,18 @@ MCOperand InstSelContext::getVReg(Value* v, bool isFloat) {
 
     // ConstantZero (float)：fmv.w.x fd, zero → 0.0f
     if (isa<ConstantZero>(v) && isFloat) {
+        auto cit = constMap.find(v);
+        if (cit != constMap.end()) return cit->second;
         auto vreg = newVReg(true);
         insertSafe(new FMvWXOp(vreg, MCOperand(Reg::zero)));
+        constMap[v] = vreg;
         return vreg;
     }
 
     // bits -> intVReg -> floatVReg
     if (auto* cf = dyn_cast<ConstantFloat>(v)) {
+        auto cit = constMap.find(v);
+        if (cit != constMap.end()) return cit->second;
         float fval = cf->getValue();
         int bits;
         memcpy(&bits, &fval, sizeof(int));
@@ -60,13 +73,17 @@ MCOperand InstSelContext::getVReg(Value* v, bool isFloat) {
         auto vreg   = newVReg(true);
         insertSafe(new LiOp(tmpInt, bits));
         insertSafe(new FMvWXOp(vreg, tmpInt));
+        constMap[v] = vreg;
         return vreg;
     }
 
     // GlobalVariable
     if (auto* gv = dyn_cast<GlobalVariable>(v)) {
+        auto cit = constMap.find(v);
+        if (cit != constMap.end()) return cit->second;
         auto vreg = newVReg(false);
         insertSafe(new LaOp(vreg, gv->getName()));
+        constMap[v] = vreg;
         return vreg;
     }
 
@@ -198,17 +215,13 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
                 }
 
                 if (!trampoline) {
-                    // Check if this is a critical edge: srcMCBlock has a BnezOp that
-                    // jumps to dstMCBlock AND a JOp that falls through to another block.
-                    // We scan backwards from the JOp because previous phi moves may have
-                    // been inserted between the BnezOp and JOp, making prev0 a MvOp.
                     RvOp* term0 = srcMCBlock->getTerminator();
-                    RvOp* bnezOp = nullptr;
+                    RvOp* branchOp = nullptr;
                     if (term0 && term0->opcode == RvOp::JOp) {
                         for (RvOp* op = term0->prev; op != nullptr; op = op->prev) {
-                            if (op->opcode == RvOp::BnezOp &&
+                            if (op->opcode >= RvOp::BeqOp && op->opcode <= RvOp::BgtzOp &&
                                 static_cast<RVInstB*>(op)->target == dstMCBlock->name) {
-                                bnezOp = op;
+                                branchOp = op;
                                 break;
                             }
                             // Stop if we hit another terminator-like op.
@@ -216,19 +229,25 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
                         }
                     }
 
-                    if (bnezOp) {
+                    if (branchOp) {
                         // Create the trampoline now, before any getVReg calls.
                         trampoline = func->createBlock(trampolineName);
                         trampoline->index = static_cast<int>(func->blocks.size() - 1);
                         trampoline->append(new JOp(dstMCBlock->name));
-                        static_cast<RVInstB*>(bnezOp)->target = trampolineName;
-                        // Fix CFG.
-                        srcMCBlock->succs.erase(
-                            std::remove(srcMCBlock->succs.begin(), srcMCBlock->succs.end(), dstMCBlock),
-                            srcMCBlock->succs.end());
-                        dstMCBlock->preds.erase(
-                            std::remove(dstMCBlock->preds.begin(), dstMCBlock->preds.end(), srcMCBlock),
-                            dstMCBlock->preds.end());
+                        static_cast<RVInstB*>(branchOp)->target = trampolineName;
+
+                        if (static_cast<JOp*>(term0)->label == dstMCBlock->name) {
+                            static_cast<JOp*>(term0)->label = trampolineName;
+                        }
+
+                        auto itSrc = std::find(srcMCBlock->succs.begin(), srcMCBlock->succs.end(), dstMCBlock);
+                        if (itSrc != srcMCBlock->succs.end())
+                            srcMCBlock->succs.erase(itSrc);
+                        
+                        auto itDst = std::find(dstMCBlock->preds.begin(), dstMCBlock->preds.end(), srcMCBlock);
+                        if (itDst != dstMCBlock->preds.end())
+                            dstMCBlock->preds.erase(itDst);
+
                         srcMCBlock->addSucc(trampoline);
                         trampoline->addSucc(dstMCBlock);
                     }
@@ -237,6 +256,9 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
                 // Direct ctx.block to the insertion block so getVReg inserts there.
                 MCBlock* insertBlock = trampoline ? trampoline : srcMCBlock;
                 ctx.block = insertBlock;
+
+                ctx.constMap.clear();
+                ctx.scaledIndexCache.clear();
 
                 // Build mvOp
                 RvOp* mvOp = nullptr;
@@ -276,6 +298,7 @@ void InstSelPass::selectBasicBlock(BasicBlock* irBB, InstSelContext& ctx) {
     auto* block = ctx.func->createBlock(ctx.func->name + "." + irBB->getName());
     ctx.block = block;
     ctx.scaledIndexCache.clear();
+    ctx.constMap.clear();
 
     for (auto* inst : irBB->getInstructions()) {
         selectInstruction(inst, ctx);
@@ -440,6 +463,29 @@ void InstSelPass::selectDiv(BinaryInst* inst, InstSelContext& ctx) {
     auto* lhs = inst->getOperand(0);
     auto* rhs = inst->getOperand(1);
     auto rd = ctx.getVReg(inst, false);
+
+    // Cannot directly use right shift to replace div,
+    // because -3 >> 1 == -2, but -3 / 2 == -1.
+    // So we need to add Bias 2^k - 1 for x < 0 case.
+    // (x + (x<0 ? 2^k - 1 : 0)) >> k
+    if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
+        int v = ci->getValue();
+        if (v > 1 && (v & (v - 1)) == 0) {
+            int k = __builtin_ctz(static_cast<unsigned>(v));
+            auto rs = ctx.getVReg(lhs, false);
+            // adj = (x >> 31) >> (32-k); (x + adj) >> k
+            auto sign = ctx.newVReg(false);
+            ctx.block->append(new SraiwOp(sign, rs, 31));
+            auto adj = ctx.newVReg(false);
+            ctx.block->append(new SrliwOp(adj, sign, 32 - k));
+            auto xadj = ctx.newVReg(false);
+            // rs + adj
+            ctx.block->append(new AddwOp(xadj, rs, adj));
+            ctx.block->append(new SraiwOp(rd, xadj, k));
+            return;
+        }
+    }
+
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
     ctx.block->append(new DivwOp(rd, rs1, rs2));
@@ -449,6 +495,39 @@ void InstSelPass::selectMod(BinaryInst* inst, InstSelContext& ctx) {
     auto* lhs = inst->getOperand(0);
     auto* rhs = inst->getOperand(1);
     auto rd  = ctx.getVReg(inst, false);
+
+    // adj = (x>>31) >> (32-k);  
+    // t = (x+adj) & (2^k-1);  
+    // t - adj
+    if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
+        int v = ci->getValue();
+        if (v > 1 && (v & (v - 1)) == 0) {
+            int k = __builtin_ctz(static_cast<unsigned>(v));
+            int mask = v - 1;
+            auto rs = ctx.getVReg(lhs, false);
+            // adj = (rs >> 31) >> (32 - k)
+            auto sign = ctx.newVReg(false);
+            ctx.block->append(new SraiwOp(sign, rs, 31));
+            auto adj = ctx.newVReg(false);
+            ctx.block->append(new SrliwOp(adj, sign, 32 - k));
+            // rs + adj
+            auto xadj = ctx.newVReg(false);
+            ctx.block->append(new AddwOp(xadj, rs, adj));
+            auto masked = ctx.newVReg(false);
+            if (mask <= 2047) {
+                ctx.block->append(new AndiOp(masked, xadj, mask));
+            } else {
+                // mask too large for 12-bit imm: use li + and
+                auto mReg = ctx.newVReg(false);
+                ctx.block->append(new LiOp(mReg, mask));
+                ctx.block->append(new AndOp(masked, xadj, mReg));
+            }
+            // masked - adj
+            ctx.block->append(new SubwOp(rd, masked, adj));
+            return;
+        }
+    }
+
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
     ctx.block->append(new RemwOp(rd, rs1, rs2));
@@ -509,7 +588,7 @@ void InstSelPass::selectAlloca(AllocaInst* inst, InstSelContext& ctx) {
 
     if (!inst->getAllocatedType()) return;
     int bytes = typeByteSize(inst->getAllocatedType());
-    bytes = (bytes + 3) & ~3;
+    bytes = (bytes + 7) & ~7;
 
     int localOff = ctx.func->allocaSize;
     ctx.func->allocaSize += bytes;
@@ -673,6 +752,17 @@ void InstSelPass::selectFPToSI(CastInst* inst, InstSelContext& ctx) {
 }
 
 void InstSelPass::selectICmp(ICmpInst* inst, InstSelContext& ctx) {
+    // Check if the comparison is used only by a branch.
+    // If so, we can skip.
+    {
+        const auto& users = inst->getUsers();
+        bool onlyBranch = !users.empty();
+        for (auto* u : users) {
+            if (!isa<BranchInst>(u)) { onlyBranch = false; break; }
+        }
+        if (onlyBranch) return;
+    }
+
     auto* lhs = inst->getOperand(0);
     auto* rhs = inst->getOperand(1);
     auto pred = inst->getPredicate();
@@ -818,10 +908,37 @@ void InstSelPass::selectBranch(BranchInst* inst, InstSelContext& ctx) {
         auto* cond = inst->getOperand(0);
         auto* ifTrue = static_cast<BasicBlock*>(inst->getOperand(1));
         auto* ifFalse = static_cast<BasicBlock*>(inst->getOperand(2));
+        std::string trueLabel  = ctx.func->name + "." + ifTrue->getName();
+        std::string falseLabel = ctx.func->name + "." + ifFalse->getName();
 
+        if (auto* icmp = dyn_cast<ICmpInst>(cond)) {
+            auto* lhs = icmp->getOperand(0);
+            auto* rhs = icmp->getOperand(1);
+            auto pred = icmp->getPredicate();
+
+            auto isIntZero = [](Value* v) -> bool {
+                if (isa<ConstantZero>(v)) return true;
+                if (auto* ci = dyn_cast<ConstantInt>(v)) return ci->getValue() == 0;
+                return false;
+            };
+
+            auto rs1 = ctx.getVReg(lhs, false);
+            auto rs2 = ctx.getVReg(rhs, false);
+            switch (pred) {
+                case ICmpInst::EQ:  ctx.block->append(new BeqOp(rs1, rs2, trueLabel)); break;
+                case ICmpInst::NE:  ctx.block->append(new BneOp(rs1, rs2, trueLabel)); break;
+                case ICmpInst::SLT: ctx.block->append(new BltOp(rs1, rs2, trueLabel)); break;
+                case ICmpInst::SGT: ctx.block->append(new BltOp(rs2, rs1, trueLabel)); break;
+                case ICmpInst::SLE: ctx.block->append(new BgeOp(rs2, rs1, trueLabel)); break;
+                case ICmpInst::SGE: ctx.block->append(new BgeOp(rs1, rs2, trueLabel)); break;
+                default: ctx.block->append(new BnezOp(ctx.getVReg(cond, false), trueLabel)); break;
+            }
+            ctx.block->append(new JOp(falseLabel));
+            return;
+        }
         auto condReg = ctx.getVReg(cond, false);
-        ctx.block->append(new BnezOp(condReg, ctx.func->name + "." + ifTrue->getName()));
-        ctx.block->append(new JOp(ctx.func->name + "." + ifFalse->getName()));
+        ctx.block->append(new BnezOp(condReg, trueLabel));
+        ctx.block->append(new JOp(falseLabel));
     }
 }
 
