@@ -910,12 +910,6 @@ void InstSelPass::selectBranch(BranchInst* inst, InstSelContext& ctx) {
             auto* rhs = icmp->getOperand(1);
             auto pred = icmp->getPredicate();
 
-            auto isIntZero = [](Value* v) -> bool {
-                if (isa<ConstantZero>(v)) return true;
-                if (auto* ci = dyn_cast<ConstantInt>(v)) return ci->getValue() == 0;
-                return false;
-            };
-
             auto rs1 = ctx.getVReg(lhs, false);
             auto rs2 = ctx.getVReg(rhs, false);
             switch (pred) {
