@@ -194,6 +194,7 @@ void FlattenCFG::handleIf(IfInst* inst, BasicBlock* currentBB, BasicBlock* merge
     }
 
     moveBlocksFromRegion(thenRegion, parentRegion);
+    for (int i = 0; i < inst->getNumOperands(); i++) inst->setOperand(i, nullptr);
     currentBB->getInstructions().remove(inst);
 }
 
@@ -268,5 +269,6 @@ void FlattenCFG::handleWhile(WhileInst* inst, BasicBlock* currentBB, BasicBlock*
 
     moveBlocksFromRegion(condRegion, parentRegion);
     moveBlocksFromRegion(bodyRegion, parentRegion);
+    for (int i = 0; i < inst->getNumOperands(); i++) inst->setOperand(i, nullptr);
     currentBB->getInstructions().remove(inst);
 }

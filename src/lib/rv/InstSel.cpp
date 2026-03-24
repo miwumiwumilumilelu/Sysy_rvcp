@@ -850,9 +850,7 @@ void InstSelPass::selectICmp(ICmpInst* inst, InstSelContext& ctx) {
             auto tmp = ctx.newVReg(false);
             bool le = (pred == ICmpInst::SLE);
             ctx.block->append(new SltOp(tmp, le ? rs2 : rs1, le ? rs1 : rs2));
-            auto one = ctx.newVReg(false);
-            ctx.block->append(new LiOp(one, 1));
-            ctx.block->append(new XorOp(rd, tmp, one));
+            ctx.block->append(new XoriOp(rd, tmp, 1));
             break;
         }
     }
@@ -874,9 +872,7 @@ void InstSelPass::selectFCmp(FCmpInst* inst, InstSelContext& ctx) {
         case FCmpInst::ONE: {
             auto tmp = ctx.newVReg(false);
             ctx.block->append(new FEQSOp(tmp, fs1, fs2));
-            auto one = ctx.newVReg(false);
-            ctx.block->append(new LiOp(one, 1));
-            ctx.block->append(new XorOp(rd, tmp, one));
+            ctx.block->append(new XoriOp(rd, tmp, 1));
             break;
         }
         case FCmpInst::OLT:
@@ -890,9 +886,7 @@ void InstSelPass::selectFCmp(FCmpInst* inst, InstSelContext& ctx) {
             auto tmp = ctx.newVReg(false);
             bool le = (pred == FCmpInst::OLE);
             ctx.block->append(new FLTSOp(tmp, le ? fs2 : fs1, le ? fs1 : fs2));
-            auto one = ctx.newVReg(false);
-            ctx.block->append(new LiOp(one, 1));
-            ctx.block->append(new XorOp(rd, tmp, one));
+            ctx.block->append(new XoriOp(rd, tmp, 1));
             break;
         }
     }

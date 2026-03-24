@@ -31,7 +31,7 @@ constexpr VReg InvalidVReg = 0;
 
 #define RV_INSTRUCTIONS \
     X(Addi) X(Add) X(Addw) X(Subw) X(Mulw) X(Divw) X(Remw) \
-    X(Sll) X(Srl) X(Sra) X(Slliw) X(Srliw) X(Sraiw) X(Andi) \
+    X(Sll) X(Srl) X(Sra) X(Slliw) X(Srliw) X(Sraiw) X(Andi) X(Xori) \
     X(And) X(Or) X(Xor) X(Slt) X(Sltu) X(Sltiu) X(Slti) \
     X(FAddS) X(FSubS) X(FMulS) X(FDivS) \
     /* call @sqrt(float %a) -> FSqrtS */ \
@@ -222,6 +222,7 @@ class SlliwOp : public RVInstI { public: SlliwOp(MCOperand d, MCOperand s, int i
 class SrliwOp : public RVInstI { public: SrliwOp(MCOperand d, MCOperand s, int i) : RVInstI(RvOp::SrliwOp, "srliw", d, s, i) {} };
 class SraiwOp : public RVInstI { public: SraiwOp(MCOperand d, MCOperand s, int i) : RVInstI(RvOp::SraiwOp, "sraiw", d, s, i) {} };
 class AndiOp  : public RVInstI { public: AndiOp (MCOperand d, MCOperand s, int i) : RVInstI(RvOp::AndiOp,  "andi",  d, s, i) {} };
+class XoriOp  : public RVInstI { public: XoriOp (MCOperand d, MCOperand s, int i) : RVInstI(RvOp::XoriOp,  "xori",  d, s, i) {} };
 class FAddSOp : public RVInstR { public: FAddSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FAddSOp, "fadd.s", d, s1, s2) {} };
 class FSubSOp : public RVInstR { public: FSubSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FSubSOp, "fsub.s", d, s1, s2) {} };
 class FMulSOp : public RVInstR { public: FMulSOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::FMulSOp, "fmul.s", d, s1, s2) {} };
