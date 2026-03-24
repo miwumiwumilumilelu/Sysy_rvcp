@@ -228,7 +228,8 @@ void HighLICM::processWhile(WhileInst* wi) {
     bool changed = true;
     while (changed) {
         changed = false;
-        for (Region* region : {wi->getBodyRegion(), wi->getCondRegion()}) {
+        // fix emit "br null" (the while(1) bug).
+        for (Region* region : {wi->getBodyRegion()}) {
             for (auto bb : region->getBlocks()) {
                 auto& insts = bb->getInstructions();
                 for (auto it = insts.begin(); it != insts.end(); ) {
