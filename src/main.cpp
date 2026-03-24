@@ -22,6 +22,7 @@
 #include "Optimize/Loop/LICM.h"
 #include "rv/InstSel.h"
 #include "rv/RegAlloc.h"
+#include "rv/MCPeephole.h"
 #include "rv/AsmPrinter.h"
 
 using namespace sysy;
@@ -135,6 +136,11 @@ int main(int argc, char **argv) {
     RegAlloc regalloc;
     for (auto& mcFunc : mcFuncs) {
         regalloc.run(mcFunc.get());
+    }
+
+    MCPeepholePass peephole;
+    for (auto& mcFunc : mcFuncs) {
+        peephole.run(mcFunc.get());
     }
 
     // Emit final assembly via AsmPrinter (handles .text / .data / .bss).
