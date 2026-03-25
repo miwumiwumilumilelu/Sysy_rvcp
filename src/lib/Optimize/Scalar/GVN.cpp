@@ -1,8 +1,6 @@
 #include "Optimize/Scalar/GVN.h"
 #include "Optimize/Scalar/ExprKey.h"
 #include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/LoopInfo.h"
-#include "Optimize/Analysis/SCEV.h"
 #include "Optimize/Analysis/PureFunc.h"
 #include "Optimize/Analysis/AliasAnalysis.h"
 #include "IR/Instruction.h"
@@ -15,21 +13,21 @@ using namespace sysy;
 
 // Remove load from loadtab.
 static void killAlias(std::map<Value*, Value*>& tab, Value* storePtr,
-                      const AliasAnalysis& aa, SCEV& scev) {
+                      const AliasAnalysis& aa) {
     for (auto it = tab.begin(); it != tab.end(); )
-        it = aa.mayAlias(it->first, storePtr, &scev) ? tab.erase(it) : ++it;
+        it = aa.mayAlias(it->first, storePtr) ? tab.erase(it) : ++it;
 }
 
 using PtrSet = std::set<Value*>;
 
 static PtrSet blockTransfer(BasicBlock* bb, PtrSet avail,
-                            const AliasAnalysis& aa, SCEV& scev,
+                            const AliasAnalysis& aa,
                             std::unordered_map<Function*, bool>& purityCache) {
     for (auto inst : bb->getInstructions()) {
         if (auto* st = dyn_cast<StoreInst>(inst)) {
             Value* p = st->getOperand(1);
             for (auto it = avail.begin(); it != avail.end(); )
-                it = aa.mayAlias(*it, p, &scev) ? avail.erase(it) : ++it;
+                it = aa.mayAlias(*it, p) ? avail.erase(it) : ++it;
         } else if (auto* ld = dyn_cast<LoadInst>(inst)) {
             avail.insert(ld->getOperand(0));
         } else if (auto* call = dyn_cast<CallInst>(inst)) {
@@ -41,7 +39,7 @@ static PtrSet blockTransfer(BasicBlock* bb, PtrSet avail,
 }
 
 static std::map<BasicBlock*, PtrSet> computeAvailIn(Function* f, Dominators& dt,
-                                    const AliasAnalysis& aa, SCEV& scev,
+                                    const AliasAnalysis& aa,
                                     std::unordered_map<Function*, bool>& purityCache) {
     // Build RPO via post-order DFS.
     std::vector<BasicBlock*> rpo;
@@ -80,7 +78,7 @@ static std::map<BasicBlock*, PtrSet> computeAvailIn(Function* f, Dominators& dt,
                     newIn = std::move(tmp);
                 }
             }
-            auto newOut = blockTransfer(bb, newIn, aa, scev, purityCache);
+            auto newOut = blockTransfer(bb, newIn, aa, purityCache);
             if (availIn.find(bb) == availIn.end() ||
                 availIn[bb] != newIn || availOut[bb] != newOut) {
                 availIn[bb] = newIn;
@@ -114,9 +112,7 @@ bool GVN::runFunc(Function* f) {
         if (auto* idom = dt.getIDom(bb)) domCh[idom].push_back(bb);
 
     AliasAnalysis aa;
-    LoopInfo li(f, dt);
-    SCEV scev(f, li);
-    auto loadAvail = computeAvailIn(f, dt, aa, scev, purityCache);
+    auto loadAvail = computeAvailIn(f, dt, aa, purityCache);
 
     std::map<ExprKey, Instruction*> exprTab;
     std::map<CallKey, Instruction*> callTab;
@@ -144,7 +140,7 @@ bool GVN::runFunc(Function* f) {
             if (op == Instruction::Store) {
                 Value* ptr = inst->getOperand(1);
                 Value* val = inst->getOperand(0);
-                killAlias(loadTab, ptr, aa, scev);
+                killAlias(loadTab, ptr, aa);
                 loadTab[ptr] = val;
                 continue;
             }
