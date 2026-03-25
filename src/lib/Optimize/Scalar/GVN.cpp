@@ -186,6 +186,23 @@ bool GVN::runFunc(Function* f) {
             }
         }
 
+        // Resolve replacement chains: if rep is itself being replaced,
+        // follow the chain to the final value to avoid ghost instructions.
+        //
+        // %x = load %p
+        // %y = load %p toReplace.push_back({%y, %x})
+        // store %y, %q bug here: loadTab[%q] = %y, but %y should be replaced with %x.
+        // %z = load %q
+        // return %z
+        //
+        // Here, %z should be replaced with %x, not %y.
+        {
+            std::unordered_map<Value*, Value*> repMap;
+            for (auto& [old, rep] : toReplace) repMap[old] = rep;
+            for (auto& [old, rep] : toReplace) {
+                while (repMap.count(rep)) rep = repMap[rep];
+            }
+        }
         for (auto& [old, rep] : toReplace) {
             old->replaceAllUsesWith(rep);
             bb->getInstructions().remove(old);
