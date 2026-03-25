@@ -1,13 +1,97 @@
 #include "Optimize/Scalar/GVN.h"
 #include "Optimize/Scalar/ExprKey.h"
 #include "Optimize/Analysis/Dominators.h"
+#include "Optimize/Analysis/LoopInfo.h"
+#include "Optimize/Analysis/SCEV.h"
 #include "Optimize/Analysis/PureFunc.h"
+#include "Optimize/Analysis/AliasAnalysis.h"
 #include "IR/Instruction.h"
 #include <functional>
 #include <map>
+#include <set>
 #include <vector>
 
 using namespace sysy;
+
+// Remove load from loadtab.
+static void killAlias(std::map<Value*, Value*>& tab, Value* storePtr,
+                      const AliasAnalysis& aa, SCEV& scev) {
+    for (auto it = tab.begin(); it != tab.end(); )
+        it = aa.mayAlias(it->first, storePtr, &scev) ? tab.erase(it) : ++it;
+}
+
+using PtrSet = std::set<Value*>;
+
+static PtrSet blockTransfer(BasicBlock* bb, PtrSet avail,
+                            const AliasAnalysis& aa, SCEV& scev,
+                            std::unordered_map<Function*, bool>& purityCache) {
+    for (auto inst : bb->getInstructions()) {
+        if (auto* st = dyn_cast<StoreInst>(inst)) {
+            Value* p = st->getOperand(1);
+            for (auto it = avail.begin(); it != avail.end(); )
+                it = aa.mayAlias(*it, p, &scev) ? avail.erase(it) : ++it;
+        } else if (auto* ld = dyn_cast<LoadInst>(inst)) {
+            avail.insert(ld->getOperand(0));
+        } else if (auto* call = dyn_cast<CallInst>(inst)) {
+            if (!isPureFunc(call->getFunction(), purityCache))
+                avail.clear();
+        }
+    }
+    return avail;
+}
+
+static std::map<BasicBlock*, PtrSet> computeAvailIn(Function* f, Dominators& dt,
+                                    const AliasAnalysis& aa, SCEV& scev,
+                                    std::unordered_map<Function*, bool>& purityCache) {
+    // Build RPO via post-order DFS.
+    std::vector<BasicBlock*> rpo;
+    {
+        std::set<BasicBlock*> vis;
+
+        std::function<void(BasicBlock*)> dfs = [&](BasicBlock* bb) {
+            vis.insert(bb);
+            for (auto* s : dt.getSuccessors(bb))
+                if (!vis.count(s)) dfs(s);
+            rpo.push_back(bb);
+        };
+
+        dfs(f->getEntryBlock());
+        std::reverse(rpo.begin(), rpo.end());
+    }
+
+    std::map<BasicBlock*, PtrSet> availIn, availOut;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (auto* bb : rpo) {
+            const auto& preds = dt.getPredecessors(bb);
+            PtrSet newIn;
+            bool first = true;
+            // Compute newIn by intersecting all preds' availOut.
+            for (auto* pred : preds) {
+                auto it = availOut.find(pred);
+                // If pred is unreachable, skip it.
+                if (it == availOut.end()) continue;
+                if (first) { newIn = it->second; first = false; }
+                else {
+                    PtrSet tmp;
+                    for (auto* p : newIn)
+                        if (it->second.count(p)) tmp.insert(p);
+                    newIn = std::move(tmp);
+                }
+            }
+            auto newOut = blockTransfer(bb, newIn, aa, scev, purityCache);
+            if (availIn.find(bb) == availIn.end() ||
+                availIn[bb] != newIn || availOut[bb] != newOut) {
+                availIn[bb] = newIn;
+                availOut[bb] = newOut;
+                changed = true;
+            }
+        }
+    }
+    // Record safe load points for each block.
+    return availIn;
+}
 
 bool GVN::run() {
     bool any = false;
@@ -29,8 +113,14 @@ bool GVN::runFunc(Function* f) {
     for (auto bb : f->getBody()->getBlocks())
         if (auto* idom = dt.getIDom(bb)) domCh[idom].push_back(bb);
 
+    AliasAnalysis aa;
+    LoopInfo li(f, dt);
+    SCEV scev(f, li);
+    auto loadAvail = computeAvailIn(f, dt, aa, scev, purityCache);
+
     std::map<ExprKey, Instruction*> exprTab;
     std::map<CallKey, Instruction*> callTab;
+    std::map<Value*, Value*> loadTab;
     bool any = false;
 
     std::function<void(BasicBlock*)> visit = [&](BasicBlock* bb) {
@@ -38,15 +128,42 @@ bool GVN::runFunc(Function* f) {
         std::vector<CallKey> newCall;
         std::vector<std::pair<Instruction*, Value*>> toReplace;
 
+        auto savedLoadTab = loadTab;
+        {
+            auto& avail = loadAvail[bb];
+            for (auto it = loadTab.begin(); it != loadTab.end(); )
+                it = avail.count(it->first) ? ++it : loadTab.erase(it);
+        }
+
         for (auto inst : bb->getInstructions()) {
             auto op = inst->getOpID();
-            if (op == Instruction::Phi || op == Instruction::Br  || op == Instruction::Ret  ||
-                op == Instruction::Store|| op == Instruction::Load|| op == Instruction::Alloca)
+            if (op == Instruction::Phi || op == Instruction::Br ||
+                op == Instruction::Ret || op == Instruction::Alloca)
                 continue;
 
+            if (op == Instruction::Store) {
+                Value* ptr = inst->getOperand(1);
+                Value* val = inst->getOperand(0);
+                killAlias(loadTab, ptr, aa, scev);
+                loadTab[ptr] = val;
+                continue;
+            }
+
+            if (op == Instruction::Load) {
+                Value* ptr = inst->getOperand(0);
+                auto it = loadTab.find(ptr);
+                if (it != loadTab.end()) {
+                    toReplace.push_back({inst, it->second});
+                } else {
+                    loadTab[ptr] = inst;
+                }
+                continue;
+            }
+
             if (auto* call = dyn_cast<CallInst>(inst)) {
-                if (call->getType()->isVoid() || !isPureFunc(call->getFunction(), purityCache))
-                    continue;
+                bool pure = isPureFunc(call->getFunction(), purityCache);
+                if (!pure) loadTab.clear(); // impure call may modify memory
+                if (call->getType()->isVoid() || !pure) continue;
                 CallKey k;
                 k.push_back((uint64_t)(uintptr_t)call->getFunction());
                 for (int i = 1; i < (int)call->getNumOperands(); i++)
@@ -81,10 +198,10 @@ bool GVN::runFunc(Function* f) {
 
         for (auto child : domCh[bb]) visit(child);
 
-        // DFS
-        // Restore scope: remove entries added in this block.
+        // Restore domtree DFS scope.
         for (auto& k : newExpr) exprTab.erase(k);
         for (auto& k : newCall) callTab.erase(k);
+        loadTab = savedLoadTab;
     };
 
     visit(f->getEntryBlock());
