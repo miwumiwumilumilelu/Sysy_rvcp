@@ -23,16 +23,26 @@ using PtrSet = std::set<Value*>;
 static PtrSet blockTransfer(BasicBlock* bb, PtrSet avail,
                             const AliasAnalysis& aa,
                             std::unordered_map<Function*, bool>& purityCache) {
+    PtrSet killedHere;
     for (auto inst : bb->getInstructions()) {
         if (auto* st = dyn_cast<StoreInst>(inst)) {
             Value* p = st->getOperand(1);
             for (auto it = avail.begin(); it != avail.end(); )
                 it = aa.mayAlias(*it, p) ? avail.erase(it) : ++it;
+            killedHere.insert(p);
         } else if (auto* ld = dyn_cast<LoadInst>(inst)) {
-            avail.insert(ld->getOperand(0));
+            Value* p = ld->getOperand(0);
+            // Only mark available if p has not been stored to in this block.
+            bool fresh = true;
+            for (auto* k : killedHere)
+                if (aa.mayAlias(k, p)) { fresh = false; break; }
+            if (fresh)
+                avail.insert(p);
         } else if (auto* call = dyn_cast<CallInst>(inst)) {
-            if (!isPureFunc(call->getFunction(), purityCache))
+            if (!isPureFunc(call->getFunction(), purityCache)) {
                 avail.clear();
+                killedHere.clear();
+            }
         }
     }
     return avail;
