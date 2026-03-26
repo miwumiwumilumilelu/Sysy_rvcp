@@ -150,11 +150,38 @@ bool MCPeepholePass::eliminateTrivialBlocks(MCFunction* func) {
     return changed;
 }
 
+// bb11:
+//    ...
+//   j bb12;
+// bb12:
+//
+// becomes:
+//
+// bb11:
+//    ...
+// bb12:
+static bool eliminateFallthroughs(MCFunction* func) {
+    bool changed = false;
+    auto& blocks = func->blocks;
+    for (auto it = blocks.begin(); it != blocks.end(); ++it) {
+        auto next = std::next(it);
+        if (next == blocks.end()) continue;
+        RvOp* last = (*it)->tail;
+        if (!last || last->opcode != RvOp::JOp) continue;
+        if (static_cast<JOp*>(last)->label == (*next)->name) {
+            (*it)->erase(last);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 void MCPeepholePass::run(MCFunction* func) {
     for (auto& b : func->blocks)
         runOnBlock(b.get());
     // Defend chained trampolines.
     while (eliminateTrivialBlocks(func)) {}
+    eliminateFallthroughs(func);
 }
 
 } // namespace rv
