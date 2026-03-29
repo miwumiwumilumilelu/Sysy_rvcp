@@ -31,6 +31,12 @@ static PtrSet blockTransfer(BasicBlock* bb, PtrSet avail,
                 it = aa.mayAlias(*it, p) ? avail.erase(it) : ++it;
             killedHere.insert(p);
         } else if (auto* ld = dyn_cast<LoadInst>(inst)) {
+            // Only mark const gv loads available.
+            if (auto gvld = dyn_cast<GlobalVariable>(ld->getOperand(0))) {
+                if (!gvld->isConst()) {
+                    continue;
+                }
+            }
             Value* p = ld->getOperand(0);
             // Only mark available if p has not been stored to in this block.
             bool fresh = true;
