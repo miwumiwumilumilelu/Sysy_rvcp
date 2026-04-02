@@ -19,7 +19,6 @@ private:
     std::unordered_map<Function*, bool> readOnlyCache;
 
     bool runFunc(Function* f);
-    bool rotateLoop(Loop* L, Function* f);
     bool hoistLoop(Loop* L, Dominators& dt, SCEV& scev);
     // Promote loop-invariant load/store pairs to registers.
     // Inserts preload before loop, loop phi at header, store at exit.

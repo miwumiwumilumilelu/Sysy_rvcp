@@ -1,4 +1,5 @@
 #include "Optimize/Loop/LICM.h"
+#include "Optimize/Loop/LoopRotate.h"
 #include "Optimize/Analysis/Dominators.h"
 #include "Optimize/Analysis/PureFunc.h"
 #include "IR/Instruction.h"
@@ -8,6 +9,28 @@
 #include <unordered_map>
 
 using namespace sysy;
+
+// Get CFG pred list for targetBB in the same parent region.
+static std::vector<BasicBlock*> getActualPredecessors(BasicBlock* target) {
+    std::vector<BasicBlock*> preds;
+    if (!target || !target->getParent()) return preds;
+
+    std::set<BasicBlock*> uniq;
+    for (auto bb : target->getParent()->getBlocks()) {
+        if (bb->getInstructions().empty()) continue;
+        auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
+        if (!br) continue;
+
+        int begin = br->getNumOperands() == 1 ? 0 : 1;
+        for (int i = begin; i < br->getNumOperands(); ++i) {
+            if (dyn_cast<BasicBlock>(br->getOperand(i)) == target &&
+                uniq.insert(bb).second) {
+                preds.push_back(bb);
+            }
+        }
+    }
+    return preds;
+}
 
 // Follow GEP/phi chains to the root pointer (global, alloca, or arg).
 static Value* getBaseObject(Value* v, std::set<Value*>& vis) {
@@ -30,7 +53,7 @@ static Value* getBaseObject(Value* v) {
     return getBaseObject(v, vis);
 }
 
-// True iff f contains no stores (transitively). Conservative for external fns.
+// True if f contains no stores (transitively). Conservative for external fns.
 static bool isReadOnlyFunc(Function* f, std::unordered_map<Function*, bool>& cache) {
     if (!f) return false;
     auto* body = f->getBody();
@@ -50,26 +73,6 @@ static bool isReadOnlyFunc(Function* f, std::unordered_map<Function*, bool>& cac
     return true;
 }
 
-// Clone inst into target before its terminator, remapping operands via vmap.
-static Instruction* cloneInst(Instruction* inst, BasicBlock* tgt, const std::unordered_map<Value*, Value*>& vmap) {
-    auto remap = [&](Value* v) -> Value* {
-        auto it = vmap.find(v);
-        return it != vmap.end() ? it->second : v;
-    };
-    auto op = inst->getOpID();
-    if (isa<BinaryInst>(inst))
-        return new BinaryInst(op, remap(inst->getOperand(0)), remap(inst->getOperand(1)), tgt);
-    if (auto* ic = dyn_cast<ICmpInst>(inst))
-        return new ICmpInst(ic->getPredicate(), remap(inst->getOperand(0)), remap(inst->getOperand(1)), tgt);
-    if (auto* fc = dyn_cast<FCmpInst>(inst))
-        return new FCmpInst(fc->getPredicate(), remap(inst->getOperand(0)), remap(inst->getOperand(1)), tgt);
-    if (isa<CastInst>(inst))
-        return new CastInst(op, remap(inst->getOperand(0)), inst->getType(), tgt);
-    if (isa<GetElementPtrInst>(inst))
-        return new GetElementPtrInst(remap(inst->getOperand(0)), remap(inst->getOperand(1)), tgt);
-    return nullptr;
-}
-
 bool LICM::run() {
     bool any = false;
     purityCache.clear();
@@ -83,21 +86,7 @@ bool LICM::runFunc(Function* f) {
     if (f->getBody()->getBlocks().empty()) return false;
     bool changed = false;
 
-    // rotate while(cond){body} → if(cond){do{body}while(cond)}.
-    {
-        bool rot;
-        do {
-            rot = false;
-            Dominators dt(f); dt.run();
-            LoopInfo li(f, dt);
-            std::function<bool(Loop*)> visit = [&](Loop* L) -> bool {
-                for (auto sub : L->sub) if (visit(sub)) return true;
-                return rotateLoop(L, f);
-            };
-            for (auto top : li.tops())
-                if (visit(top)) { changed = rot = true; break; }
-        } while (rot);
-    }
+    changed |= LoopRotate::runOnFunction(f);
 
     {
         Dominators dt(f); dt.run();
@@ -127,325 +116,6 @@ bool LICM::runFunc(Function* f) {
     } while (hoisted);
 
     return changed;
-}
-
-// Merge multiple back-edges
-static BasicBlock* mergeLatches(Loop* L) {
-    // Collect every block that has a back-edge to head.
-    std::vector<BasicBlock*> lats;
-    for (auto bb : L->blocks) {
-        auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
-        if (!br) continue;
-        for (int k = 0; k < (int)br->getNumOperands(); k++)
-            if (dyn_cast<BasicBlock>(br->getOperand(k)) == L->head) {
-                lats.push_back(bb); break;
-            }
-    }
-    if (lats.empty()) return nullptr;
-    if (lats.size() == 1) return lats[0];
-
-    std::vector<PhiInst*> hphis;
-    for (auto inst : L->head->getInstructions()) {
-        auto* phi = dyn_cast<PhiInst>(inst);
-        if (!phi) break;
-        hphis.push_back(phi);
-    }
-
-    // Create synthetic latch block.
-    Region* region = L->head->getParent();
-    auto* nl = new BasicBlock("latch_merge_" + L->head->getName(), region);
-    L->blocks.push_back(nl);
-
-    for (auto* hp : hphis) {
-        auto* fwd = new PhiInst(hp->getType(), nullptr);
-        fwd->setParent(nl);
-        for (auto* lat : lats) {
-            Value* val = nullptr;
-            for (int k = 0; k < (int)hp->getNumOperands(); k += 2)
-                if (hp->getOperand(k + 1) == lat) { val = hp->getOperand(k); break; }
-            if (!val) return nullptr;
-            fwd->addIncoming(val, lat);
-        }
-        nl->getInstructions().push_back(fwd);
-        for (auto* lat : lats) hp->removeIncomingByBlock(lat);
-        hp->addIncoming(fwd, nl);
-    }
-
-    new BranchInst(L->head, nl);
-
-    for (auto* lat : lats) {
-        auto* br = cast<BranchInst>(lat->getInstructions().back());
-        for (int k = 0; k < (int)br->getNumOperands(); k++)
-            if (dyn_cast<BasicBlock>(br->getOperand(k)) == L->head)
-                br->setOperand(k, nl);
-    }
-
-    L->latch = nl;
-    return nl;
-}
-
-// Rotate loop: pre→head(cond→body/exit), latch→head(uncond)
-//          -> pre(cond->head/exit), head->body(uncond), latch(cond->head/exit)
-bool LICM::rotateLoop(Loop* L, Function* f) {
-    if (!L->head || !L->latch || !L->pre) return false;
-
-    // Merge multiple back-edges from continue statements into one latch.
-    if (!mergeLatches(L)) return false;
-
-// Before rotate:
-// 
-//   preheader                                                                                                                                                                                                 
-//   │                                                                                                                                                                                                     
-//   ▼                                                                                                                                                                                                     
-// [head] ◄─────────────────────┐                          
-//   │  br cond, body, exit      │                                                                                                                                                                         
-//   ├──────────────► [exit]     │                                                                                                                                                                         
-//   │                           │                                                                                                                                                                         
-//   ▼                           │                                                                                                                                                                         
-// [body]                        │                                                                                                                                                                         
-//   │                           │                         
-//   ▼                           │                                                                                                                                                                         
-// [latch]  br head              │                         
-//   └───────────────────────────┘  
-//
-    auto* lbr = dyn_cast<BranchInst>(L->latch->getInstructions().back());
-    if (!lbr || lbr->getNumOperands() != 1) return false;
-    if (cast<BasicBlock>(lbr->getOperand(0)) != L->head) return false;
-
-    // Head must end with conditional branch: one successor in loop (body), one out (exit).
-    auto* hbr = dyn_cast<BranchInst>(L->head->getInstructions().back());
-    if (!hbr || hbr->getNumOperands() != 3) return false;
-    BasicBlock* t1 = cast<BasicBlock>(hbr->getOperand(1));
-    BasicBlock* t2 = cast<BasicBlock>(hbr->getOperand(2));
-    std::set<BasicBlock*> loopBBs(L->blocks.begin(), L->blocks.end());
-    if (loopBBs.count(t1) == loopBBs.count(t2)) return false;
-    BasicBlock* body = loopBBs.count(t1) ? t1 : t2;
-    BasicBlock* exit = loopBBs.count(t1) ? t2 : t1;
-
-    // Pre must be unconditional branch to head.
-    auto* pbr = dyn_cast<BranchInst>(L->pre->getInstructions().back());
-    if (!pbr || pbr->getNumOperands() != 1) return false;
-    if (cast<BasicBlock>(pbr->getOperand(0)) != L->head) return false;
-
-    // Single-exit: no loop block other than head may branch outside the loop.
-    for (auto bb : loopBBs) {
-        if (bb == L->head) continue;
-        auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
-        if (!br) continue;
-        for (int k = 0; k < (int)br->getNumOperands(); k++)
-            if (auto* s = dyn_cast<BasicBlock>(br->getOperand(k)))
-                if (!loopBBs.count(s)) return false;
-    }
-
-    Value* cond = hbr->getOperand(0);
-    if (!cond) return false; // while(1): condition folded, skip
-
-    // Collect head phis and condition-computation chain.
-    std::set<Instruction*> headPhis;
-    for (auto inst : L->head->getInstructions()) {
-        if (!isa<PhiInst>(inst)) break;
-        headPhis.insert(inst);
-    }
-
-    std::set<Instruction*> chain;
-    {
-        std::vector<Value*> wl = {cond};
-        while (!wl.empty()) {
-            Value* v = wl.back(); wl.pop_back();
-            auto* def = dyn_cast<Instruction>(v);
-            if (!def || def->getParent() != L->head) continue;
-            if (headPhis.count(def) || chain.count(def)) continue;
-            chain.insert(def);
-            for (int k = 0; k < (int)def->getNumOperands(); k++)
-                wl.push_back(def->getOperand(k));
-        }
-    }
-
-    // Refuse if chain contains ops that are unsafe to speculate.
-    for (auto* inst : chain) {
-        if (isa<LoadInst>(inst) || isa<StoreInst>(inst) || isa<CallInst>(inst))
-            return false;
-    }
-
-    // Head must contain only phis + chain + branch.
-    for (auto inst : L->head->getInstructions()) {
-        if (isa<PhiInst>(inst) || isa<BranchInst>(inst) || chain.count(inst)) continue;
-        return false;
-    }
-
-    // phi -> {init value from pre, iter value from latch}
-    std::unordered_map<Value*, Value*> initMap, latMap;
-    for (auto* pi : headPhis) {
-        auto* phi = cast<PhiInst>(pi);
-        Value* iv = nullptr, *lv = nullptr;
-        for (int k = 0; k < (int)phi->getNumOperands(); k += 2) {
-            auto* src = cast<BasicBlock>(phi->getOperand(k + 1));
-            if (src == L->pre) iv = phi->getOperand(k);
-            else if (src == L->latch) lv = phi->getOperand(k);
-        }
-        if (!iv || !lv) return false;
-        initMap[pi] = iv;
-        latMap[pi] = lv;
-    }
-
-    // Topological sort of chain.
-    std::vector<Instruction*> chainOrd;
-    {
-        std::set<Instruction*> done(headPhis.begin(), headPhis.end());
-        std::set<Instruction*> rem = chain;
-        while (!rem.empty()) {
-            bool prog = false;
-            for (auto it = rem.begin(); it != rem.end(); ) {
-                auto* inst = *it;
-                bool ready = true;
-                for (int k = 0; k < (int)inst->getNumOperands(); k++) {
-                    auto* d = dyn_cast<Instruction>(inst->getOperand(k));
-                    if (d && chain.count(d) && !done.count(d)) { ready = false; break; }
-                }
-                if (ready) {
-                    chainOrd.push_back(inst);
-                    done.insert(inst);
-                    it = rem.erase(it);
-                    prog = true;
-                } else ++it;
-            }
-            if (!prog) return false;
-        }
-    }
-
-    // Emit cloned chain into target block before its terminator.
-    auto emitChain = [&](BasicBlock* tgt, std::unordered_map<Value*, Value*> vm)
-                        -> std::pair<bool, Value*> {
-        for (auto* orig : chainOrd) {
-            auto* cl = cloneInst(orig, nullptr, vm);
-            if (!cl) return {false, nullptr};
-            cl->setParent(tgt);
-            auto& ins = tgt->getInstructions();
-            ins.insert(std::prev(ins.end()), cl);
-            vm[orig] = cl;
-        }
-        Value* rc = cond;
-        if (auto* d = dyn_cast<Instruction>(cond)) {
-            auto it = vm.find(d);
-            if (it != vm.end()) rc = it->second;
-        }
-        return {true, rc};
-    };
-
-    // Check when entering for the first time. -> if(cond)
-    auto [pok, pcond] = emitChain(L->pre,   initMap);
-    if (!pok) return false;
-    // Check when at the end of each cycle. -> {}while(cond)
-    auto [lok, lcond] = emitChain(L->latch, latMap);
-    if (!lok) return false;
-
-    // Rebuild full vmap (phis + chain clones) for SSA fixup.
-    auto buildMap = [&](BasicBlock* tgt, std::unordered_map<Value*, Value*> vm)
-                    -> std::unordered_map<Value*, Value*> {
-        std::vector<Instruction*> all(tgt->getInstructions().begin(), tgt->getInstructions().end());
-        int n = (int)chainOrd.size(), total = (int)all.size();
-        for (int i = 0; i < n; i++)
-            vm[chainOrd[i]] = all[total - 1 - n + i];
-        return vm;
-    };
-    auto preMap = buildMap(L->pre, initMap);
-    auto latMap2 = buildMap(L->latch, latMap);
-
-    // SSA fixup: head no longer dominates exit after rotation.
-    {
-        auto remap = [](Value* v, const std::unordered_map<Value*, Value*>& m) -> Value* {
-            auto it = m.find(v);
-            return it != m.end() ? it->second : v;
-        };
-
-        std::set<Value*> headDef;
-        for (auto inst : L->head->getInstructions())
-            headDef.insert(inst);
-
-        // exit_bb phis with incoming from head.
-        {
-            std::vector<PhiInst*> ephis;
-            for (auto inst : exit->getInstructions()) {
-                auto* phi = dyn_cast<PhiInst>(inst);
-                if (!phi) break;
-                ephis.push_back(phi);
-            }
-            for (auto* phi : ephis) {
-                Value* ov = nullptr;
-                for (int k = 0; k < (int)phi->getNumOperands(); k += 2)
-                    if (phi->getOperand(k + 1) == L->head) { ov = phi->getOperand(k); break; }
-                if (!ov) continue;
-                phi->removeIncomingByBlock(L->head);
-                phi->addIncoming(remap(ov, preMap), L->pre);
-                phi->addIncoming(remap(ov, latMap2), L->latch);
-            }
-        }
-
-        // uses of head-defined values in blocks reachable from exit.
-        std::unordered_map<Value*, Value*> epCache;
-        auto getEP = [&](Value* v) -> Value* {
-            auto it = epCache.find(v);
-            if (it != epCache.end()) return it->second;
-            auto* ep = new PhiInst(cast<Instruction>(v)->getType(), nullptr);
-            ep->setParent(exit);
-            ep->addIncoming(remap(v, preMap),  L->pre);
-            ep->addIncoming(remap(v, latMap2), L->latch);
-            exit->getInstructions().insert(exit->getInstructions().begin(), ep);
-            epCache[v] = ep;
-            return ep;
-        };
-
-        std::set<BasicBlock*> exitReach;
-        {
-            std::vector<BasicBlock*> wl = {exit};
-            while (!wl.empty()) {
-                auto* cur = wl.back(); wl.pop_back();
-                if (!exitReach.insert(cur).second) continue;
-                if (cur->getInstructions().empty()) continue;
-                auto* term = cur->getInstructions().back();
-                if (auto* br = dyn_cast<BranchInst>(term)) {
-                    int s = br->getNumOperands() == 1 ? 0 : 1;
-                    for (int k = s; k < (int)br->getNumOperands(); k++)
-                        if (auto* bb = dyn_cast<BasicBlock>(br->getOperand(k)))
-                            wl.push_back(bb);
-                }
-            }
-        }
-
-        for (auto bb : f->getBody()->getBlocks()) {
-            if (loopBBs.count(bb) || !exitReach.count(bb)) continue;
-            std::vector<Instruction*> snap(bb->getInstructions().begin(), bb->getInstructions().end());
-            for (auto* inst : snap) {
-                if (auto* phi = dyn_cast<PhiInst>(inst)) {
-                    for (int k = 0; k < (int)phi->getNumOperands(); k += 2)
-                        if (headDef.count(phi->getOperand(k)))
-                            phi->setOperand(k, getEP(phi->getOperand(k)));
-                } else {
-                    for (int k = 0; k < (int)inst->getNumOperands(); k++) {
-                        Value* op = inst->getOperand(k);
-                        if (headDef.count(op))
-                            inst->setOperand(k, getEP(op));
-                    }
-                }
-            }
-        }
-    }
-
-    // Rewrite terminators.
-    // delete before erase: ~User() calls removeUser on each operand,
-    // clearing the old branch from the ICmpInst's UseList so DCE works correctly.
-    auto replaceTerminator = [](BasicBlock* bb, auto makeNew) {
-        auto& ins = bb->getInstructions();
-        auto it = std::prev(ins.end());
-        delete *it;
-        ins.erase(it);
-        makeNew();
-    };
-    replaceTerminator(L->pre, [&]{ new BranchInst(pcond, L->head, exit, L->pre); });
-    replaceTerminator(L->head, [&]{ new BranchInst(body, L->head); });
-    replaceTerminator(L->latch, [&]{ new BranchInst(lcond, L->head, exit, L->latch); });
-
-    return true;
 }
 
 bool LICM::isFullyOuterInvariant(Loop* outer, Loop* inner) {
@@ -500,6 +170,13 @@ bool LICM::tryHoistSubloop(Loop* outer) {
                 for (auto it = ins.begin(); it != ins.end(); ) {
                     auto* phi = dyn_cast<PhiInst>(*it);
                     if (!phi || phi->getNumOperands() != 2) { ++it; continue; }
+                    // fix: get new preds list, not rely on the old CFG.
+                    auto preds = getActualPredecessors(bb);
+                    auto* inBB = dyn_cast<BasicBlock>(phi->getOperand(1));
+                    if (preds.size() != 1 || !inBB || preds[0] != inBB) {
+                        ++it;
+                        continue;
+                    }
                     Value* val = phi->getOperand(0);
                     auto* def = dyn_cast<Instruction>(val);
                     if (def && outerSet.count(def->getParent())) { ++it; continue; }
