@@ -11,26 +11,25 @@ class SSAInline {
     Module* M;
     int threshold;
 
+public:
     static bool isRecursive(Function* f);
     static int  countInsts(Function* f);
-    bool isInlineable(Function* f) const;
-
     static Value* remap(Value* v,
                         const std::map<Value*, Value*>& vmap,
                         const std::map<BasicBlock*, BasicBlock*>& bbMap);
-
     static Instruction* cloneNonPhiInst(Instruction* inst, BasicBlock* target,
                                         const std::map<Value*, Value*>& vmap,
                                         const std::map<BasicBlock*, BasicBlock*>& bbMap);
+    explicit SSAInline(Module* m, int threshold = 200) : M(m), threshold(threshold) {}
+    bool run();
+
+private:
+    bool isInlineable(Function* f) const;
 
     void doInline(CallInst* call);
 
     // Move AllocaInst to entry block for better readability.
     static void AllocaHoist(Function* func);
-
-public:
-    explicit SSAInline(Module* m, int threshold = 200) : M(m), threshold(threshold) {}
-    bool run();
 };
 
 }

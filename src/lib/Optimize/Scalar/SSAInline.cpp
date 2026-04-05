@@ -132,16 +132,9 @@ Instruction* SSAInline::cloneNonPhiInst(Instruction* inst, BasicBlock* target,
             }
             break;
         }
-        case Instruction::Ret: {
-            if (inst->getNumOperands() == 0) {
-                clone = new ReturnInst(nullptr, nullptr);
-            } else {
-                auto* c = new ReturnInst(nullptr, nullptr);
-                c->setOperand(0, remap(inst->getOperand(0), vmap, bbMap));
-                clone = c;
-            }
-            break;
-        }
+        case Instruction::Ret:
+        case Instruction::Phi:
+            return nullptr;
         case Instruction::Call: {
             auto* orig = cast<CallInst>(inst);
             std::vector<Value*> args;
