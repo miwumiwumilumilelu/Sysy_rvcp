@@ -6,10 +6,58 @@
 
 using namespace sysy;
 
+bool CFGInline::hasLoop(Function* f) {
+    if (!f || f->getBody()->getBlocks().empty()) return false;
+
+    Dominators dt(f);
+    dt.run();
+
+    for (auto bb : f->getBody()->getBlocks()) {
+        for (auto succ : dt.getSuccessors(bb)) {
+            if (dt.dominates(succ, bb)) return true;
+        }
+    }
+    return false;
+}
+
+bool CFGInline::hasPhi(Function* f) {
+    for (auto bb : f->getBody()->getBlocks()) {
+        for (auto inst : bb->getInstructions()) {
+            if (isa<PhiInst>(inst)) return true;
+        }
+    }
+    return false;
+}
+
+bool CFGInline::hasAlloca(Function* f) {
+    for (auto bb : f->getBody()->getBlocks()) {
+        for (auto inst : bb->getInstructions()) {
+            if (isa<AllocaInst>(inst)) return true;
+        }
+    }
+    return false;
+}
+
+bool CFGInline::hasNestedCall(Function* f) {
+    for (auto bb : f->getBody()->getBlocks()) {
+        for (auto inst : bb->getInstructions()) {
+            auto* call = dyn_cast<CallInst>(inst);
+            if (!call) continue;
+            if (call->getFunction() != f) return true;
+        }
+    }
+    return false;
+}
+
 bool CFGInline::isInlineable(Function* f) const {
     if (!f) return false;
     if (f->getBody()->getBlocks().empty()) return false;
     if (SSAInline::isRecursive(f)) return false;
+    if (hasLoop(f)) return false;
+    if (hasPhi(f)) return false;
+    if (hasAlloca(f)) return false;
+    if (hasNestedCall(f)) return false;
+    if ((int)f->getBody()->getBlocks().size() > 4) return false;
     return SSAInline::countInsts(f) <= threshold;
 }
 

@@ -1,6 +1,7 @@
 #ifndef CFGINLINE_H
 #define CFGINLINE_H
 
+#include "Optimize/Analysis/Dominators.h"
 #include "IR/Instruction.h"
 #include "IR/Module.h"
 #include <map>
@@ -12,15 +13,12 @@ class CFGInline {
     Module* M;
     int threshold;
 
+    static bool hasLoop(Function* f);
+    static bool hasPhi(Function* f);
+    static bool hasAlloca(Function* f);
+    static bool hasNestedCall(Function* f);
+
     bool isInlineable(Function* f) const;
-
-    static Value* remap(Value* v,
-                        const std::map<Value*, Value*>& vmap,
-                        const std::map<BasicBlock*, BasicBlock*>& bbMap);
-
-    static Instruction* cloneInst(Instruction* inst, BasicBlock* target,
-                                    const std::map<Value*, Value*>& vmap,
-                                    const std::map<BasicBlock*, BasicBlock*>& bbMap);
 
     void doInline(CallInst* call);
     static void AllocaHoist(Function* func);
