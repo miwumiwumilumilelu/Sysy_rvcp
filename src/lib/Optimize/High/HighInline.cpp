@@ -185,6 +185,9 @@ void HighInline::cloneRegion(Region* src,
                             Region* dst,
                             std::map<Value*, Value*>& vmap) {
     std::map<BasicBlock*, BasicBlock*> bbMap;
+    struct PhiPair { PhiInst* orig; PhiInst* clone; };
+    std::vector<PhiPair> pendingPhis;
+
     for (auto bb : src->getBlocks()) {
         auto* cloned = new BasicBlock(bb->getName(), dst);
         bbMap[bb] = cloned;
@@ -193,9 +196,25 @@ void HighInline::cloneRegion(Region* src,
     for (auto bb : src->getBlocks()) {
         auto* clonedBB = bbMap[bb];
         for (auto inst : bb->getInstructions()) {
+            if (auto* phi = dyn_cast<PhiInst>(inst)) {
+                auto* cphi = new PhiInst(phi->getType(), nullptr);
+                cphi->setName(phi->getName());
+                cphi->setParent(clonedBB);
+                clonedBB->getInstructions().push_back(cphi);
+                vmap[phi] = cphi;
+                pendingPhis.push_back({phi, cphi});
+            }
+        }
+    }
+
+    for (auto bb : src->getBlocks()) {
+        auto* clonedBB = bbMap[bb];
+        for (auto inst : bb->getInstructions()) {
             if (isa<ReturnInst>(inst)) {
                 assert(false && "HighInline only supports top-level final return");
             }
+            if (isa<PhiInst>(inst))
+                continue;
 
             Instruction* cloned = nullptr;
             if (inst->getOpID() == Instruction::If ||
@@ -211,14 +230,22 @@ void HighInline::cloneRegion(Region* src,
                 vmap[inst] = cloned;
         }
     }
+
+    for (auto [origPhi, cphi] : pendingPhis) {
+        for (int i = 0; i < origPhi->getNumOperands(); i += 2) {
+            auto* val = SSAInline::remap(origPhi->getOperand(i), vmap, bbMap);
+            auto* bb = cast<BasicBlock>(
+                SSAInline::remap(origPhi->getOperand(i + 1), vmap, bbMap));
+            cphi->addIncoming(val, bb);
+        }
+    }
 }
 
 Instruction* HighInline::cloneStructuredInst(
     Instruction* inst,
     std::map<Value*, Value*>& vmap) {
-    auto localMap = vmap;
-
     if (auto* ifInst = dyn_cast<IfInst>(inst)) {
+        auto baseMap = vmap;
         std::map<BasicBlock*, BasicBlock*> emptyBBMap;
         auto* cloned = new IfInst(SSAInline::remap(ifInst->getOperand(0), vmap, emptyBBMap), nullptr);
         cloned->setName(ifInst->getName());
@@ -228,15 +255,17 @@ Instruction* HighInline::cloneStructuredInst(
             auto* newRV = cloned->createResult(rv->getType());
             newRV->setName(rv->getName());
             vmap[rv] = newRV;
-            localMap[rv] = newRV;
+            baseMap[rv] = newRV;
         }
-        cloneRegion(ifInst->getThenRegion(), cloned->getThenRegion(), localMap);
+        auto thenMap = baseMap;
+        cloneRegion(ifInst->getThenRegion(), cloned->getThenRegion(), thenMap);
         if (ifInst->getElseRegion())
-            cloneRegion(ifInst->getElseRegion(), cloned->getElseRegion(), localMap);
+            cloneRegion(ifInst->getElseRegion(), cloned->getElseRegion(), baseMap);
         return cloned;
     }
 
     if (auto* whileInst = dyn_cast<WhileInst>(inst)) {
+        auto baseMap = vmap;
         auto* cloned = new WhileInst(nullptr);
         cloned->setName(whileInst->getName());
         std::map<BasicBlock*, BasicBlock*> emptyBBMap;
@@ -246,10 +275,12 @@ Instruction* HighInline::cloneStructuredInst(
             auto* newRV = cloned->createResult(rv->getType());
             newRV->setName(rv->getName());
             vmap[rv] = newRV;
-            localMap[rv] = newRV;
+            baseMap[rv] = newRV;
         }
-        cloneRegion(whileInst->getCondRegion(), cloned->getCondRegion(), localMap);
-        cloneRegion(whileInst->getBodyRegion(), cloned->getBodyRegion(), localMap);
+        auto condMap = baseMap;
+        auto bodyMap = baseMap;
+        cloneRegion(whileInst->getCondRegion(), cloned->getCondRegion(), condMap);
+        cloneRegion(whileInst->getBodyRegion(), cloned->getBodyRegion(), bodyMap);
         return cloned;
     }
 
@@ -300,9 +331,11 @@ void HighInline::doInline(CallInst* call) {
     }
 
     for (auto* cloned : clones) {
-        if (cloned && cloned->getParent() != callBB)
+        if (!cloned) continue;
+        if (cloned->getParent() != callBB)
             appendInst(callBB, cloned);
-        auto inserted = std::prev(insts.end());
+        auto inserted = std::find(insts.begin(), insts.end(), cloned);
+        assert(inserted != insts.end());
         insts.splice(callIt, insts, inserted);
     }
 
