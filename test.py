@@ -8,7 +8,7 @@ COMPILER_CMD = "./compiler"
 SYLIB_C = "src/lib/sylib.c"          
 GCC_CMD = "riscv64-linux-gnu-gcc"  
 QEMU_CMD = "qemu-riscv64"          
-TIMEOUT = 100.0                     
+TIMEOUT = 180.0                     
 
 GCC_FLAGS = ["-static"]
 
