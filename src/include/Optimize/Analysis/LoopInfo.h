@@ -8,41 +8,74 @@
 #include <vector>
 
 namespace sysy {
-//   ┌─────────────────────────────────────────┐                                                                                                                                           
-//   │  outer Loop (up)                        │                                                                                                                                           
-//   │                                         │                                                                                                                                           
-//   │   [pre]                                 │                                                                                                                                            
-//   │    │      pre-header (dominates head)   │                                                                                                                                           
-//   │    │                                    │                                                                                                                                           
-//   │    ▼                                    │                                                                                                                                           
-//   │   [head] ◄────────────────────────────  │ ◄── loop back-edge                                                                                                                         
-//   │    │      loop header                   │     from latch                                                                                                                            
-//   │    │                                    │                                                                                                                                           
-//   │    │      ┌── inner Loop (sub[i])  ──┐  │                                                                                                                                            
-//   │    ▼      │  [head']                 │  │                                                                                                                                           
-//   │  [blocks] │  [blocks']               │  │                                                                                                                                           
-//   │    │      │  [latch']                │  │                                                                                                                                           
-//   │    │      └─────────────────────────-┘  │                                                                                                                                           
-//   │    │                                    │                                                                                                                                           
-//   │    ▼                                    │
-//   │   [latch] ──────────────────────────►   │
-//   │           back-edge to head             │
-//   └─────────────────────────────────────────┘
+//
+//   up = outer loop containing this loop
+//   sub[i] = nested inner loop directly contained in this loop
+//
+//   ┌────────────────────────────────────────────────────────────┐
+//   │ outer loop (up)                                            │
+//   │                                                            │
+//   │   pre                                                      │
+//   │    │   unique preheader outside the loop                   │
+//   │    v                                                       │
+//   │   head -------------------------------> exits[0]           │
+//   │    │ \                              exit edge              │
+//   │    │  \                                                   │
+//   │    │   v                                                  │
+//   │    │  exiting[0]                                          │
+//   │    │     |                                                │
+//   │    v     |                                                │
+//   │  body blocks ...                                          │
+//   │    │                                                      │
+//   │    │      ┌──────── inner loop (sub[i]) ────────┐         │
+//   │    │      │  head' -> ... -> latch' -> head'    │         │
+//   │    │      │  blocks' / latches' / exits'        │         │
+//   │    │      └──────────────────────────────────────┘         │
+//   │    v                                                      │
+//   │  latch  -----------------------------------------> head   │
+//   │                                                            │
+//   │  blocks   = all loop-internal basic blocks                │
+//   │  latches  = all back-edge sources to head                 │
+//   │  exiting  = loop blocks with a successor outside loop     │
+//   │  exits    = outside successors reached from exiting       │
+//   └────────────────────────────────────────────────────────────┘
+//
 struct Loop {
     // up is the outer loop containing this loop.
     // sub is the inner loops contained in this loop.
     BasicBlock* head = nullptr;
     BasicBlock* pre = nullptr;
+    // Loop Simplify requires exactly one single latch.
     BasicBlock* latch = nullptr; 
     Loop* up = nullptr; 
     std::vector<BasicBlock*> blocks;
     std::vector<Loop*> sub; 
+    std::vector<BasicBlock*> latches; 
+    // loop-internal blocks with successors outside the loop.
+    std::vector<BasicBlock*> exiting;
+    // outside successor blocks reached from exiting.
+    std::vector<BasicBlock*> exits;
 
     bool has(BasicBlock* bb) const {
         for (auto b : blocks) if (b == bb) return true;
         return false;
     }
+
+    // Loop Simplify: unique preheader + single latch.
+    bool hasPreheaderAndSingleLatch() const {
+        return pre && latches.size() == 1;
+    }
 };
+
+// Loop Simplify: Every exit block has only loop-internal preds.
+inline bool hasDedicatedExits(Loop* L, Dominators& dt) {
+    for (auto* exit : L->exits) {
+        for (auto* pred : dt.getPredecessors(exit)) {
+            if (!L->has(pred)) return false;
+        }
+    }
+    return true;
+}
 
 class LoopInfo {
 public:
@@ -65,7 +98,8 @@ private:
     std::map<BasicBlock*, Loop*> BMap;
 
     void build();
-    void ensurePre(Loop* L);
+    void buildPrehBB(Loop* L);
+    void buildExits(Loop* L);
 };
 
 } // namespace sysy
