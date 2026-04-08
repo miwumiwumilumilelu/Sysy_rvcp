@@ -36,6 +36,45 @@ static std::string fmtOperand(Value* v) {
     return v->getName();
 }
 
+static std::string binarySymbol(Instruction::OpID op) {
+    switch (op) {
+        case Instruction::Add:  return "+";
+        case Instruction::Sub:  return "-";
+        case Instruction::Mul:  return "*";
+        case Instruction::Div:  return "/";
+        case Instruction::Mod:  return "%";
+        case Instruction::FAdd: return "+.f";
+        case Instruction::FSub: return "-.f";
+        case Instruction::FMul: return "*.f";
+        case Instruction::FDiv: return "/.f";
+        default:                return "?";
+    }
+}
+
+static std::string icmpSymbol(ICmpInst::CmpOp pred) {
+    switch (pred) {
+        case ICmpInst::EQ:  return "==.i";
+        case ICmpInst::NE:  return "!=.i";
+        case ICmpInst::SGT: return ">.i";
+        case ICmpInst::SGE: return ">=.i";
+        case ICmpInst::SLT: return "<.i";
+        case ICmpInst::SLE: return "<=.i";
+    }
+    return "?.i";
+}
+
+static std::string fcmpSymbol(FCmpInst::CmpOp pred) {
+    switch (pred) {
+        case FCmpInst::OEQ: return "==.f";
+        case FCmpInst::ONE: return "!=.f";
+        case FCmpInst::OGT: return ">.f";
+        case FCmpInst::OGE: return ">=.f";
+        case FCmpInst::OLT: return "<.f";
+        case FCmpInst::OLE: return "<=.f";
+    }
+    return "?.f";
+}
+
 Type* Type::getIntTy() { static IntegerType t; return &t; }
 Type* Type::getVoidTy() { static VoidType t; return &t; }
 Type* Type::getFloatTy() { static FloatType t; return &t; }
@@ -134,7 +173,8 @@ BinaryInst::BinaryInst(OpID id, Value *lhs, Value *rhs, BasicBlock *parent)
 }
 
 std::string BinaryInst::toString() const {
-    return Name + " = " + OpStr + " " + fmtOperand(getOperand(0)) + ", " + fmtOperand(getOperand(1));
+    return Name + " = " + fmtOperand(getOperand(0)) + " " + binarySymbol(getOpID()) + " " +
+           fmtOperand(getOperand(1));
 }
 
 AllocaInst::AllocaInst(Type *ty, BasicBlock *parent) 
@@ -218,7 +258,8 @@ std::string ICmpInst::getPredStr() const {
 }
 
 std::string ICmpInst::toString() const {
-    return Name + " = icmp " + getPredStr() + " " + fmtOperand(getOperand(0)) + ", " + fmtOperand(getOperand(1));
+    return Name + " = " + fmtOperand(getOperand(0)) + " " + icmpSymbol(Pred) + " " +
+           fmtOperand(getOperand(1));
 }
 
 IfInst::IfInst(Value* cond, BasicBlock* parent) 
@@ -341,7 +382,7 @@ GetElementPtrInst::GetElementPtrInst(Value* base, Value* index, BasicBlock* pare
 }
 
 std::string GetElementPtrInst::toString() const {
-    return Name + " = getelementptr " + getOperand(0)->getName() + ", " + getOperand(1)->getName();
+    return Name + " = " + fmtOperand(getOperand(0)) + "[" + fmtOperand(getOperand(1)) + "]";
 }
 
 CastInst::CastInst(OpID op, Value* val, Type* targetTy, BasicBlock* parent)
@@ -371,7 +412,8 @@ std::string FCmpInst::getPredStr() const {
 }
 
 std::string FCmpInst::toString() const {
-    return Name + " = fcmp " + getPredStr() + " " + fmtOperand(getOperand(0)) + ", " + fmtOperand(getOperand(1));
+    return Name + " = " + fmtOperand(getOperand(0)) + " " + fcmpSymbol(Pred) + " " +
+           fmtOperand(getOperand(1));
 }
 
 PhiInst::PhiInst(Type *ty, BasicBlock *parent) 
