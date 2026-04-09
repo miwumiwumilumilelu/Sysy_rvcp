@@ -33,7 +33,17 @@ static std::string fmtOperand(Value* v) {
     else if (auto cf = dyn_cast<ConstantFloat>(v)) {
         return std::to_string(cf->getValue());
     }
-    return v->getName();
+
+    std::string name = v->getName();
+    if (!name.empty()) return name;
+
+    std::ostringstream os;
+    if (auto* inst = dyn_cast<Instruction>(v)) {
+        os << "<unnamed-inst@" << static_cast<const void*>(inst) << ">";
+        return os.str();
+    }
+    os << "<unnamed-val@" << static_cast<const void*>(v) << ">";
+    return os.str();
 }
 
 static std::string binarySymbol(Instruction::OpID op) {

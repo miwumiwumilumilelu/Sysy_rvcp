@@ -1,9 +1,0 @@
-// test2.sy
-int g_arr[3] = {10, 20, 30};
-
-int main() {
-    int l_arr[3];
-    // 读取全局数组，写入局部数组
-    l_arr[1] = g_arr[2] + 5;
-    return l_arr[1];
-}

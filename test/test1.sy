@@ -1,7 +1,0 @@
-// test1.sy
-int main() {
-    float pi = 3.14;
-    int r = 2;
-    // r 会被隐式转换为 float，相加后结果又被隐式转换为 int 返回
-    return pi + r; 
-}
