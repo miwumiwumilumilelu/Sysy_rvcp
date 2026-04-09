@@ -7,19 +7,26 @@
 
 using namespace sysy;
 
-static int LoopSimplifyID = 0;
+static int LoopSimplifyInstID = 0;
+static int LoopSimplifyBBID = 0;
 
-static std::string loopSimplifyName(const std::string& seed) {
+static std::string InstName(const std::string& seed) {
     // %seed.ls0\ %seed.ls1\ ...
     if (!seed.empty())
-        return seed + ".ls" + std::to_string(LoopSimplifyID++);
+        return seed + ".ls" + std::to_string(LoopSimplifyInstID++);
     // %ls0\ %ls1\ ...
-    return "%ls" + std::to_string(LoopSimplifyID++);
+    return "%ls" + std::to_string(LoopSimplifyInstID++);
+}
+
+static std::string BBName(const std::string& seed) {
+    if (!seed.empty())
+        return seed + ".ls" + std::to_string(LoopSimplifyBBID++);
+    return "lsbb" + std::to_string(LoopSimplifyBBID++);
 }
 
 static void assignName(Instruction* inst, const std::string& seed = "") {
     if (!inst || inst->getType()->isVoid()) return;
-    inst->setName(loopSimplifyName(seed));
+    inst->setName(InstName(seed));
 }
 
 bool LoopSimplify::buildPrehBB(Loop* L, Dominators& dt) {
@@ -158,7 +165,7 @@ bool LoopSimplify::dedicateExits(Loop* L, Dominators& dt) {
         if (nonLoopPreds.empty() || loopPreds.empty()) continue;
 
         Region* region = exitBB->getParent();
-        auto* ded = new BasicBlock("ded_exit_" + exitBB->getName(), region);
+        auto* ded = new BasicBlock(BBName("ded_exit_" + exitBB->getName()), region);
 
         // Place ded immediately before exitBB in the block list.
         // ... , ded, exitBB, ...
