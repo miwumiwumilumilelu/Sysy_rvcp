@@ -22,6 +22,67 @@ static void assignName(Instruction* inst, const std::string& seed = "") {
     inst->setName(loopSimplifyName(seed));
 }
 
+bool LoopSimplify::buildPrehBB(Loop* L, Dominators& dt) {
+    assert(L && "buildPrehBB expects a valid loop");
+    if (L->pre) return false;
+
+    std::vector<BasicBlock*> ext;
+    for (auto* pred : dt.getPredecessors(L->head)) {
+        if (!L->has(pred))
+            ext.push_back(pred);
+    }
+
+    assert(!ext.empty() && "natural loop header must have an outside predecessor");
+
+    Region* region = L->head->getParent();
+    auto* preheaderBB = new BasicBlock("pre_" + L->head->getName(), region);
+    auto& blist = region->getBlocks();
+    auto itHead = std::find(blist.begin(), blist.end(), L->head);
+    blist.splice(itHead, blist, std::prev(blist.end()));
+
+    for (auto* ep : ext) {
+        auto* term = ep->getInstructions().empty() ? nullptr : ep->getInstructions().back();
+        auto* br = dyn_cast<BranchInst>(term);
+        assert(br && "external predecessor must end with a branch");
+        br->replaceSuccessor(L->head, preheaderBB);
+    }
+
+    auto& preInsts = preheaderBB->getInstructions();
+    for (auto* inst : L->head->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+
+        std::vector<std::pair<Value*, BasicBlock*>> forwarded;
+        for (int i = 0; i < phi->getNumOperands(); i += 2) {
+            auto* val = phi->getOperand(i);
+            auto* from = cast<BasicBlock>(phi->getOperand(i + 1));
+            if (std::find(ext.begin(), ext.end(), from) != ext.end())
+                forwarded.push_back({val, from});
+        }
+
+        if (forwarded.empty()) continue;
+
+        Value* merged = forwarded[0].first;
+        if (forwarded.size() > 1) {
+            auto* prePhi = new PhiInst(phi->getType(), nullptr);
+            prePhi->setName(phi->getName() + ".ph");
+            for (auto& [val, from] : forwarded)
+                prePhi->addIncoming(val, from);
+            prePhi->setParent(preheaderBB);
+            preInsts.push_back(prePhi);
+            merged = prePhi;
+        }
+
+        for (auto& [unused, from] : forwarded)
+            phi->removeIncomingByBlock(from);
+        phi->addIncoming(merged, preheaderBB);
+    }
+
+    new BranchInst(L->head, preheaderBB);
+    L->pre = preheaderBB;
+    return true;
+}
+
 BasicBlock* LoopSimplify::mergeLatches(Loop* L) {
     assert(L && "mergeLatches expects a valid loop");
     assert(!L->latches.empty() && "mergeLatches expects at least one latch");
@@ -172,8 +233,10 @@ bool LoopSimplify::runOnFunction(Function* f) {
                 if (visit(sub)) return true;
             }
 
-            assert(L->pre && "LoopSimplify expects LoopInfo to provide a preheader");
             assert(!L->latches.empty() && "LoopSimplify expects every loop to have at least one latch");
+
+            // build preheader first.
+            if (buildPrehBB(L, dt)) return true;
 
             // mergeLatches to build sigle latch.
             if (L->latches.size() > 1) {

@@ -10,9 +10,6 @@ namespace sysy {
 class LoopRotate {
     Module* M;
 
-    // Merge multiple back-edges (from continue statements) into one latch block.
-    static BasicBlock* mergeLatches(Loop* L);
-
     // Single loop rotation.
     static bool runOnLoop(Loop* L, Function* f);
 

@@ -10,6 +10,7 @@ namespace sysy {
 class LoopSimplify {
     Module* M;
 
+    static bool buildPrehBB(Loop* L, Dominators& dt);
     static BasicBlock* mergeLatches(Loop* L);
     static bool dedicateExits(Loop* L, Dominators& dt);
     static bool runOnFunction(Function* f);

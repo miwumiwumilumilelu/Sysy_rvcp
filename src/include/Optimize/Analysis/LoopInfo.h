@@ -98,8 +98,8 @@ private:
     std::map<BasicBlock*, Loop*> BMap;
 
     void build();
-    void buildPrehBB(Loop* L);
-    void buildExits(Loop* L);
+    void analyzePreh(Loop* L);
+    void analyzeExits(Loop* L);
 };
 
 } // namespace sysy

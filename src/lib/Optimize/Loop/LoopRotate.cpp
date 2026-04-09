@@ -143,60 +143,6 @@ static Instruction* cloneInst(Instruction* inst,
     return clone;
 }
 
-// Merge multiple back-edges from continue statements into one synthetic latch.
-BasicBlock* LoopRotate::mergeLatches(Loop* L) {
-    std::vector<BasicBlock*> lats;
-    for (auto bb : L->blocks) {
-        auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
-        if (!br) continue;
-        for (int k = 0; k < (int)br->getNumOperands(); k++)
-            if (dyn_cast<BasicBlock>(br->getOperand(k)) == L->head) {
-                lats.push_back(bb); break;
-            }
-    }
-    if (lats.empty()) return nullptr;
-    if (lats.size() == 1) return lats[0];
-
-    std::vector<PhiInst*> hphis;
-    for (auto inst : L->head->getInstructions()) {
-        auto* phi = dyn_cast<PhiInst>(inst);
-        if (!phi) break;
-        hphis.push_back(phi);
-    }
-
-    Region* region = L->head->getParent();
-    auto* nl = new BasicBlock("latch_merge_" + L->head->getName(), region);
-    L->blocks.push_back(nl);
-
-    for (auto* hp : hphis) {
-        auto* fwd = new PhiInst(hp->getType(), nullptr);
-        fwd->setParent(nl);
-        AssignName(fwd, hp->getName());
-        for (auto* lat : lats) {
-            Value* val = nullptr;
-            for (int k = 0; k < (int)hp->getNumOperands(); k += 2)
-                if (hp->getOperand(k + 1) == lat) { val = hp->getOperand(k); break; }
-            if (!val) return nullptr;
-            fwd->addIncoming(val, lat);
-        }
-        nl->getInstructions().push_back(fwd);
-        for (auto* lat : lats) hp->removeIncomingByBlock(lat);
-        hp->addIncoming(fwd, nl);
-    }
-
-    new BranchInst(L->head, nl);
-
-    for (auto* lat : lats) {
-        auto* br = cast<BranchInst>(lat->getInstructions().back());
-        for (int k = 0; k < (int)br->getNumOperands(); k++)
-            if (dyn_cast<BasicBlock>(br->getOperand(k)) == L->head)
-                br->setOperand(k, nl);
-    }
-
-    L->latch = nl;
-    return nl;
-}
-
 // Before:                         
 //   pre -> head(cond->body/exit)     
 //            head -> body             
@@ -206,9 +152,8 @@ BasicBlock* LoopRotate::mergeLatches(Loop* L) {
 //      head -> body (unconditional)
 //      latch(cond -> head/exit)
 bool LoopRotate::runOnLoop(Loop* L, Function* f) {
-    if (!L->head || !L->latch || !L->pre) return false;
-
-    if (!mergeLatches(L)) return false;
+    // LoopSimplify must have run: unique preheader + single latch required.
+    if (!L->head || !L->pre || L->latches.size() != 1) return false;
 
     // latch must be an unconditional back-edge to head.
     auto* lbr = dyn_cast<BranchInst>(L->latch->getInstructions().back());
@@ -230,15 +175,9 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
     if (!pbr || pbr->getNumOperands() != 1) return false;
     if (cast<BasicBlock>(pbr->getOperand(0)) != L->head) return false;
 
-    // Single-exit: no loop block other than head may branch outside the loop.
-    for (auto bb : loopBBs) {
-        if (bb == L->head) continue;
-        auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
-        if (!br) continue;
-        for (int k = 0; k < (int)br->getNumOperands(); k++)
-            if (auto* s = dyn_cast<BasicBlock>(br->getOperand(k)))
-                if (!loopBBs.count(s)) return false;
-    }
+    // Single-exit: only header may exit the loop.
+    if (L->exits.size() != 1 || L->exiting.size() != 1 || L->exiting[0] != L->head)
+        return false;
 
     Value* cond = hbr->getOperand(0);
     if (!cond) return false; // while(1): condition folded away
@@ -493,6 +432,12 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
             }
         }
     }
+
+    // if (f->getName() == "heap_sort") {
+    //     std::cerr << "==== after one LoopRotate on heap_sort ====\n";
+    //     std::cerr << f->toString() << "\n";
+    // }
+
 
     return true;
 }

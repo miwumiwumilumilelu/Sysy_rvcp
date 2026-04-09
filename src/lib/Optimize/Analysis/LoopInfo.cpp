@@ -1,5 +1,4 @@
 #include "Optimize/Analysis/LoopInfo.h"
-#include "IR/Instruction.h"
 #include <algorithm>
 #include <map>
 #include <set>
@@ -79,81 +78,29 @@ void LoopInfo::build() {
     }
 
     for (auto* L : All)
-        buildPrehBB(L);
+        analyzePreh(L);
 
     for (auto* L : All)
-        buildExits(L);
+        analyzeExits(L);
 }
 
-void LoopInfo::buildPrehBB(Loop* L) {
+void LoopInfo::analyzePreh(Loop* L) {
+    L->pre = nullptr;
+
     std::vector<BasicBlock*> ext;
     for (auto* pred : DT.getPredecessors(L->head)) {
-        // Check if pred is back-edge from latchs.
         if (!L->has(pred))
             ext.push_back(pred);
     }
 
     if (ext.size() == 1) {
         auto& succs = DT.getSuccessors(ext[0]);
-        if (succs.size() == 1 && succs[0] == L->head) {
+        if (succs.size() == 1 && succs[0] == L->head)
             L->pre = ext[0];
-            return;
-        }
     }
-
-    auto* region = F->getBody();
-    // Add prehBB in the end.
-    auto* prehBB = new BasicBlock("pre_" + L->head->getName(), region);
-    auto& blist = region->getBlocks();
-    auto itHead = std::find(blist.begin(), blist.end(), L->head);
-    blist.splice(itHead, blist, std::prev(blist.end()));
-
-    // Rewire all non-backedge predecessors to the new preheader.
-    for (auto* ep : ext) {
-        auto* term = ep->getInstructions().back();
-        if (auto* br = dyn_cast<BranchInst>(term))
-            br->replaceSuccessor(L->head, prehBB);
-    }
-
-    // Canonicalize header phis so external values first merge in the preheader.
-    auto& preInsts = prehBB->getInstructions();
-    for (auto* inst : L->head->getInstructions()) {
-        auto* phi = dyn_cast<PhiInst>(inst);
-        if (!phi) break;
-
-        // Find all incoming from outside the loop, and merge them with a new preheader phi.
-        std::vector<std::pair<Value*, BasicBlock*>> forwarded;
-        for (int i = 0; i < phi->getNumOperands(); i += 2) {
-            auto* val = phi->getOperand(i);
-            auto* from = cast<BasicBlock>(phi->getOperand(i + 1));
-            if (std::find(ext.begin(), ext.end(), from) != ext.end())
-                forwarded.push_back({val, from});
-        }
-
-        if (forwarded.empty()) continue;
-
-        Value* merged = forwarded[0].first;
-        if (forwarded.size() > 1) {
-            auto* prePhi = new PhiInst(phi->getType(), nullptr);
-            prePhi->setName(phi->getName() + ".ph");
-            for (auto& [val, from] : forwarded)
-                prePhi->addIncoming(val, from);
-            prePhi->setParent(prehBB);
-            preInsts.push_back(prePhi);
-            merged = prePhi;
-        }
-
-        for (auto& [_, from] : forwarded)
-            phi->removeIncomingByBlock(from);
-        phi->addIncoming(merged, prehBB);
-    }
-
-    new BranchInst(L->head, prehBB);
-    BMap[prehBB] = L->up;
-    L->pre = prehBB;
 }
 
-void LoopInfo::buildExits(Loop* L) {
+void LoopInfo::analyzeExits(Loop* L) {
     std::set<BasicBlock*> exiting;
     std::set<BasicBlock*> exits;
 
