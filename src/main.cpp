@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <utility>
 #include "Lex/Lexer.h"
 #include "Parse/Parser.h"
 #include "Semant/Semant.h"
@@ -19,6 +20,9 @@
 #include "Optimize/Scalar/InstSimplify.h"
 #include "Optimize/CFG/SimplifyCFG.h"
 #include "Optimize/Scalar/DCE.h"
+#include "Optimize/Loop/LoopSimplify.h"
+#include "Optimize/Loop/LoopRotate.h"
+#include "Optimize/Loop/LCSSA.h"
 #include "Optimize/Loop/LICM.h"
 #include "rv/InstSel.h"
 #include "rv/RegAlloc.h"
@@ -33,6 +37,7 @@ int main(int argc, char **argv) {
     std::string outputFile;
     bool dumpHIR = false;
     bool dumpLIR = false;
+    std::string dumpAfterPass;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -47,6 +52,9 @@ int main(int argc, char **argv) {
             dumpHIR = true;
         } else if (arg == "--dump-cfg-ir") {
             dumpLIR = true;
+        } else if (arg.rfind("--dump-", 0) == 0 && arg.size() > 10 &&
+                   arg.substr(arg.size() - 3) == "-ir") {
+            dumpAfterPass = arg.substr(7, arg.size() - 10);
         } else if (arg[0] == '-') {
             std::cerr << "Unknown option: " << arg << "\n";
             return 1;
@@ -68,6 +76,8 @@ int main(int argc, char **argv) {
     std::string code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     file.close();
 
+// ======== Frontend ========
+
     Lexer lexer(code);
     Parser parser(lexer);
     auto ast = parser.parseCompUnit();
@@ -82,23 +92,46 @@ int main(int argc, char **argv) {
     IRGen irGen;
     irGen.visit(*ast);
 
-    auto module = irGen.getModule(); 
+    auto module = irGen.getModule();
+
+    auto ok = [&](const std::string& passName) -> bool {
+        if (dumpAfterPass == passName) {
+            std::cout << module->print();
+            return true;
+        }
+        return false;
+    };
 
     if (dumpHIR) {
         std::cout << module->print();
+        return 0;
     }
+
+    if (ok("frontend")) return 0;
+
+// ======== Structured High IR ========
 
     HighMem2Reg highMem2Reg(module.get());
     highMem2Reg.run();
+    if (ok("high-mem2reg")) return 0;
 
     HighLICM highLICM(module.get());
     highLICM.run();
+    if (ok("high-licm")) return 0;
+
+// ======== Flattened CFG ========
 
     FlattenCFG flatten(module.get());
     flatten.run();
+    if (ok("flatten-cfg")) return 0;
+
+// ======== Mem2Reg ========
 
     Mem2Reg mem2reg(module.get(), nullptr);
     mem2reg.run();
+    if (ok("mem2reg")) return 0;
+
+// ======== Scalar Cleanup ========
 
     bool changed = true;
     while (changed) {
@@ -111,6 +144,21 @@ int main(int argc, char **argv) {
         changed |= SimplifyCFG(module.get()).run();
         changed |= DCE(module.get()).run();
     }
+    if (ok("scalar-cleanup")) return 0;
+
+// ======== Loop Optimization ========
+
+    LoopSimplify loopSimplify(module.get());
+    loopSimplify.run();
+    if (ok("loop-simplify")) return 0;
+
+    LoopRotate loopRotate(module.get());
+    loopRotate.run();
+    if (ok("loop-rotate")) return 0;
+
+    LCSSA lcssa(module.get());
+    lcssa.run();
+    if (ok("lcssa")) return 0;
 
     while (LICM(module.get()).run()) {
         bool c = true;
@@ -125,10 +173,19 @@ int main(int argc, char **argv) {
             c |= DCE(module.get()).run();
         }
     }
+    if (ok("licm")) return 0;
 
     if (dumpLIR) {
         std::cout << module->print();
+        return 0;
     }
+
+    if (!dumpAfterPass.empty()) {
+        std::cerr << "Unknown dump pass: " << dumpAfterPass << "\n";
+        return 1;
+    }
+
+// ======== Lowering and Backend ========
 
     InstSelPass isel;
     auto mcFuncs = isel.run(module.get());
@@ -142,18 +199,19 @@ int main(int argc, char **argv) {
     for (auto& mcFunc : mcFuncs) {
         peephole.run(mcFunc.get());
     }
-
-    // Emit final assembly via AsmPrinter (handles .text / .data / .bss).
-    AsmPrinter printer;
-    if (!outputFile.empty()) {
-        std::ofstream ofs(outputFile);
-        if (!ofs.is_open()) {
-            std::cerr << "Error: Could not open output file " << outputFile << "\n";
-            return 1;
+    if (!dumpHIR && !dumpLIR) {
+        // Emit final assembly via AsmPrinter (handles .text / .data / .bss).
+        AsmPrinter printer;
+        if (!outputFile.empty()) {
+            std::ofstream ofs(outputFile);
+            if (!ofs.is_open()) {
+                std::cerr << "Error: Could not open output file " << outputFile << "\n";
+                return 1;
+            }
+            printer.run(mcFuncs, module.get(), ofs);
+        } else {
+            printer.run(mcFuncs, module.get(), std::cout);
         }
-        printer.run(mcFuncs, module.get(), ofs);
-    } else {
-        printer.run(mcFuncs, module.get(), std::cout);
     }
 
     return 0;

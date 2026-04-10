@@ -143,14 +143,6 @@ static Instruction* cloneInst(Instruction* inst,
     return clone;
 }
 
-// Before:                         
-//   pre -> head(cond->body/exit)     
-//            head -> body             
-//            latch -> head            
-// After:
-//    pre(cond -> head/exit)
-//      head -> body (unconditional)
-//      latch(cond -> head/exit)
 bool LoopRotate::runOnLoop(Loop* L, Function* f) {
     // LoopSimplify must have run: unique preheader + single latch required.
     if (!L->head || !L->pre || L->latches.size() != 1) return false;
@@ -174,10 +166,6 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
     auto* pbr = dyn_cast<BranchInst>(L->pre->getInstructions().back());
     if (!pbr || pbr->getNumOperands() != 1) return false;
     if (cast<BasicBlock>(pbr->getOperand(0)) != L->head) return false;
-
-    // Single-exit: only header may exit the loop.
-    if (L->exits.size() != 1 || L->exiting.size() != 1 || L->exiting[0] != L->head)
-        return false;
 
     Value* cond = hbr->getOperand(0);
     if (!cond) return false; // while(1): condition folded away
@@ -279,10 +267,13 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
         return {true, rc};
     };
 
-    auto [pok, pcond] = emitChain(L->pre,   initMap);
-    if (!pok) return false;
-    auto [lok, lcond] = emitChain(L->latch, latMap);
-    if (!lok) return false;
+    auto preChainRes = emitChain(L->pre,   initMap);
+    if (!preChainRes.first) return false;
+    Value* pcond = preChainRes.second;
+
+    auto latChainRes = emitChain(L->latch, latMap);
+    if (!latChainRes.first) return false;
+    Value* lcond = latChainRes.second;
 
     // Rebuild full vmap (phis + clones) for SSA fixup.
     auto buildMap = [&](BasicBlock* tgt, std::unordered_map<Value*, Value*> vm)
@@ -306,6 +297,22 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
     for (auto inst : L->head->getInstructions())
         headDef.insert(inst);
 
+    std::vector<BasicBlock*> bodyExitPreds;
+    for (auto* bb : loopBBs) {
+        if (bb == L->head || bb == L->latch) continue;
+        auto& insts = bb->getInstructions();
+        if (insts.empty()) continue;
+        auto* br = dyn_cast<BranchInst>(insts.back());
+        if (!br) continue;
+        int s = br->getNumOperands() == 1 ? 0 : 1;
+        for (int k = s; k < (int)br->getNumOperands(); k++) {
+            if (dyn_cast<BasicBlock>(br->getOperand(k)) == exit) {
+                bodyExitPreds.push_back(bb);
+                break;
+            }
+        }
+    }
+
     std::unordered_map<Value*, Value*> epCache;
     auto getEP = [&](Value* v) -> Value* {
         auto it = epCache.find(v);
@@ -315,6 +322,10 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
         AssignName(ep, v->getName());
         ep->addIncoming(remap(v, preMap),  L->pre);
         ep->addIncoming(remap(v, latMap2), L->latch);
+        // v is a chain instruction defined in head,
+        // head dominates all body blocks, so for each body exit predecessor we use v directly.
+        for (auto* pred : bodyExitPreds)
+            ep->addIncoming(cast<Instruction>(v), pred);
         exit->getInstructions().insert(exit->getInstructions().begin(), ep);
         epCache[v] = ep;
         return ep;
@@ -342,6 +353,10 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
         AssignName(ep, phi->getName());
         ep->addIncoming(remap(preVal, preMap),  L->pre);
         ep->addIncoming(remap(latVal, latMap2), L->latch);
+        // phi is a header phi defined in head; head dominates all body blocks,
+        // so for each body exit predecessor the current iteration value is phi itself.
+        for (auto* pred : bodyExitPreds)
+            ep->addIncoming(phi, pred);
         exit->getInstructions().insert(exit->getInstructions().begin(), ep);
         loopPhiExitCache[phi] = ep;
         return ep;
@@ -394,8 +409,8 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
             }
         }
 
-        Dominators postDt(f);
-        postDt.run();
+        Dominators rotDt(f);
+        rotDt.run();
 
         for (auto bb : f->getBody()->getBlocks()) {
             if (loopBBs.count(bb) || !exitReach.count(bb)) continue;
@@ -405,7 +420,7 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
                 if (auto* phi = dyn_cast<PhiInst>(inst)) {
                     for (int k = 0; k < (int)phi->getNumOperands(); k += 2) {
                         Value* op = phi->getOperand(k);
-                        if (dominatesLoopRotateUse(op, phi, k, postDt)) continue;
+                        if (dominatesLoopRotateUse(op, phi, k, rotDt)) continue;
                         if (headDef.count(op))
                             phi->setOperand(k, getEP(op));
                         else if (auto* loopPhi = dyn_cast<PhiInst>(op)) {
@@ -418,7 +433,7 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
                 } else {
                     for (int k = 0; k < (int)inst->getNumOperands(); k++) {
                         Value* op = inst->getOperand(k);
-                        if (dominatesLoopRotateUse(op, inst, k, postDt)) continue;
+                        if (dominatesLoopRotateUse(op, inst, k, rotDt)) continue;
                         if (headDef.count(op))
                             inst->setOperand(k, getEP(op));
                         else if (auto* loopPhi = dyn_cast<PhiInst>(op)) {

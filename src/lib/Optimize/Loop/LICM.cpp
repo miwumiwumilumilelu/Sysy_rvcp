@@ -189,31 +189,10 @@ bool LICM::tryHoistSubloop(Loop* outer) {
     }
 
     for (auto inner : outer->sub) {
-        if (!inner->latch || !inner->pre || !outer->pre) continue;
+        if (!inner->pre || !outer->pre || inner->latches.empty()) continue;
 
         // Reject multi-latch or multi-exit inner loops.
-        {
-            std::set<BasicBlock*> iset(inner->blocks.begin(), inner->blocks.end());
-            int lc = 0;
-            std::set<BasicBlock*> exits;
-            for (auto bb : inner->blocks) {
-                auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
-                if (!br) continue;
-                if (br->getNumOperands() == 1) {
-                    auto* s = cast<BasicBlock>(br->getOperand(0));
-                    if (s == inner->head) lc++;
-                    else if (!iset.count(s)) exits.insert(s);
-                } else if (br->getNumOperands() == 3) {
-                    auto* s1 = cast<BasicBlock>(br->getOperand(1));
-                    auto* s2 = cast<BasicBlock>(br->getOperand(2));
-                    if (s1 == inner->head) lc++;
-                    else if (!iset.count(s1)) exits.insert(s1);
-                    if (s2 == inner->head) lc++;
-                    else if (!iset.count(s2)) exits.insert(s2);
-                }
-            }
-            if (lc > 1 || exits.size() > 1) continue;
-        }
+        if (inner->latches.size() > 1 || inner->exits.size() > 1) continue;
 
         if (!isFullyOuterInvariant(outer, inner)) continue;
 
