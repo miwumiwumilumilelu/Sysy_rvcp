@@ -284,31 +284,24 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
     auto& entryInsts = entryPred->getInstructions();
     if (entryInsts.empty()) return false;
 
-    // Apply live-out replacements first(exitBB).
     // entryPred:
-    //     br ... head/exit
-    //
+    //      br ... head/exitBB; 
     // loop:
-    //     %x_loop = i + 1
-    //     ...
-    //
-    // exitBB:
-    //     %x.exit = phi [ %x_loop, latch ], ...
-    //     ...
-    // out:
-    //     use %x.exit
+    //      %x.loop = ...; 
+    // exitBB: 
+    //      %x.exit = phi [ %x.loop, latch ], ...; 
+    // out: 
+    //      use %x.exit
     //
     // becomes:
     //
-    // entryPred:
-    //     %x.dle = i + 1
-    //     br ...   ;
-    //
-    // exitBB:
-    //     ;
-    //
-    // out:
-    //     use %x.dle
+    // entryPred: 
+    //      %x.dle = ...; 
+    //      br exitBB; 
+    // exitBB: 
+    //      ; 
+    // out: 
+    //      use %x.dle
     std::unordered_map<Value*, Value*> matCache;
     for (auto& [phi, val] : replacements) {
         std::set<Value*> vis;
@@ -322,6 +315,9 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
     }
 
     // Delete dead exit phis that still mention the loop.
+    // such as:
+    // y.exit = phi [ y.loop, latch ], [ y.entry, entryPred ]
+    // but y.exit is not used outside, we can just delete it without replacement.
     {
         auto& exitInsts = exitBB->getInstructions();
         auto it = exitInsts.begin();
@@ -351,7 +347,7 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
     entryTerm->setParent(nullptr);
     delete entryTerm;
 
-    new BranchInst(exitBB, entryPred); // The constructor appends the branch.
+    new BranchInst(exitBB, entryPred);
     return true;
 }
 
