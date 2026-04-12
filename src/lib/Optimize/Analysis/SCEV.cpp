@@ -111,15 +111,17 @@ SE* SCEV::mul(SE* a, int64_t f) {
 
 SE* SCEV::buildPhi(PhiInst* phi) {
     Loop* L = LI.loopOf(phi->getParent());
-    if (!L || !L->pre) return own(new SEUnknown(phi));
+    if (!L) return own(new SEUnknown(phi));
 
+    // Accept both simplified and rotated loops by requiring one non-loop incoming.
     Value* initVal = nullptr, *backVal = nullptr;
+    int nonLoopCount = 0;
     for (int i = 0; i + 1 < phi->getNumOperands(); i += 2) {
         auto* bb = static_cast<BasicBlock*>(phi->getOperand(i + 1));
-        if (bb == L->pre) initVal = phi->getOperand(i);
-        else if (L->has(bb)) backVal = phi->getOperand(i);
+        if (!L->has(bb)) { initVal = phi->getOperand(i); ++nonLoopCount; }
+        else { backVal = phi->getOperand(i); }
     }
-    if (!initVal || !backVal) return own(new SEUnknown(phi));
+    if (nonLoopCount != 1 || !initVal || !backVal) return own(new SEUnknown(phi));
 
     // Match backVal = AddRec{init, ±const}
     auto tryAddRec = [&](Instruction::OpID op, Value* lhs, Value* rhs) -> SE* {

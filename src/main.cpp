@@ -23,6 +23,7 @@
 #include "Optimize/Loop/LoopSimplify.h"
 #include "Optimize/Loop/LoopRotate.h"
 #include "Optimize/Loop/LCSSA.h"
+#include "Optimize/Loop/DeadLoopElim.h"
 #include "Optimize/Loop/LICM.h"
 #include "rv/InstSel.h"
 #include "rv/RegAlloc.h"
@@ -160,6 +161,12 @@ int main(int argc, char **argv) {
     lcssa.run();
     if (ok("lcssa")) return 0;
 
+    if (DeadLoopElim(module.get()).run()) {
+        SimplifyCFG(module.get()).run();
+        DCE(module.get()).run();
+    }
+    if (ok("deadloop-elim-pre-licm")) return 0;
+
     while (LICM(module.get()).run()) {
         bool c = true;
         while (c) {
@@ -174,6 +181,13 @@ int main(int argc, char **argv) {
         }
     }
     if (ok("licm")) return 0;
+
+    // LICM preserves loop form, so rerun DLE directly without re-canonicalizing.
+    if (DeadLoopElim(module.get()).run()) {
+        SimplifyCFG(module.get()).run();
+        DCE(module.get()).run();
+    }
+    if (ok("deadloop-elim-post-licm")) return 0;
 
     if (dumpLIR) {
         std::cout << module->print();

@@ -1,0 +1,11 @@
+const int g = 42;
+
+int main() {
+  int i = 0;
+  int x = 0;
+  while (i < 200000000) {
+    x = g;
+    i = i + 1;
+  }
+  return x;
+}
