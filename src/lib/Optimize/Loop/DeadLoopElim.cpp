@@ -22,11 +22,6 @@ static bool sameValue(Value* a, Value* b, SCEV& scev) {
     return scev.equal(scev.get(a), scev.get(b));
 }
 
-static BasicBlock* findSingleExit(Loop* L) {
-    if (!L || L->exits.size() != 1) return nullptr;
-    return L->exits[0];
-}
-
 // Only one way is acceptable to use a def defined inside a loop outside the loop:
 // It first flows to the phi outside the loop, and this phi has already been handled by handledPhis(exitBB).
 static bool hasUnhandledLiveOutUses(Loop* L, 
@@ -54,9 +49,6 @@ static bool hasUnhandledLiveOutUses(Loop* L,
     return false;
 }
 
-static bool isEntrySkipEdgeNeverTaken(
-    Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev);
-
 static bool hasObservableSideEffects(Loop* L) {
     std::unordered_map<Function*, bool> purity;
     for (auto* bb : L->blocks) {
@@ -69,6 +61,26 @@ static bool hasObservableSideEffects(Loop* L) {
     return false;
 }
 
+// Evaluate whether the preheader's conditional branch takes the exit edge.
+// Returns +1 = always takes exit (zero-trip), -1 = never takes exit (skip-edge invariant), 0 = unknown.
+static int evalPreheaderEdge(Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev) {
+    if (!L || !exitBB) return 0;
+    auto* entryPred = L->entryBlock(dt);
+    if (!entryPred || entryPred->getInstructions().empty()) return 0;
+    auto* br = dyn_cast<BranchInst>(entryPred->getInstructions().back());
+    if (!br || br->getNumOperands() != 3) return 0;
+    auto* t = dyn_cast<BasicBlock>(br->getOperand(1));
+    auto* f = dyn_cast<BasicBlock>(br->getOperand(2));
+    if (!t || !f) return 0;
+    bool trueIsExit = (t == exitBB);
+    bool falseIsExit = (f == exitBB);
+    if (trueIsExit == falseIsExit) return 0;
+    int condVal = evaluateDeletionCond(br->getOperand(0), scev);
+    if (condVal < 0) return 0;
+    bool takesExit = trueIsExit ? (condVal != 0) : (condVal == 0);
+    return takesExit ? 1 : -1;
+}
+
 // Collect exit-phi replacements for loops whose outgoing value is stable.
 static bool collectExitPhiReplacements(
     Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev,
@@ -76,7 +88,7 @@ static bool collectExitPhiReplacements(
     if (!L || !exitBB) return false;
 
     auto* entryPred = L->entryBlock(dt);
-    bool skipEdgeNeverTaken = isEntrySkipEdgeNeverTaken(L, exitBB, dt, scev);
+    bool skipEdgeNeverTaken = (evalPreheaderEdge(L, exitBB, dt, scev) == -1);
 
     // Build replacement values for live exit phis.
     for (auto* inst : exitBB->getInstructions()) {
@@ -122,29 +134,6 @@ static bool collectExitPhiReplacements(
 
     // Reject remaining loop-defined values that still escape the loop.
     return !hasUnhandledLiveOutUses(L, outMap);
-}
-
-static bool isEntrySkipEdgeNeverTaken(
-    Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev) {
-    if (!L || !exitBB) return false;
-    auto* entryPred = L->entryBlock(dt);
-    if (!entryPred || entryPred->getInstructions().empty()) return false;
-
-    auto* br = dyn_cast<BranchInst>(entryPred->getInstructions().back());
-    if (!br || br->getNumOperands() != 3) return false;
-
-    auto* t = dyn_cast<BasicBlock>(br->getOperand(1));
-    auto* f = dyn_cast<BasicBlock>(br->getOperand(2));
-    if (!t || !f) return false;
-
-    bool trueIsExit = (t == exitBB);
-    bool falseIsExit = (f == exitBB);
-    if (trueIsExit == falseIsExit) return false;
-
-    int condVal = evaluateDeletionCond(br->getOperand(0), scev);
-    if (condVal < 0) return false;
-    bool takesExit = trueIsExit ? (condVal != 0) : (condVal == 0);
-    return !takesExit;
 }
 
 static bool breakBackedgeIfNotTaken(Loop* L, BasicBlock* exitBB, Dominators& dt) {
@@ -213,28 +202,9 @@ static bool breakBackedgeIfNotTaken(Loop* L, BasicBlock* exitBB, Dominators& dt)
 
 static bool collectZeroTrip(Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev,
                                             std::map<PhiInst*, Value*>& outMap) {
-    if (!L || !exitBB) return false;
+    if (evalPreheaderEdge(L, exitBB, dt, scev) != 1) return false;
+
     auto* entryPred = L->entryBlock(dt);
-    if (!entryPred || entryPred->getInstructions().empty()) return false;
-
-    // After looprotate, the preheader br is cond jmp.
-    auto* br = dyn_cast<BranchInst>(entryPred->getInstructions().back());
-    if (!br || br->getNumOperands() != 3) return false;
-
-    // Check if one branch to exit and the other to header.
-    auto* t = dyn_cast<BasicBlock>(br->getOperand(1));
-    auto* f = dyn_cast<BasicBlock>(br->getOperand(2));
-    if (!t || !f) return false;
-    bool trueIsExit = (t == exitBB);
-    bool falseIsExit = (f == exitBB);
-    if (trueIsExit == falseIsExit) return false;
-
-    int condVal = evaluateDeletionCond(br->getOperand(0), scev);
-    if (condVal < 0) return false;
-    bool takesExit = trueIsExit ? (condVal != 0) : (condVal == 0);
-    // if the edge to exit is not taken, the loop executes at least once, so we cannot delete it.
-    if (!takesExit) return false;
-
     for (auto* inst : exitBB->getInstructions()) {
         auto* phi = dyn_cast<PhiInst>(inst);
         if (!phi) break;
@@ -362,8 +332,8 @@ static bool runOnFunction(Function* f) {
             if (!L->sub.empty()) return false;
 
             // Allow multiple exiting blocks, but require one exit block.
-            auto* exitBB = findSingleExit(L);
-            if (!exitBB) return false;
+            if (L->exits.size() != 1) return false;
+            auto* exitBB = L->exits[0];
 
             // Remove loops that are provably skipped on entry.
             {
