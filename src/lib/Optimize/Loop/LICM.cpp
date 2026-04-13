@@ -241,7 +241,8 @@ bool LICM::tryHoistSubloop(Loop* outer) {
 // Domtree DFS LICM. hoistable flag: starts true; Load/Branch sets it false,
 // preventing stores in the same domtree subtree from being hoisted.
 bool LICM::hoistLoop(Loop* L, Dominators& dt, SCEV& scev) {
-    if (!L->pre || !L->latch) return false;
+    auto* preBlock = L->entryBlock(dt);
+    if (!preBlock || !L->latch) return false;
     {
         auto* lbr = dyn_cast<BranchInst>(L->latch->getInstructions().back());
         if (!lbr || lbr->getNumOperands() != 3) return false;
@@ -277,7 +278,7 @@ bool LICM::hoistLoop(Loop* L, Dominators& dt, SCEV& scev) {
         return !L->has(i->getParent()) || inv.count(i);
     };
 
-    auto& pre = L->pre->getInstructions();
+    auto& pre = preBlock->getInstructions();
     auto ins_pt = std::prev(pre.end());
     bool any = false;
 
@@ -333,7 +334,7 @@ bool LICM::hoistLoop(Loop* L, Dominators& dt, SCEV& scev) {
 
         for (auto* inst : toHoist) {
             bb->getInstructions().remove(inst);
-            inst->setParent(L->pre);
+            inst->setParent(preBlock);
             pre.insert(ins_pt, inst);
         }
         any |= !toHoist.empty();
@@ -392,9 +393,10 @@ bool LICM::unifyIndVars(Loop* L, SCEV& scev) {
 }
 
 bool LICM::promoteLoop(Loop* L, Dominators& dt) {
-    if (!L->pre || !L->latch || !L->head) return false;
+    auto* preBlock = L->entryBlock(dt);
+    if (!preBlock || !L->latch || !L->head) return false;
 
-    auto* pbr = dyn_cast<BranchInst>(L->pre->getInstructions().back());
+    auto* pbr = dyn_cast<BranchInst>(preBlock->getInstructions().back());
     if (!pbr || pbr->getNumOperands() != 3) return false;
     auto* lbr = dyn_cast<BranchInst>(L->latch->getInstructions().back());
     if (!lbr || lbr->getNumOperands() != 3) return false;
@@ -480,13 +482,13 @@ bool LICM::promoteLoop(Loop* L, Dominators& dt) {
 
         // Insert preload in preheader before its branch.
         auto* preload = new LoadInst(addr, nullptr);
-        preload->setParent(L->pre);
-        { auto& ins = L->pre->getInstructions(); ins.insert(std::prev(ins.end()), preload); }
+        preload->setParent(preBlock);
+        { auto& ins = preBlock->getInstructions(); ins.insert(std::prev(ins.end()), preload); }
 
         // Insert loop header phi: phi(preload[pre], sval[latch]).
         auto* hphi = new PhiInst(ty, nullptr);
         hphi->setParent(L->head);
-        hphi->addIncoming(preload, L->pre);
+        hphi->addIncoming(preload, preBlock);
         hphi->addIncoming(sval, L->latch);
         L->head->getInstructions().push_front(hphi);
 
@@ -499,7 +501,7 @@ bool LICM::promoteLoop(Loop* L, Dominators& dt) {
 
         auto* ephi = new PhiInst(ty, nullptr);
         ephi->setParent(exitBB);
-        ephi->addIncoming(preload, L->pre);
+        ephi->addIncoming(preload, preBlock);
         ephi->addIncoming(sval, L->latch);
         {
             auto& ins = exitBB->getInstructions();

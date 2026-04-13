@@ -5,6 +5,7 @@
 #include "Optimize/Analysis/Dominators.h"
 #include <map>
 #include <set>
+#include <unordered_set>
 #include <vector>
 
 namespace sysy {
@@ -49,21 +50,31 @@ struct Loop {
     BasicBlock* latch = nullptr; 
     Loop* up = nullptr; 
     std::vector<BasicBlock*> blocks;
-    std::vector<Loop*> sub; 
-    std::vector<BasicBlock*> latches; 
+    std::unordered_set<BasicBlock*> blockSet; // O(1)
+    std::vector<Loop*> sub;
+    std::vector<BasicBlock*> latches;
     // loop-internal blocks with successors outside the loop.
     std::vector<BasicBlock*> exiting;
     // outside successor blocks reached from exiting.
     std::vector<BasicBlock*> exits;
 
     bool has(BasicBlock* bb) const {
-        for (auto b : blocks) if (b == bb) return true;
-        return false;
+        return blockSet.count(bb) != 0;
     }
 
     // Loop Simplify: unique preheader + single latch.
     bool hasPreheaderAndSingleLatch() const {
         return pre && latches.size() == 1;
+    }
+
+    BasicBlock* entryBlock(Dominators& dt) const {
+        BasicBlock* entry = nullptr;
+        for (auto* pred : dt.getPredecessors(head)) {
+            if (has(pred)) continue;
+            if (entry) return nullptr; // multiple external preds
+            entry = pred;
+        }
+        return entry;
     }
 };
 

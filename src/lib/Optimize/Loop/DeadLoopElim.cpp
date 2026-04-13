@@ -22,20 +22,6 @@ static bool sameValue(Value* a, Value* b, SCEV& scev) {
     return scev.equal(scev.get(a), scev.get(b));
 }
 
-// Find the unique loop entry predecessor after rotation.
-static BasicBlock* findPreh(Loop* L, Dominators& dt) {
-    if (!L || !L->head) return nullptr;
-
-    BasicBlock* entryPred = nullptr;
-    for (auto* pred : dt.getPredecessors(L->head)) {
-        if (L->has(pred)) continue;
-        // Prevent multiple preheader.
-        if (entryPred) return nullptr;
-        entryPred = pred;
-    }
-    return entryPred;
-}
-
 static BasicBlock* findSingleExit(Loop* L) {
     if (!L || L->exits.size() != 1) return nullptr;
     return L->exits[0];
@@ -89,7 +75,7 @@ static bool collectExitPhiReplacements(
     std::map<PhiInst*, Value*>& outMap) {
     if (!L || !exitBB) return false;
 
-    auto* entryPred = findPreh(L, dt);
+    auto* entryPred = L->entryBlock(dt);
     bool skipEdgeNeverTaken = isEntrySkipEdgeNeverTaken(L, exitBB, dt, scev);
 
     // Build replacement values for live exit phis.
@@ -121,11 +107,12 @@ static bool collectExitPhiReplacements(
         if (!isDeletionMaterializable(uniqueLoopVal, L))
             return false;
 
-        // Non-loop incomings must match the loop result.
+        // Only the entry skip edge may contribute a loop-outside incoming.
         for (int k = 0; k < (int)phi->getNumOperands(); k += 2) {
             auto* fromBB = dyn_cast<BasicBlock>(phi->getOperand(k + 1));
-            if (!fromBB || !L->has(fromBB)) continue;
-            if (skipEdgeNeverTaken && fromBB == entryPred) continue;
+            if (!fromBB || L->has(fromBB)) continue;
+            if (fromBB != entryPred) return false;
+            if (skipEdgeNeverTaken) continue;
             if (!sameValue(uniqueLoopVal, phi->getOperand(k), scev))
                 return false;
         }
@@ -140,7 +127,7 @@ static bool collectExitPhiReplacements(
 static bool isEntrySkipEdgeNeverTaken(
     Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev) {
     if (!L || !exitBB) return false;
-    auto* entryPred = findPreh(L, dt);
+    auto* entryPred = L->entryBlock(dt);
     if (!entryPred || entryPred->getInstructions().empty()) return false;
 
     auto* br = dyn_cast<BranchInst>(entryPred->getInstructions().back());
@@ -162,7 +149,7 @@ static bool isEntrySkipEdgeNeverTaken(
 
 static bool breakBackedgeIfNotTaken(Loop* L, BasicBlock* exitBB, Dominators& dt) {
     if (!L || !exitBB || !L->head || !L->latch) return false;
-    auto* entryPred = findPreh(L, dt);
+    auto* entryPred = L->entryBlock(dt);
     if (!entryPred) return false;
 
     auto& latchInsts = L->latch->getInstructions();
@@ -227,7 +214,7 @@ static bool breakBackedgeIfNotTaken(Loop* L, BasicBlock* exitBB, Dominators& dt)
 static bool collectZeroTrip(Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev,
                                             std::map<PhiInst*, Value*>& outMap) {
     if (!L || !exitBB) return false;
-    auto* entryPred = findPreh(L, dt);
+    auto* entryPred = L->entryBlock(dt);
     if (!entryPred || entryPred->getInstructions().empty()) return false;
 
     // After looprotate, the preheader br is cond jmp.
@@ -278,7 +265,7 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
                             std::map<PhiInst*, Value*>& replacements,
                             Dominators& dt) {
     if (!exitBB) return false;
-    auto* entryPred = findPreh(L, dt);
+    auto* entryPred = L->entryBlock(dt);
     if (!entryPred) return false;
 
     auto& entryInsts = entryPred->getInstructions();

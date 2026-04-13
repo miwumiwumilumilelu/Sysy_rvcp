@@ -27,7 +27,7 @@ void LoopInfo::build() {
         auto* L = new Loop();
         L->head = head;
         L->latches = latches;
-        L->latch = latches.empty() ? nullptr : latches.back();
+        L->latch = (latches.size() == 1) ? latches[0] : nullptr;
         All.push_back(L);
 
         std::set<BasicBlock*> seen;
@@ -49,6 +49,7 @@ void LoopInfo::build() {
         }
 
         L->blocks.assign(seen.begin(), seen.end());
+        L->blockSet = std::unordered_set<BasicBlock*>(seen.begin(), seen.end());
         auto it = std::find(L->blocks.begin(), L->blocks.end(), head);
         if (it != L->blocks.end())
             std::iter_swap(L->blocks.begin(), it);

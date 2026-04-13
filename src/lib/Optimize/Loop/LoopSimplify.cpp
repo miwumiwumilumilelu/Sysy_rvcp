@@ -108,6 +108,7 @@ BasicBlock* LoopSimplify::mergeLatches(Loop* L) {
     Region* region = L->head->getParent();
     auto* nl = new BasicBlock("latch_merge_" + L->head->getName(), region);
     L->blocks.push_back(nl);
+    L->blockSet.insert(nl);
 
     for (auto* hp : hphis) {
         auto* fwd = new PhiInst(hp->getType(), nullptr);
