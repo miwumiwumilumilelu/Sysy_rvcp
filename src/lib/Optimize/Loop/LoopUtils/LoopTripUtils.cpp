@@ -32,10 +32,11 @@ bool sysy::isLoopInvariantValue(Value* v, Loop* L) {
     return true;
 }
 
-bool sysy::analyzeLatchTripInfo(Loop* L, SCEV& scev, LatchTripInfo& out) {
-    if (!L || !L->latch || L->latch->getInstructions().empty()) return false;
+bool sysy::analyzeExitBranch(Loop* L, BasicBlock* testBB, SCEV& scev,
+                             ExitBranchInfo& out) {
+    if (!L || !testBB || testBB->getInstructions().empty()) return false;
 
-    auto* br = dyn_cast<BranchInst>(L->latch->getInstructions().back());
+    auto* br = dyn_cast<BranchInst>(testBB->getInstructions().back());
     if (!br || br->getNumOperands() != 3) return false;
 
     auto* cmp = dyn_cast<ICmpInst>(br->getOperand(0));
@@ -110,7 +111,37 @@ bool sysy::getConstantTripCountForCompare(int64_t start, int64_t step,
     }
 }
 
-bool sysy::hasKnownFiniteTripCount(const LatchTripInfo& info, Loop* L) {
+bool sysy::getConstantTripCountFromInfo(const ExitBranchInfo& info, Loop* L,
+                                        int64_t& tripCount) {
+    if (!L || !info.cmp) return false;
+
+    // Both sides varying on this loop: no single IV to read start/step from.
+    if (info.lhsRec && info.lhsRec->loop == L &&
+        info.rhsRec && info.rhsRec->loop == L) {
+        return false;
+    }
+
+    SEAddRec* ivRec = nullptr;
+    SEConst* boundCst = nullptr;
+    ICmpInst::CmpOp contPred = info.continuePred;
+    if (info.lhsRec && info.lhsRec->loop == L && !info.rhsRec) {
+        ivRec = info.lhsRec;
+        boundCst = dyn_cast<SEConst>(info.rhsSE);
+    } else if (info.rhsRec && info.rhsRec->loop == L && !info.lhsRec) {
+        ivRec = info.rhsRec;
+        boundCst = dyn_cast<SEConst>(info.lhsSE);
+        contPred = swapTripPred(info.continuePred);
+    }
+    if (!ivRec || !boundCst) return false;
+
+    auto* startCst = dyn_cast<SEConst>(ivRec->start);
+    if (!startCst) return false;
+
+    return getConstantTripCountForCompare(startCst->val, ivRec->step,
+                                          boundCst->val, contPred, tripCount);
+}
+
+bool sysy::hasKnownFiniteTripCount(const ExitBranchInfo& info, Loop* L) {
     if (!L || !info.cmp) return false;
 
     if (info.lhsRec && info.lhsRec->loop == L &&
@@ -133,26 +164,13 @@ bool sysy::hasKnownFiniteTripCount(const LatchTripInfo& info, Loop* L) {
 
     if (info.continuePred != ICmpInst::NE) return false;
 
-    SEAddRec* ivRec = nullptr;
-    SEConst* boundCst = nullptr;
-    if (info.lhsRec && info.lhsRec->loop == L && !info.rhsRec) {
-        ivRec = info.lhsRec;
-        boundCst = dyn_cast<SEConst>(info.rhsSE);
-    } else if (info.rhsRec && info.rhsRec->loop == L && !info.lhsRec) {
-        ivRec = info.rhsRec;
-        boundCst = dyn_cast<SEConst>(info.lhsSE);
-    }
-    if (!ivRec || !boundCst) return false;
-
-    auto* startCst = dyn_cast<SEConst>(ivRec->start);
-    if (!startCst) return false;
-
     int64_t trips = 0;
-    return getConstantTripCountForCompare(startCst->val, ivRec->step,
-                                        boundCst->val, info.continuePred, trips);
+    return getConstantTripCountFromInfo(info, L, trips);
 }
 
 bool sysy::hasKnownFiniteTripCount(Loop* L, SCEV& scev) {
-    LatchTripInfo info;
-    return analyzeLatchTripInfo(L, scev, info) && hasKnownFiniteTripCount(info, L);
+    if (!L) return false;
+    ExitBranchInfo info;
+    return analyzeExitBranch(L, L->latch, scev, info) &&
+           hasKnownFiniteTripCount(info, L);
 }
