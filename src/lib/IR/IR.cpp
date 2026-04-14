@@ -380,11 +380,12 @@ std::string ContinueInst::toString() const {
 }
 
 GetElementPtrInst::GetElementPtrInst(Value* base, Value* index, BasicBlock* parent)
-    : Instruction(base->getType(), GetElementPtr, parent) {
+    : Instruction(base->getType(), GetElementPtr, parent), indexedType(nullptr) {
     addOperand(base);
     addOperand(index);
 
     if (auto ptrTy = dyn_cast<PointerType>(base->getType())) {
+        indexedType = ptrTy->getPointeeType();
         if (auto arrTy = dyn_cast<ArrayType>(ptrTy->getPointeeType())) {
             Ty = new PointerType(arrTy->getElementType());
         }

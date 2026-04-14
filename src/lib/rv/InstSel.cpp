@@ -652,7 +652,10 @@ void InstSelPass::selectGetElementPtr(GetElementPtrInst* inst, InstSelContext& c
         if (bv < ctx.func->vregInfo.size()) ctx.func->vregInfo[bv].isPtr = true;
     }
 
-    auto elemType = static_cast<PointerType*>(base->getType())->getPointeeType();
+    auto* elemType = inst->getIndexedType();
+    if (!elemType) {
+        elemType = static_cast<PointerType*>(base->getType())->getPointeeType();
+    }
     int elemSize = typeByteSize(elemType);
 
     // Constant index: compile-time computation offset, eliminating runtime multiplication.
