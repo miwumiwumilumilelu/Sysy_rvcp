@@ -285,6 +285,10 @@ bool LICM::hoistLoop(Loop* L, Dominators& dt, SCEV& scev) {
     std::function<void(BasicBlock*, bool)> visit = [&](BasicBlock* bb, bool hoistable) {
         std::vector<Instruction*> toHoist;
 
+        // Only hoist from latch-dominating blocks (unconditional every iteration).
+        // Speculative hoist from conditional paths extends live ranges for free.
+        bool execsEveryIter = dt.dominates(bb, L->latch);
+
         for (auto inst : bb->getInstructions()) {
             auto op = inst->getOpID();
 
@@ -313,7 +317,7 @@ bool LICM::hoistLoop(Loop* L, Dominators& dt, SCEV& scev) {
             }
 
             if (op == Instruction::Load) {
-                if (hasMW || !outside(inst->getOperand(0))) continue;
+                if (!execsEveryIter || hasMW || !outside(inst->getOperand(0))) continue;
                 Value* lb = getBaseObject(inst->getOperand(0));
                 SE* lse = scev.get(inst->getOperand(0));
                 bool alias = false;
@@ -329,7 +333,7 @@ bool LICM::hoistLoop(Loop* L, Dominators& dt, SCEV& scev) {
             bool ok = true;
             for (int i = 0; i < (int)inst->getNumOperands(); i++)
                 if (!outside(inst->getOperand(i))) { ok = false; break; }
-            if (ok) { inv.insert(inst); toHoist.push_back(inst); }
+            if (ok && execsEveryIter) { inv.insert(inst); toHoist.push_back(inst); }
         }
 
         for (auto* inst : toHoist) {
