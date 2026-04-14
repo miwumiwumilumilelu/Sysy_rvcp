@@ -1,4 +1,5 @@
 #include "Optimize/Scalar/CFGInline.h"
+#include "Optimize/Scalar/IRClone.h"
 #include "Optimize/Scalar/SSAInline.h"
 #include <algorithm>
 #include <assert.h>
@@ -92,7 +93,7 @@ void CFGInline::doInline(CallInst* call) {
             inst->setParent(endBB);
     }
 
-    std::map<BasicBlock*, BasicBlock*> bbMap;
+    BlockMap bbMap;
     std::vector<BasicBlock*> calleeBlocks;
     for (auto bb : callee->getBody()->getBlocks()) {
         auto* cloned = new BasicBlock(callee->getName() + "_" + bb->getName(), nullptr);
@@ -112,27 +113,10 @@ void CFGInline::doInline(CallInst* call) {
         blocks.insert(insPos, endBB);
     }
 
-    std::map<Value*, Value*> vmap;
+    ValueMap vmap;
     const auto& fargs = callee->getArgs();
     for (int i = 0; i < (int)fargs.size(); ++i)
         vmap[fargs[i]] = call->getOperand(i + 1);
-
-    struct PhiPair { PhiInst* orig; PhiInst* clone; };
-    std::vector<PhiPair> pendingPhis;
-
-    for (auto origBB : calleeBlocks) {
-        auto* clonedBB = bbMap[origBB];
-        for (auto inst : origBB->getInstructions()) {
-            if (auto phi = dyn_cast<PhiInst>(inst)) {
-                auto* cphi = new PhiInst(phi->getType(), nullptr);
-                cphi->setName(phi->getName());
-                cphi->setParent(clonedBB);
-                clonedBB->getInstructions().push_back(cphi);
-                vmap[phi] = cphi;
-                pendingPhis.push_back({phi, cphi});
-            }
-        }
-    }
 
     // ret -> alloca + store/load
     AllocaInst* retAddr = nullptr;
@@ -145,39 +129,31 @@ void CFGInline::doInline(CallInst* call) {
         callInsts.insert(callIt, retAddr);
     }
 
+    // Two-pass clone: skeletons then operands, so forward refs resolve.
     for (auto origBB : calleeBlocks) {
         auto* clonedBB = bbMap[origBB];
         for (auto inst : origBB->getInstructions()) {
-            if (inst->getOpID() == Instruction::Phi || inst->getOpID() == Instruction::Ret)
-                continue;
-            auto* cloned = SSAInline::cloneNonPhiInst(inst, clonedBB, vmap, bbMap);
-            if (cloned)
-                vmap[inst] = cloned;
+            if (inst->getOpID() == Instruction::Ret) continue;
+            auto* c = cloneSkeleton(inst, clonedBB);
+            vmap[inst] = c;
+        }
+    }
+    for (auto origBB : calleeBlocks) {
+        for (auto inst : origBB->getInstructions()) {
+            if (inst->getOpID() == Instruction::Ret) continue;
+            fillOperands(cast<Instruction>(vmap[inst]), inst, vmap, bbMap);
         }
     }
 
-    for (auto [origPhi, cphi] : pendingPhis) {
-        for (int i = 0; i < origPhi->getNumOperands(); i += 2) {
-            Value* val = SSAInline::remap(origPhi->getOperand(i), vmap, bbMap);
-            auto* bb = cast<BasicBlock>(SSAInline::remap(origPhi->getOperand(i + 1), vmap, bbMap));
-            cphi->addIncoming(val, bb);
-        }
-    }
-
+    // Route returns to endBB, storing the value into retAddr.
     for (auto origBB : calleeBlocks) {
         auto* clonedBB = bbMap[origBB];
         for (auto inst : origBB->getInstructions()) {
             if (inst->getOpID() != Instruction::Ret) continue;
-
-            if (retAddr && inst->getNumOperands() > 0) {
-                auto* store = new StoreInst(SSAInline::remap(inst->getOperand(0), vmap, bbMap), retAddr, nullptr);
-                store->setParent(clonedBB);
-                clonedBB->getInstructions().push_back(store);
-            }
-
-            auto* br = new BranchInst(endBB, nullptr);
-            br->setParent(clonedBB);
-            clonedBB->getInstructions().push_back(br);
+            if (retAddr && inst->getNumOperands() > 0)
+                new StoreInst(remapValue(inst->getOperand(0), vmap, bbMap),
+                              retAddr, clonedBB);
+            new BranchInst(endBB, clonedBB);
         }
     }
 

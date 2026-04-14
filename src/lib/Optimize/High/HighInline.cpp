@@ -1,4 +1,5 @@
 #include "Optimize/High/HighInline.h"
+#include "Optimize/Scalar/IRClone.h"
 #include "Optimize/Scalar/SSAInline.h"
 #include <algorithm>
 #include <assert.h>
@@ -155,7 +156,7 @@ Instruction* HighInline::cloneFlatInst(
         case Instruction::GetElementPtr:
         case Instruction::Call:
         case Instruction::Br:
-            return SSAInline::cloneNonPhiInst(inst, target, vmap, bbMap);
+            return cloneInst(inst, target, vmap, bbMap);
         case Instruction::Break:
             return new BreakInst(nullptr);
         case Instruction::Continue:
@@ -163,7 +164,7 @@ Instruction* HighInline::cloneFlatInst(
         case Instruction::Flow: {
             std::vector<Value*> vals;
             for (int i = 0; i < inst->getNumOperands(); ++i)
-                vals.push_back(SSAInline::remap(inst->getOperand(i), vmap, bbMap));
+                vals.push_back(remapValue(inst->getOperand(i), vmap, bbMap));
             return new FlowInst(vals, nullptr);
         }
         case Instruction::Ret:
@@ -233,9 +234,9 @@ void HighInline::cloneRegion(Region* src,
 
     for (auto [origPhi, cphi] : pendingPhis) {
         for (int i = 0; i < origPhi->getNumOperands(); i += 2) {
-            auto* val = SSAInline::remap(origPhi->getOperand(i), vmap, bbMap);
+            auto* val = remapValue(origPhi->getOperand(i), vmap, bbMap);
             auto* bb = cast<BasicBlock>(
-                SSAInline::remap(origPhi->getOperand(i + 1), vmap, bbMap));
+                remapValue(origPhi->getOperand(i + 1), vmap, bbMap));
             cphi->addIncoming(val, bb);
         }
     }
@@ -247,7 +248,7 @@ Instruction* HighInline::cloneStructuredInst(
     if (auto* ifInst = dyn_cast<IfInst>(inst)) {
         auto baseMap = vmap;
         std::map<BasicBlock*, BasicBlock*> emptyBBMap;
-        auto* cloned = new IfInst(SSAInline::remap(ifInst->getOperand(0), vmap, emptyBBMap), nullptr);
+        auto* cloned = new IfInst(remapValue(ifInst->getOperand(0), vmap, emptyBBMap), nullptr);
         cloned->setName(ifInst->getName());
         if (ifInst->getElseRegion())
             cloned->addElseRegion();
@@ -270,7 +271,7 @@ Instruction* HighInline::cloneStructuredInst(
         cloned->setName(whileInst->getName());
         std::map<BasicBlock*, BasicBlock*> emptyBBMap;
         for (int i = 0; i < whileInst->getNumOperands(); ++i)
-            cloned->addOperand(SSAInline::remap(whileInst->getOperand(i), vmap, emptyBBMap));
+            cloned->addOperand(remapValue(whileInst->getOperand(i), vmap, emptyBBMap));
         for (auto rv : whileInst->getResults()) {
             auto* newRV = cloned->createResult(rv->getType());
             newRV->setName(rv->getName());
@@ -311,7 +312,7 @@ void HighInline::doInline(CallInst* call) {
         if (auto ret = dyn_cast<ReturnInst>(inst)) {
             if (ret->getNumOperands() > 0) {
                 std::map<BasicBlock*, BasicBlock*> emptyBBMap;
-                retVal = SSAInline::remap(ret->getOperand(0), vmap, emptyBBMap);
+                retVal = remapValue(ret->getOperand(0), vmap, emptyBBMap);
             }
             break;
         }
