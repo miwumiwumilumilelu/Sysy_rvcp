@@ -1,5 +1,4 @@
 #include "Optimize/Loop/LICM.h"
-#include "Optimize/Loop/LoopRotate.h"
 #include "Optimize/Analysis/Dominators.h"
 #include "Optimize/Analysis/PureFunc.h"
 #include "IR/Instruction.h"
@@ -85,8 +84,6 @@ bool LICM::run() {
 bool LICM::runFunc(Function* f) {
     if (f->getBody()->getBlocks().empty()) return false;
     bool changed = false;
-
-    changed |= LoopRotate::runOnFunction(f);
 
     {
         Dominators dt(f); dt.run();
