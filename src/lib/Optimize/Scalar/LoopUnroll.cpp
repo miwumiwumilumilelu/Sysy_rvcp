@@ -7,6 +7,7 @@
 #include "IR/Instruction.h"
 #include <algorithm>
 #include <cassert>
+#include <unordered_map>
 #include <vector>
 
 using namespace sysy;
@@ -31,59 +32,95 @@ struct UnrollInfo {
     BasicBlock* head;
     BasicBlock* latch;
     BasicBlock* exit;
-    PhiInst* ivPhi; // Induction phi.
-    Instruction* ivIncrement; // The specific IV increment instruction in the latch.
-    int start; // Initial IV value.
-    int stride; // IV step per iteration (nonzero).
-    int tripCount; // Exact iteration count.
-    // Non-IV carried phis.
+    PhiInst* ivPhi;
+    Instruction* ivIncrement;
+    Instruction* exitCmp = nullptr; // Latch icmp for latch-tested shape.
+    int start;
+    int stride;
+    int tripCount;
     std::vector<PhiInst*> carriedPhis;
 };
 
-// Match the simple counted-loop shape handled by this pass.
+// Match counted-loop shape.
 static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
                       UnrollInfo& info, int threshold) {
-    // Require one preheader and exactly two loop blocks.
     if (!pre) return false;
     if (L->blocks.size() != 2) return false;
 
     BasicBlock* head = L->head;
     BasicBlock* latch = L->latch;
 
-    // The header must end with a conditional branch.
     auto& headInsts = head->getInstructions();
     if (headInsts.empty()) return false;
-    auto* br = dyn_cast<BranchInst>(headInsts.back());
-    if (!br || br->getNumOperands() != 3) return false;
+    auto* hbr = dyn_cast<BranchInst>(headInsts.back());
+    if (!hbr) return false;
 
-    // The condition must be a direct icmp.
-    auto* cmp = dyn_cast<ICmpInst>(br->getOperand(0));
-    if (!cmp) return false;
+    auto& latchInsts = latch->getInstructions();
+    if (latchInsts.empty()) return false;
+    auto* lbr = dyn_cast<BranchInst>(latchInsts.back());
+    if (!lbr) return false;
 
-    // Identify the unique exit edge.
-    BasicBlock* bodyEntry = dyn_cast<BasicBlock>(br->getOperand(1));
-    BasicBlock* exitBB = dyn_cast<BasicBlock>(br->getOperand(2));
-    if (!bodyEntry || !exitBB) return false;
+    BasicBlock* testBB = nullptr;
+    ICmpInst* cmp = nullptr;
+    BasicBlock* exitBB = nullptr;
+    Instruction* exitCmpInLatch = nullptr;
 
-    // Normalize the in-loop and out-of-loop successors.
-    bool bodyIsTrue = L->has(bodyEntry);
-    if (!bodyIsTrue) {
-        if (!L->has(exitBB)) return false; // Neither successor is in the loop.
-        std::swap(bodyEntry, exitBB);
-    }
-    if (L->has(exitBB)) return false; // Both successors stay in the loop.
-
-    // The loop-taking edge must go to the latch.
-    if (bodyEntry != latch) return false;
-
-    // The latch must jump back to the header unconditionally.
-    {
-        auto& li = latch->getInstructions();
-        if (li.empty()) return false;
-        auto* lbr = dyn_cast<BranchInst>(li.back());
-        if (!lbr || lbr->getNumOperands() != 1) return false;
+    if (hbr->getNumOperands() == 3 && lbr->getNumOperands() == 1) {
+        // Top-tested shape.
         if (dyn_cast<BasicBlock>(lbr->getOperand(0)) != head) return false;
+
+        cmp = dyn_cast<ICmpInst>(hbr->getOperand(0));
+        if (!cmp) return false;
+
+        auto* t1 = dyn_cast<BasicBlock>(hbr->getOperand(1));
+        auto* t2 = dyn_cast<BasicBlock>(hbr->getOperand(2));
+        if (!t1 || !t2) return false;
+
+        BasicBlock* bodyEntry = L->has(t1) ? t1 : t2;
+        exitBB = L->has(t1) ? t2 : t1;
+        if (!L->has(bodyEntry) || L->has(exitBB)) return false;
+        if (bodyEntry != latch) return false;
+
+        testBB = head;
+
+        // Allow only phis, cmp, and branch.
+        bool seenCmp = false, seenBr = false;
+        for (auto* inst : headInsts) {
+            if (isa<PhiInst>(inst)) continue;
+            if (inst == cmp && !seenCmp && !seenBr) { seenCmp = true; continue; }
+            if (isa<BranchInst>(inst) && seenCmp && !seenBr) { seenBr = true; continue; }
+            return false;
+        }
+        if (!seenCmp || !seenBr) return false;
     }
+    else if (hbr->getNumOperands() == 1 && lbr->getNumOperands() == 3) {
+        // Latch-tested shape after rotate.
+        if (dyn_cast<BasicBlock>(hbr->getOperand(0)) != latch) return false;
+
+        cmp = dyn_cast<ICmpInst>(lbr->getOperand(0));
+        if (!cmp) return false;
+
+        auto* t1 = dyn_cast<BasicBlock>(lbr->getOperand(1));
+        auto* t2 = dyn_cast<BasicBlock>(lbr->getOperand(2));
+        if (!t1 || !t2) return false;
+
+        if (t1 == head && t2 != head && !L->has(t2)) { exitBB = t2; }
+        else if (t2 == head && t1 != head && !L->has(t1)) { exitBB = t1; }
+        else return false;
+
+        testBB = latch;
+        exitCmpInLatch = cmp;
+
+        // Allow only phis and branch.
+        for (auto* inst : headInsts) {
+            if (isa<PhiInst>(inst) || isa<BranchInst>(inst)) continue;
+            return false;
+        }
+    }
+    else {
+        return false;
+    }
+
     // Collect header phis and identify the induction phi.
     std::vector<PhiInst*> allPhis;
     for (auto inst : headInsts) {
@@ -93,22 +130,9 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
     }
     if (allPhis.empty()) return false;
 
-    // Reject headers with extra computation.
-    {
-        bool seenCmp = false, seenBr = false;
-        for (auto* inst : headInsts) {
-            if (isa<PhiInst>(inst)) continue;
-            if (inst == cmp && !seenCmp && !seenBr) { seenCmp = true; continue; }
-            if (isa<BranchInst>(inst) && seenCmp && !seenBr) { seenBr = true; continue; }
-            return false; // Unexpected instruction in the header.
-        }
-        if (!seenCmp || !seenBr) return false;
-    }
-
-    // Identify the induction phi via SCEV: it must be an AddRec on this loop
-    // with a constant start and nonzero constant stride.
+    // Identify the induction phi via SCEV AddRec.
     PhiInst* ivPhi = nullptr;
-    Instruction* ivIncrement = nullptr; // The one specific IV increment instruction.
+    Instruction* ivIncrement = nullptr;
     int ivStart = 0;
     int ivStride = 0;
     for (auto* phi : allPhis) {
@@ -116,7 +140,6 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
         if (!rec || rec->loop != L || rec->step == 0) continue;
         auto* startC = dyn_cast<SEConst>(rec->start);
         if (!startC) continue;
-        // Recover the specific latch increment instruction for clone-time skip.
         Value* fromLatch = nullptr;
         for (int i = 0; i < phi->getNumOperands(); i += 2) {
             auto* inBB = dyn_cast<BasicBlock>(phi->getOperand(i + 1));
@@ -132,13 +155,11 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
     }
     if (!ivPhi) return false;
 
-    // The trip count must come from a simple constant-bound compare in the
-    // header.  One side of the compare must be an AddRec on this loop with a
-    // constant start, the other must be a constant.
+    // Compute trip count.
     int tripCount = -1;
     {
         ExitBranchInfo ebi;
-        if (!analyzeExitBranch(L, head, scev, ebi)) return false;
+        if (!analyzeExitBranch(L, testBB, scev, ebi)) return false;
         int64_t exactTrips = -1;
         if (!getConstantTripCountFromInfo(ebi, L, exactTrips)) return false;
         tripCount = (int)exactTrips;
@@ -148,9 +169,31 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
 
     // Reject latch bodies with unsupported instructions.
     for (auto inst : latch->getInstructions()) {
-        if (isa<BranchInst>(inst)) continue; // Ignore the backedge branch.
-        if (inst == ivIncrement) continue;   // Fold only the specific IV step.
-        if (!isSupportedInst(inst)) return false; // Reject unsupported instructions.
+        if (isa<BranchInst>(inst)) continue;
+        if (inst == ivIncrement) continue;
+        if (inst == exitCmpInLatch) continue;
+        if (!isSupportedInst(inst)) return false;
+    }
+
+    // Each latch operand must map to exactly one header phi.
+    if (exitCmpInLatch) {
+        std::unordered_map<Value*, int> latchOpCount;
+        for (auto* phi : allPhis) {
+            for (int i = 0; i < phi->getNumOperands(); i += 2) {
+                auto* inBB = dyn_cast<BasicBlock>(phi->getOperand(i + 1));
+                if (inBB == latch) { latchOpCount[phi->getOperand(i)]++; break; }
+            }
+        }
+        for (auto& p : latchOpCount) if (p.second > 1) return false;
+        for (auto* inst : exitBB->getInstructions()) {
+            auto* ep = dyn_cast<PhiInst>(inst);
+            if (!ep) break;
+            for (int i = 0; i < ep->getNumOperands(); i += 2) {
+                auto* bb = dyn_cast<BasicBlock>(ep->getOperand(i + 1));
+                if (bb == latch && !latchOpCount.count(ep->getOperand(i)))
+                    return false;
+            }
+        }
     }
 
     // Collect non-IV carried phis.
@@ -163,6 +206,7 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
     info.exit = exitBB;
     info.ivPhi = ivPhi;
     info.ivIncrement = ivIncrement;
+    info.exitCmp = exitCmpInLatch;
     info.start = ivStart;
     info.stride = ivStride;
     info.tripCount = tripCount;
@@ -219,7 +263,8 @@ static bool unrollLoop(Loop* /*L*/, BasicBlock* pre, UnrollInfo& info,
         ValueMap iterMap = curVal;
 
         for (auto inst : latch->getInstructions()) {
-            if (isa<BranchInst>(inst)) continue; // Skip the backedge branch.
+            if (isa<BranchInst>(inst)) continue;
+            if (inst == info.exitCmp) continue;
 
             if (inst == info.ivIncrement) {
                 iterMap[inst] = new ConstantInt(info.start + (iter + 1) * info.stride);
@@ -247,6 +292,32 @@ static bool unrollLoop(Loop* /*L*/, BasicBlock* pre, UnrollInfo& info,
 
     // Jump directly from the preheader to the exit.
     new BranchInst(exit, pre);
+
+    // Rewrite latch-tested exit phis.
+    if (info.exitCmp) {
+        std::unordered_map<Value*, PhiInst*> latchValToPhi;
+        for (auto* phi : info.carriedPhis)
+            if (Value* lv = getLatchIncoming(phi)) latchValToPhi[lv] = phi;
+        if (Value* lv = getLatchIncoming(info.ivPhi)) latchValToPhi[lv] = info.ivPhi;
+
+        std::vector<PhiInst*> exitPhis;
+        for (auto* inst : exit->getInstructions()) {
+            auto* ep = dyn_cast<PhiInst>(inst);
+            if (!ep) break;
+            exitPhis.push_back(ep);
+        }
+        for (auto* ep : exitPhis) {
+            for (int i = 0; i < (int)ep->getNumOperands(); i += 2) {
+                auto* bb = dyn_cast<BasicBlock>(ep->getOperand(i + 1));
+                if (bb != latch) continue;
+                Value* v = ep->getOperand(i);
+                auto it = latchValToPhi.find(v);
+                if (it != latchValToPhi.end())
+                    ep->setOperand(i, curVal[it->second]);
+            }
+            ep->removeIncomingByBlock(pre);
+        }
+    }
 
     // Rewrite exit uses to the final unrolled values.
     for (auto inst : exit->getInstructions()) {

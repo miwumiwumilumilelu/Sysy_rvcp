@@ -9,6 +9,12 @@
 
 using namespace sysy;
 
+static int LICMHoistPreBBID = 0;
+
+static std::string hoistedPreName(BasicBlock* head) {
+    return "pre_" + head->getName() + "_h" + std::to_string(LICMHoistPreBBID++);
+}
+
 // Get CFG pred list for targetBB in the same parent region.
 static std::vector<BasicBlock*> getActualPredecessors(BasicBlock* target) {
     std::vector<BasicBlock*> preds;
@@ -29,6 +35,37 @@ static std::vector<BasicBlock*> getActualPredecessors(BasicBlock* target) {
         }
     }
     return preds;
+}
+
+static bool valueAvailableAtBypass(Value* v, Loop* inner) {
+    auto* def = dyn_cast<Instruction>(v);
+    return !def || !inner->has(def->getParent());
+}
+
+static bool canRedirectPhiIncoming(BasicBlock* bb, BasicBlock* oldPred,
+                                   Loop* inner) {
+    for (auto* inst : bb->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+        for (int k = 0; k < (int)phi->getNumOperands(); k += 2) {
+            if (phi->getOperand(k + 1) != oldPred) continue;
+            if (!valueAvailableAtBypass(phi->getOperand(k), inner))
+                return false;
+        }
+    }
+    return true;
+}
+
+static void redirectPhiIncoming(BasicBlock* bb, BasicBlock* oldPred,
+                                BasicBlock* newPred) {
+    for (auto* inst : bb->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+        for (int k = 1; k < (int)phi->getNumOperands(); k += 2) {
+            if (phi->getOperand(k) == oldPred)
+                phi->setOperand(k, newPred);
+        }
+    }
 }
 
 // Follow GEP/phi chains to the root pointer (global, alloca, or arg).
@@ -98,7 +135,8 @@ bool LICM::runFunc(Function* f) {
         for (auto top : li.tops()) visit(top);
     }
 
-    // hoist entire outer-invariant inner loops before the outer loop.
+    // Hoist entire outer-invariant inner loops before the outer loop, but only
+    // when the CFG/phi rewrites are proven safe for the bypassed inner preheader.
     bool hoisted;
     do {
         hoisted = false;
@@ -119,7 +157,7 @@ bool LICM::isFullyOuterInvariant(Loop* outer, Loop* inner) {
     std::set<BasicBlock*> outerBBs(outer->blocks.begin(), outer->blocks.end());
     std::set<BasicBlock*> innerBBs(inner->blocks.begin(), inner->blocks.end());
 
-    // Collect write-bases from outer-only blocks; bail on impure calls.
+    // Collect write-bases from outer-only blocks (for inner load alias check).
     std::set<Value*> owb;
     for (auto bb : outerBBs) {
         if (innerBBs.count(bb)) continue;
@@ -190,6 +228,7 @@ bool LICM::tryHoistSubloop(Loop* outer) {
 
         // Reject multi-latch or multi-exit inner loops.
         if (inner->latches.size() > 1 || inner->exits.size() > 1) continue;
+        if (inner->exiting.size() != 1 || inner->exits.size() != 1) continue;
 
         if (!isFullyOuterInvariant(outer, inner)) continue;
 
@@ -197,7 +236,12 @@ bool LICM::tryHoistSubloop(Loop* outer) {
         if (!ibr || ibr->getNumOperands() != 3) continue;
         BasicBlock* t1 = cast<BasicBlock>(ibr->getOperand(1));
         BasicBlock* t2 = cast<BasicBlock>(ibr->getOperand(2));
-        BasicBlock* iexit = inner->has(t1) ? t2 : t1;
+        bool t1In = inner->has(t1);
+        bool t2In = inner->has(t2);
+        if (t1In == t2In) continue;
+        if (inner->exiting[0] != inner->head) continue;
+        BasicBlock* iexit = t1In ? t2 : t1;
+        if (iexit != inner->exits[0]) continue;
 
         auto* opbr = dyn_cast<BranchInst>(outer->pre->getInstructions().back());
         if (!opbr || opbr->getNumOperands() != 1) continue;
@@ -207,9 +251,11 @@ bool LICM::tryHoistSubloop(Loop* outer) {
         if (!ipbr || ipbr->getNumOperands() != 1) continue;
         if (cast<BasicBlock>(ipbr->getOperand(0)) != inner->head) continue;
 
+        if (!canRedirectPhiIncoming(iexit, inner->head, inner)) continue;
+
         // CFG transformation: hoist inner loop before outer loop.
         Region* region = outer->pre->getParent();
-        auto* npre = new BasicBlock("pre_" + outer->head->getName() + "_h", region);
+        auto* npre = new BasicBlock(hoistedPreName(outer->head), region);
         new BranchInst(outer->head, npre);
         auto& blist = region->getBlocks();
         blist.splice(std::find(blist.begin(), blist.end(), outer->head),
@@ -219,17 +265,20 @@ bool LICM::tryHoistSubloop(Loop* outer) {
         ibr->replaceSuccessor(iexit, npre);                // inner exits -> new outer_pre
         ipbr->replaceSuccessor(inner->head, iexit);        // inner_pre bypasses -> inner_exit
 
-        // Fix phis: inner_head preheader -> outer_pre; outer_head preheader -> new_pre.
-        for (auto inst : inner->head->getInstructions()) {
-            auto* phi = dyn_cast<PhiInst>(inst); if (!phi) break;
-            for (int k = 1; k < (int)phi->getNumOperands(); k += 2)
-                if (phi->getOperand(k) == inner->pre) phi->setOperand(k, outer->pre);
-        }
-        for (auto inst : outer->head->getInstructions()) {
-            auto* phi = dyn_cast<PhiInst>(inst); if (!phi) break;
-            for (int k = 1; k < (int)phi->getNumOperands(); k += 2)
-                if (phi->getOperand(k) == outer->pre) phi->setOperand(k, npre);
-        }
+        //  outer->pre ──→ outer->head ──→ ... ──→ inner->pre ──→ inner->head       
+        //                  ↑                                       ↓ exit       
+        //                  └──────────────────────────────────   iexit      
+        //
+        // becomes:
+        //
+        // outer->pre ──→ inner->head ──→ (inner loop)                      
+        //                 ↓ exit                                               
+        //                npre ──→ outer->head ──→ ... ──→ inner->pre ──→ iexit 
+        //                            ↑                                       ↓ 
+        //                            └───────────────────────────────────────┘ 
+        redirectPhiIncoming(inner->head, inner->pre, outer->pre);
+        redirectPhiIncoming(iexit, inner->head, inner->pre);
+        redirectPhiIncoming(outer->head, outer->pre, npre);
         return true;
     }
     return false;
