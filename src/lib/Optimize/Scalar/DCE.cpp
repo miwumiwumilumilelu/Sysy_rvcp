@@ -33,11 +33,10 @@ bool DCE::isInstTrivallyDead(Instruction *inst) {
     }
 
     switch (inst->getOpID()) {
-        case Instruction::Ret:      
-        case Instruction::Br:       
-        case Instruction::Store:    
-        case Instruction::Call:     
-        case Instruction::Alloca:
+        case Instruction::Ret:
+        case Instruction::Br:
+        case Instruction::Store:
+        case Instruction::Call:
             return false;
         default:
             break;
