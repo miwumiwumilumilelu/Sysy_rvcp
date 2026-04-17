@@ -144,6 +144,7 @@ Instruction* HighInline::cloneFlatInst(
     switch (inst->getOpID()) {
         case Instruction::Add:  case Instruction::Sub:
         case Instruction::Mul:  case Instruction::Div:  case Instruction::Mod:
+        case Instruction::Shl:  case Instruction::Ashr: case Instruction::And:
         case Instruction::FAdd: case Instruction::FSub:
         case Instruction::FMul: case Instruction::FDiv:
         case Instruction::ICmp:

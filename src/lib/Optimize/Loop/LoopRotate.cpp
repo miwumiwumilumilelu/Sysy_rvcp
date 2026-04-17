@@ -43,25 +43,10 @@ static Value* GetBase(Value* v) {
 }
 
 static bool isSpeculateLoad(LoadInst* load, Loop* L,
-                                        std::unordered_map<Function*, bool>& purityCache) {
+                                        std::unordered_map<Function*, bool>& /*purityCache*/) {
     if (!load || !L) return false;
     Value* base = GetBase(load->getOperand(0));
-    if (!isa<GlobalVariable>(base) && !isa<AllocaInst>(base) && !isa<Argument>(base))
-        return false;
-
-    for (auto* bb : L->blocks) {
-        for (auto* inst : bb->getInstructions()) {
-            if (inst == load) continue;
-            if (auto* st = dyn_cast<StoreInst>(inst)) {
-                if (GetBase(st->getOperand(1)) == base)
-                    return false;
-            } else if (auto* call = dyn_cast<CallInst>(inst)) {
-                if (!isPureFunc(call->getFunction(), purityCache))
-                    return false;
-            }
-        }
-    }
-    return true;
+    return isa<GlobalVariable>(base) || isa<AllocaInst>(base) || isa<Argument>(base);
 }
 
 static bool DominatesEdge(Value* val, BasicBlock* fromBB, Dominators& dt) {

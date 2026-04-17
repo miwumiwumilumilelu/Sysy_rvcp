@@ -33,6 +33,7 @@ IR_PASSES = [
     "inline",
     "const-spec",
     "post-spec-inline",
+    "strength-reduce",
     "loop-simplify",
     "loop-rotate",
     "lcssa",
