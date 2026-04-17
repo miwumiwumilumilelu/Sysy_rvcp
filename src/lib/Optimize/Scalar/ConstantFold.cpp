@@ -185,6 +185,9 @@ Constant* ConstantFold::computeBinary(Instruction::OpID op, Constant* lhs, Const
                 case Instruction::Mul: return new ConstantInt(v1 * v2);
                 case Instruction::Div: return (v2 != 0) ? new ConstantInt(v1 / v2) : nullptr;
                 case Instruction::Mod: return (v2 != 0) ? new ConstantInt(v1 % v2) : nullptr;
+                case Instruction::Shl:  return new ConstantInt(v1 << v2);
+                case Instruction::Ashr: return new ConstantInt(v1 >> v2);
+                case Instruction::And:  return new ConstantInt(v1 & v2);
                 default: return nullptr;
             }
         }

@@ -14,6 +14,11 @@ public:
     enum OpID {
         Alloca, Load, Store,
         Add, Sub, Mul, Div, Mod,
+        // x << n <-> x * (2^n)
+        Shl, 
+        // x >> n <-> ⌊x/2n⌋
+        Ashr, 
+        And,
         FAdd, FSub, FMul, FDiv,
         SIToFP, FPToSI,
         ICmp, FCmp, Br, Ret, Call,

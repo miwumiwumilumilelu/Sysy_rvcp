@@ -50,6 +50,9 @@ private:
     void selectMul(BinaryInst* inst, InstSelContext& ctx);
     void selectDiv(BinaryInst* inst, InstSelContext& ctx);
     void selectMod(BinaryInst* inst, InstSelContext& ctx);
+    void selectShl(BinaryInst* inst, InstSelContext& ctx);
+    void selectAshr(BinaryInst* inst, InstSelContext& ctx);
+    void selectAnd(BinaryInst* inst, InstSelContext& ctx);
 
     void selectFAdd(BinaryInst* inst, InstSelContext& ctx);
     void selectFSub(BinaryInst* inst, InstSelContext& ctx);

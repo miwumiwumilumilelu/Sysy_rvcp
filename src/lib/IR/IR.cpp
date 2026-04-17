@@ -53,6 +53,9 @@ static std::string binarySymbol(Instruction::OpID op) {
         case Instruction::Mul:  return "*";
         case Instruction::Div:  return "/";
         case Instruction::Mod:  return "%";
+        case Instruction::Shl:  return "<<";
+        case Instruction::Ashr: return ">>";
+        case Instruction::And:  return "&";
         case Instruction::FAdd: return "+.f";
         case Instruction::FSub: return "-.f";
         case Instruction::FMul: return "*.f";
@@ -174,6 +177,9 @@ BinaryInst::BinaryInst(OpID id, Value *lhs, Value *rhs, BasicBlock *parent)
         case Mul: OpStr = "mul"; break;
         case Div: OpStr = "sdiv"; break; // signed div
         case Mod: OpStr = "srem"; break;
+        case Shl:  OpStr = "shl";  break;
+        case Ashr: OpStr = "ashr"; break;
+        case And:  OpStr = "and";  break;
         case FAdd: OpStr = "fadd"; break;
         case FSub: OpStr = "fsub"; break;
         case FMul: OpStr = "fmul"; break;

@@ -322,6 +322,15 @@ void InstSelPass::selectInstruction(Instruction* inst, InstSelContext& ctx) {
         case Instruction::Mod:
             selectMod(static_cast<BinaryInst*>(inst), ctx);
             break;
+        case Instruction::Shl:
+            selectShl(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::Ashr:
+            selectAshr(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::And:
+            selectAnd(static_cast<BinaryInst*>(inst), ctx);
+            break;
         case Instruction::FAdd:
             selectFAdd(static_cast<BinaryInst*>(inst), ctx);
             break;
@@ -531,6 +540,56 @@ void InstSelPass::selectMod(BinaryInst* inst, InstSelContext& ctx) {
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
     ctx.block->append(new RemwOp(rd, rs1, rs2));
+}
+
+void InstSelPass::selectShl(BinaryInst* inst, InstSelContext& ctx) {
+    auto* lhs = inst->getOperand(0);
+    auto* rhs = inst->getOperand(1);
+    auto rd = ctx.getVReg(inst, false);
+    if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
+        auto rs = ctx.getVReg(lhs, false);
+        ctx.block->append(new SlliwOp(rd, rs, ci->getValue() & 31));
+        return;
+    }
+    auto rs1 = ctx.getVReg(lhs, false);
+    auto rs2 = ctx.getVReg(rhs, false);
+    ctx.block->append(new SllOp(rd, rs1, rs2));
+}
+
+void InstSelPass::selectAshr(BinaryInst* inst, InstSelContext& ctx) {
+    auto* lhs = inst->getOperand(0);
+    auto* rhs = inst->getOperand(1);
+    auto rd = ctx.getVReg(inst, false);
+    if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
+        auto rs = ctx.getVReg(lhs, false);
+        ctx.block->append(new SraiwOp(rd, rs, ci->getValue() & 31));
+        return;
+    }
+    auto rs1 = ctx.getVReg(lhs, false);
+    auto rs2 = ctx.getVReg(rhs, false);
+    ctx.block->append(new SraOp(rd, rs1, rs2));
+}
+
+void InstSelPass::selectAnd(BinaryInst* inst, InstSelContext& ctx) {
+    auto* lhs = inst->getOperand(0);
+    auto* rhs = inst->getOperand(1);
+    auto rd = ctx.getVReg(inst, false);
+    if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
+        int v = ci->getValue();
+        if (v >= -2048 && v <= 2047) {
+            auto rs = ctx.getVReg(lhs, false);
+            ctx.block->append(new AndiOp(rd, rs, v));
+            return;
+        }
+        auto rs = ctx.getVReg(lhs, false);
+        auto mReg = ctx.newVReg(false);
+        ctx.block->append(new LiOp(mReg, v));
+        ctx.block->append(new AndOp(rd, rs, mReg));
+        return;
+    }
+    auto rs1 = ctx.getVReg(lhs, false);
+    auto rs2 = ctx.getVReg(rhs, false);
+    ctx.block->append(new AndOp(rd, rs1, rs2));
 }
 
 void InstSelPass::selectFAdd(BinaryInst* inst, InstSelContext& ctx) {
