@@ -37,32 +37,7 @@ bool LoopMemPromote::runFunc(Function* f) {
 bool LoopMemPromote::promoteLoop(Loop* L, Dominators& dt) {
     auto* preBlock = L->entryBlock(dt);
     if (!preBlock || !L->latch || !L->head) return false;
-
-    auto* pbr = dyn_cast<BranchInst>(preBlock->getInstructions().back());
-    if (!pbr || pbr->getNumOperands() != 3) return false;
-    auto* lbr = dyn_cast<BranchInst>(L->latch->getInstructions().back());
-    if (!lbr || lbr->getNumOperands() != 3) return false;
-
-    std::set<BasicBlock*> lbbs(L->blocks.begin(), L->blocks.end());
-
-    auto exitOf = [&](BranchInst* br) -> BasicBlock* {
-        auto* t1 = cast<BasicBlock>(br->getOperand(1));
-        auto* t2 = cast<BasicBlock>(br->getOperand(2));
-        return lbbs.count(t1) ? t2 : t1;
-    };
-    BasicBlock* exitBB = exitOf(pbr);
-    if (exitBB != exitOf(lbr)) return false;
-
-    // Single-exit check: no loop block may branch outside except to exitBB.
-    for (auto bb : L->blocks) {
-        auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
-        if (!br) continue;
-        int start = (br->getNumOperands() == 1) ? 0 : 1;
-        for (int k = start; k < (int)br->getNumOperands(); k++) {
-            auto* succ = dyn_cast<BasicBlock>(br->getOperand(k));
-            if (succ && !lbbs.count(succ) && succ != exitBB) return false;
-        }
-    }
+    if (!L->hasPreheaderAndSingleLatch()) return false;
 
     for (auto bb : L->blocks)
         for (auto inst : bb->getInstructions())
@@ -95,7 +70,21 @@ bool LoopMemPromote::promoteLoop(Loop* L, Dominators& dt) {
         Value* sval = st->getOperand(0);
 
         BasicBlock* stBB = st->getParent();
-        if (stBB != L->latch && !dt.dominates(stBB, L->latch)) continue;
+        if (stBB != L->latch) continue;
+
+        bool loadAfterStore = false;
+        bool seenStore = false;
+        for (auto* inst : stBB->getInstructions()) {
+            if (inst == st) {
+                seenStore = true;
+                continue;
+            }
+            if (seenStore && isa<LoadInst>(inst)) {
+                loadAfterStore = true;
+                break;
+            }
+        }
+        if (loadAfterStore) continue;
 
         Value* base = getLoopBaseObject(addr);
         bool alias = false;
@@ -132,20 +121,40 @@ bool LoopMemPromote::promoteLoop(Loop* L, Dominators& dt) {
         }
         st->getParent()->getInstructions().remove(st);
 
-        auto* ephi = new PhiInst(ty, nullptr);
-        ephi->setParent(exitBB);
-        ephi->addIncoming(preload, preBlock);
-        ephi->addIncoming(sval, L->latch);
-        {
-            auto& ins = exitBB->getInstructions();
-            auto it = ins.begin();
-            while (it != ins.end() && isa<PhiInst>(*it)) ++it;
-            ins.insert(it, ephi);
-        }
+        for (auto* exitBB : L->exits) {
+            auto preds = dt.getPredecessors(exitBB);
+            if (preds.empty()) return false;
 
-        auto* estore = new StoreInst(ephi, addr, nullptr);
-        estore->setParent(exitBB);
-        {
+            std::vector<std::pair<Value*, BasicBlock*>> incomings;
+            incomings.reserve(preds.size());
+            for (auto* pred : preds) {
+                if (pred == preBlock) {
+                    incomings.push_back({preload, pred});
+                    continue;
+                }
+                if (!L->has(pred)) return false;
+                // With the single in-loop store restricted to the latch,
+                // the promoted value remains the loop-carried header value on every other in-loop exit edge.
+                incomings.push_back({pred == L->latch ? sval : hphi, pred});
+            }
+
+            Value* exitVal = nullptr;
+            if (incomings.size() == 1) {
+                exitVal = incomings[0].first;
+            } else {
+                auto* ephi = new PhiInst(ty, nullptr);
+                ephi->setParent(exitBB);
+                for (auto& [val, bb] : incomings)
+                    ephi->addIncoming(val, bb);
+                auto& ins = exitBB->getInstructions();
+                auto it = ins.begin();
+                while (it != ins.end() && isa<PhiInst>(*it)) ++it;
+                ins.insert(it, ephi);
+                exitVal = ephi;
+            }
+
+            auto* estore = new StoreInst(exitVal, addr, nullptr);
+            estore->setParent(exitBB);
             auto& ins = exitBB->getInstructions();
             auto it = ins.begin();
             while (it != ins.end() && isa<PhiInst>(*it)) ++it;
