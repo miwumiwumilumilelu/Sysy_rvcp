@@ -31,7 +31,6 @@ IR_PASSES = [
     "mem2reg",
     "scalar-cleanup",
     "inline",
-    "const-spec",
     "post-spec-inline",
     "strength-reduce",
     "loop-simplify",
@@ -40,14 +39,6 @@ IR_PASSES = [
     "loop-unroll",
     "deadloop-elim-pre-licm",
     "licm-only",
-    "licm-cf",
-    "licm-cse",
-    "licm-gvn",
-    "licm-gvnhoist",
-    "licm-instsimplify",
-    "licm-simplifycfg",
-    "licm-dse",
-    "licm-dce",
     "licm",
     "deadloop-elim-post-licm",
 ]
@@ -123,15 +114,36 @@ def dump_ir(sy_path: str, passes: list[str], out_root: str) -> None:
     for p in passes:
         out_file = case_dir / f"{p}.ir"
         with open(out_file, "w", encoding="utf-8") as f:
-            subprocess.run(
-                [COMPILER_CMD, sy_path, f"--dump-{p}-ir"],
-                stdout=f,
-                stderr=subprocess.DEVNULL,
-                check=True,
-                timeout=TIMEOUT,
-            )
+            try:
+                subprocess.run(
+                    [COMPILER_CMD, sy_path, f"--dump-{p}-ir"],
+                    stdout=f,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                    timeout=TIMEOUT,
+                )
+            except subprocess.CalledProcessError as e:
+                die(f"导出 IR 失败: pass={p}, file={sy_path}, exit={e.returncode}")
 
     print(f"IR 已输出到 {case_dir}")
+
+
+def dump_cfg_ir(sy_path: str, out_root: str) -> None:
+    base_name = Path(sy_path).stem
+    case_dir = Path(out_root) / base_name
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    out_file = case_dir / "cfg.ir"
+    with open(out_file, "w", encoding="utf-8") as f:
+        subprocess.run(
+            [COMPILER_CMD, sy_path, "--dump-cfg-ir"],
+            stdout=f,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=TIMEOUT,
+        )
+
+    print(f"最终 CFG IR 已输出到 {out_file}")
 
 
 def build_exec(asm_path: str, exe_path: str) -> tuple[bool, str]:
@@ -150,6 +162,20 @@ def build_exec(asm_path: str, exe_path: str) -> tuple[bool, str]:
         return False, err or "汇编/链接失败"
 
 
+_TOTAL_RE = re.compile(
+    r"TOTAL:\s*(\d+)H-(\d+)M-(\d+)S-(\d+)us", re.MULTILINE
+)
+
+
+def _parse_sysy_total(stderr_text: str) -> float | None:
+    """从 sylib 的 stderr 输出中解析 TOTAL 计时（秒）。"""
+    m = _TOTAL_RE.search(stderr_text)
+    if not m:
+        return None
+    h, mi, s, us = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+    return h * 3600 + mi * 60 + s + us / 1_000_000
+
+
 def run_program(exe_path: str, input_data: bytes | None) -> tuple[bool, str, float]:
     try:
         start_time = time.time()
@@ -157,10 +183,10 @@ def run_program(exe_path: str, input_data: bytes | None) -> tuple[bool, str, flo
             [QEMU_CMD, exe_path],
             input=input_data,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,   # 捕获 sylib 计时输出
             timeout=TIMEOUT,
         )
-        elapsed = time.time() - start_time
+        wall_elapsed = time.time() - start_time
     except FileNotFoundError:
         return False, f"找不到模拟器: {QEMU_CMD}", 0.0
     except subprocess.TimeoutExpired:
@@ -168,6 +194,12 @@ def run_program(exe_path: str, input_data: bytes | None) -> tuple[bool, str, flo
 
     actual_output = result.stdout.decode("utf-8", errors="ignore").strip()
     actual_full = f"{actual_output}\n{result.returncode}".strip()
+
+    # 优先使用程序内部计时（排除 QEMU 启动 + I/O 时间）
+    stderr_text = result.stderr.decode("utf-8", errors="ignore")
+    sysy_time = _parse_sysy_total(stderr_text)
+    elapsed = sysy_time if sysy_time is not None else wall_elapsed
+
     return True, actual_full, elapsed
 
 
@@ -262,10 +294,15 @@ if __name__ == "__main__":
         action="append",
         help="指定 IR pass，可重复传入；传 all 表示导出所有阶段",
     )
+    parser.add_argument(
+        "--dump-cfg-ir",
+        action="store_true",
+        help="额外导出最终 CFG IR 到 out/<case>/cfg.ir",
+    )
     parser.add_argument("--out-dir", type=str, default=DEFAULT_OUT_DIR, help="IR 输出目录，默认 out/")
     args = parser.parse_args()
 
-    dump_mode = args.dump_ir or bool(args.dump_pass)
+    dump_mode = args.dump_ir or bool(args.dump_pass) or args.dump_cfg_ir
     requested_passes = args.dump_pass or []
     if "all" in requested_passes or (args.dump_ir and not requested_passes):
         passes = IR_PASSES
@@ -287,7 +324,10 @@ if __name__ == "__main__":
         in_path = base + ".in"
         out_path = base + ".out"
         if dump_mode:
-            dump_ir(sy_path, passes, args.out_dir)
+            if passes:
+                dump_ir(sy_path, passes, args.out_dir)
+            if args.dump_cfg_ir:
+                dump_cfg_ir(sy_path, args.out_dir)
             sys.exit(0)
         if not os.path.exists(out_path):
             die(f"找不到答案文件: {out_path}")
@@ -296,7 +336,10 @@ if __name__ == "__main__":
 
     if dump_mode:
         for path in iter_cases(scope_dir):
-            dump_ir(path, passes, args.out_dir)
+            if passes:
+                dump_ir(path, passes, args.out_dir)
+            if args.dump_cfg_ir:
+                dump_cfg_ir(path, args.out_dir)
         sys.exit(0)
 
     pass_count = 0
