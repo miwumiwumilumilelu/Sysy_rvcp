@@ -43,10 +43,10 @@ bool InstSimplify::simplify(BasicBlock* bb) {
 
         switch (bin->getOpID()) {
             case Instruction::Add:
+                if (ci_l && !ci_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(ci_l, ci_r); }
                 if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, bb, rhs); continue; }
+                if (cf_l && !cf_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(cf_l, cf_r); }
                 if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (cf_l && cf_l->getValue() == 0.0f) { changed |= replaceTo(inst, bb, rhs); continue; }
                 break;
             case Instruction::Sub:
                 if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, bb, lhs); continue; }
@@ -54,14 +54,12 @@ bool InstSimplify::simplify(BasicBlock* bb) {
                 if (lhs == rhs) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
                 break;
             case Instruction::Mul:
+                if (ci_l && !ci_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(ci_l, ci_r); }
                 if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (ci_l && ci_l->getValue() == 1) { changed |= replaceTo(inst, bb, rhs); continue; }
                 if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
-                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
+                if (cf_l && !cf_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(cf_l, cf_r); }
                 if (cf_r && cf_r->getValue() == 1.0f) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (cf_l && cf_l->getValue() == 1.0f) { changed |= replaceTo(inst, bb, rhs); continue; }
                 if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, bb, new ConstantFloat(0.0f)); continue; }
-                if (cf_l && cf_l->getValue() == 0.0f) { changed |= replaceTo(inst, bb, new ConstantFloat(0.0f)); continue; }
                 break;
             case Instruction::Div:
                 if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, bb, lhs); continue; }
@@ -95,10 +93,9 @@ bool InstSimplify::simplify(BasicBlock* bb) {
                 if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
                 break;
             case Instruction::And:
+                if (ci_l && !ci_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(ci_l, ci_r); }
                 if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
-                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
                 if (ci_r && ci_r->getValue() == -1) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (ci_l && ci_l->getValue() == -1) { changed |= replaceTo(inst, bb, rhs); continue; }
                 if (lhs == rhs) { changed |= replaceTo(inst, bb, lhs); continue; }
                 break;
             default:
