@@ -139,6 +139,23 @@ SE* SCEV::buildPhi(PhiInst* phi) {
             if (op == Instruction::Add)
                 if (auto* r = tryAddRec(op, bin->getOperand(1), bin->getOperand(0))) return r;
         }
+        
+        // ShiftRec: phi >>= k (Ashr) or Div->Ashr
+        if (bin->getOperand(0) == static_cast<Value*>(phi)) {
+            if (auto* ci = dyn_cast<ConstantInt>(bin->getOperand(1))) {
+                int shiftAmt = 0;
+                if (op == Instruction::Ashr)
+                    shiftAmt = ci->getValue();
+                else if (op == Instruction::Div) {
+                    int v = ci->getValue();
+                    // log2V
+                    if (v > 1 && (v & (v - 1)) == 0)
+                        shiftAmt = __builtin_ctz(static_cast<unsigned>(v));
+                }
+                if (shiftAmt > 0)
+                    return own(new SEShiftRec(get(initVal), shiftAmt, L));
+            }
+        }
     }
     return own(new SEUnknown(phi));
 }
@@ -246,6 +263,10 @@ bool SCEV::equal(SE* a, SE* b) {
         for (size_t i = 0; i < aa->ops.size(); i++)
             if (!equal(aa->ops[i], ab->ops[i])) return false;
         return true;
+    }
+    if (auto* sra = dyn_cast<SEShiftRec>(a)) {
+        auto* srb = cast<SEShiftRec>(b);
+        return sra->loop == srb->loop && sra->shiftPerIter == srb->shiftPerIter && equal(sra->start, srb->start);
     }
 
     return cast<SEUnknown>(a)->v == cast<SEUnknown>(b)->v;

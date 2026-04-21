@@ -9,7 +9,7 @@
 namespace sysy {
 
 struct SE {
-    enum Kind { Const, Unknown, Add, Mul, AddRec };
+    enum Kind { Const, Unknown, Add, Mul, AddRec, ShiftRec };
     Kind kind;
 protected:
     SE(Kind k) : kind(k) {}
@@ -50,6 +50,15 @@ struct SEAddRec : SE {
     Loop* loop;
     SEAddRec(SE* s, int64_t st, Loop* l) : SE(AddRec), start(s), step(st), loop(l) {}
     static bool classof(const SE* s) { return s->kind == AddRec; }
+};
+
+// phi >>= k  or  phi /= 2^k { start, >>, shiftPerIter }L
+struct SEShiftRec : SE {
+    SE* start;
+    int shiftPerIter;
+    Loop* loop;
+    SEShiftRec(SE* s, int sh, Loop* l) : SE(ShiftRec), start(s), shiftPerIter(sh), loop(l) {}
+    static bool classof(const SE* s) { return s->kind == ShiftRec; }
 };
 
 class SCEV {
