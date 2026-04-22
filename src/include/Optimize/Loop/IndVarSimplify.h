@@ -18,6 +18,7 @@ private:
 
     bool runFunc(Function* f);
     bool unifyIndVars(Loop* L, SCEV& scev);
+    bool simplifyShiftRec(Loop* L, SCEV& scev);
 };
 
 }
