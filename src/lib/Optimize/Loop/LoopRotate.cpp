@@ -146,6 +146,8 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
     if (loopBBs.count(t1) == loopBBs.count(t2)) return false;
     BasicBlock* body = loopBBs.count(t1) ? t1 : t2;
     BasicBlock* exit = loopBBs.count(t1) ? t2 : t1;
+    
+    bool condTrueIsBody = (body == t1);
 
     // pre must be an unconditional branch to head.
     auto* pbr = dyn_cast<BranchInst>(L->pre->getInstructions().back());
@@ -362,9 +364,15 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
         delete term;
         makeNew();
     };
-    replaceTerminator(L->pre, [&]{ new BranchInst(pcond, L->head, exit, L->pre); });
-    replaceTerminator(L->head, [&]{ new BranchInst(body, L->head); });
-    replaceTerminator(L->latch, [&]{ new BranchInst(lcond, L->head, exit, L->latch); });
+    if (condTrueIsBody) {
+        replaceTerminator(L->pre, [&]{ new BranchInst(pcond, L->head, exit, L->pre); });
+        replaceTerminator(L->head, [&]{ new BranchInst(body, L->head); });
+        replaceTerminator(L->latch, [&]{ new BranchInst(lcond, L->head, exit, L->latch); });
+    } else {
+        replaceTerminator(L->pre, [&]{ new BranchInst(pcond, exit,   L->head, L->pre); });
+        replaceTerminator(L->head, [&]{ new BranchInst(body, L->head); });
+        replaceTerminator(L->latch, [&]{ new BranchInst(lcond, exit, L->head, L->latch); });
+    }
 
     // SSA fixup after CFG rewrite: repair exit phis and any remaining undominated
     // uses of loop-local values in blocks reachable from exit.
