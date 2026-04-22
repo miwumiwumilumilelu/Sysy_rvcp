@@ -148,6 +148,8 @@ void SSAInline::doInline(CallInst* call) {
             call->replaceAllUsesWith(returns[0].first);
         } else {
             auto* phi = new PhiInst(callee->getType(), nullptr);
+            if (!call->getName().empty())
+                phi->setName(call->getName());
             for (auto [val, bb] : returns)
                 phi->addIncoming(val, bb);
             phi->setParent(endBB);

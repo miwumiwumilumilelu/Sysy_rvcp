@@ -139,8 +139,11 @@ bool StrengthReduce::rewriteFunc(Function* f, const NonNegSet& nonneg) {
         auto* bb = rw.old_inst->getParent();
         auto& instList = bb->getInstructions();
         auto it = std::find(instList.begin(), instList.end(), rw.old_inst);
-        if (auto* newInst = dyn_cast<Instruction>(rw.new_val))
+        if (auto* newInst = dyn_cast<Instruction>(rw.new_val)) {
+            if (!rw.old_inst->getName().empty())
+                newInst->setName(rw.old_inst->getName());
             instList.insert(it, newInst);
+        }
         rw.old_inst->replaceAllUsesWith(rw.new_val);
         instList.erase(it);
         changed = true;

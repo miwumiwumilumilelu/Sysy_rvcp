@@ -20,11 +20,19 @@
 #include "Optimize/Scalar/InstSimplify.h"
 #include "Optimize/CFG/SimplifyCFG.h"
 #include "Optimize/Scalar/DCE.h"
+#include "Optimize/Scalar/DSE.h"
+#include "Optimize/Scalar/StrengthReduce.h"
+#include "Optimize/Scalar/SSAInline.h"
+#include "Optimize/Scalar/ConstSpec.h"
+#include "Optimize/Scalar/LoopUnroll.h"
 #include "Optimize/Loop/LoopSimplify.h"
 #include "Optimize/Loop/LoopRotate.h"
 #include "Optimize/Loop/LCSSA.h"
 #include "Optimize/Loop/DeadLoopElim.h"
 #include "Optimize/Loop/LICM.h"
+#include "Optimize/Loop/IndVarSimplify.h"
+#include "Optimize/Loop/LoopMemPromote.h"
+#include "Optimize/Loop/SubloopHoist.h"
 #include "rv/InstSel.h"
 #include "rv/RegAlloc.h"
 #include "rv/MCPeephole.h"
@@ -32,6 +40,24 @@
 
 using namespace sysy;
 using namespace sysy::rv;
+
+static bool runCleanup(Module* m) {
+    bool anyChanged = false;
+    bool c = true;
+    while (c) {
+        c = false;
+        c |= ConstantFold(m).run();
+        c |= CSE(m).run();
+        c |= GVN(m).run();
+        c |= GVNHoist(m).run();
+        c |= InstSimplify(m).run();
+        c |= SimplifyCFG(m).run();
+        c |= DSE(m).run();
+        c |= DCE(m).run();
+        anyChanged |= c;
+    }
+    return anyChanged;
+}
 
 int main(int argc, char **argv) {
     std::string inputFile;
@@ -102,6 +128,9 @@ int main(int argc, char **argv) {
         }
         return false;
     };
+    auto okIter = [&](const std::string& passPrefix, int iter, const std::string& stage) -> bool {
+        return ok(passPrefix + std::to_string(iter) + "-" + stage);
+    };
 
     if (dumpHIR) {
         std::cout << module->print();
@@ -134,32 +163,57 @@ int main(int argc, char **argv) {
 
 // ======== Scalar Cleanup ========
 
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        changed |= ConstantFold(module.get()).run();
-        changed |= CSE(module.get()).run();
-        changed |= GVN(module.get()).run();
-        changed |= GVNHoist(module.get()).run();
-        changed |= InstSimplify(module.get()).run();
-        changed |= SimplifyCFG(module.get()).run();
-        changed |= DCE(module.get()).run();
-    }
+    runCleanup(module.get());
     if (ok("scalar-cleanup")) return 0;
 
-// ======== Loop Optimization ========
+// ======== Inline ========
 
-    LoopSimplify loopSimplify(module.get());
-    loopSimplify.run();
+    while (SSAInline(module.get()).run()) {
+        runCleanup(module.get());
+    }
+    if (ok("inline")) return 0;
+
+// ======== ConstSpec ========
+
+    // {
+    //     ConstSpec constSpec(module.get());
+    //     while (constSpec.run()) {
+    //         runCleanup(module.get());
+    //     }
+    // }
+    // if (ok("const-spec")) return 0;
+
+// ======== Post-ConstSpec Inline ========
+
+    while (SSAInline(module.get()).run()) {
+        runCleanup(module.get());
+    }
+    if (ok("post-spec-inline")) return 0;
+
+// ======== StrengthReduce ========
+
+    if (StrengthReduce(module.get()).run()) {
+        runCleanup(module.get());
+    }
+    if (ok("strength-reduce")) return 0;
+
+// ======== Loop Canonicalization ========
+
+    LoopSimplify(module.get()).run();
     if (ok("loop-simplify")) return 0;
 
-    LoopRotate loopRotate(module.get());
-    loopRotate.run();
+    LoopRotate(module.get()).run();
     if (ok("loop-rotate")) return 0;
 
-    LCSSA lcssa(module.get());
-    lcssa.run();
+    LCSSA(module.get()).run();
     if (ok("lcssa")) return 0;
+
+// ======== Unroll ========
+
+    if (LoopUnroll(module.get()).run()) {
+        runCleanup(module.get());
+    }
+    if (ok("loop-unroll")) return 0;
 
     if (DeadLoopElim(module.get()).run()) {
         SimplifyCFG(module.get()).run();
@@ -167,22 +221,51 @@ int main(int argc, char **argv) {
     }
     if (ok("deadloop-elim-pre-licm")) return 0;
 
-    while (LICM(module.get()).run()) {
-        bool c = true;
-        while (c) {
-            c = false;
-            c |= ConstantFold(module.get()).run();
-            c |= CSE(module.get()).run();
-            c |= GVN(module.get()).run();
-            c |= GVNHoist(module.get()).run();
-            c |= InstSimplify(module.get()).run();
-            c |= SimplifyCFG(module.get()).run();
-            c |= DCE(module.get()).run();
-        }
+// ======== IndVarSimplify + LICM + LoopMemPromote + SubloopHoist (fixpoint) ========
+
+    {
+        bool licmChanged = false;
+        int licmIter = 0;
+        bool anyChanged;
+        do {
+            anyChanged = false;
+            anyChanged |= IndVarSimplify(module.get()).run();
+            anyChanged |= LICM(module.get()).run();
+            anyChanged |= LoopMemPromote(module.get()).run();
+            anyChanged |= SubloopHoist(module.get()).run();
+            if (anyChanged) {
+                ++licmIter;
+                licmChanged = true;
+                if (okIter("licm", licmIter, "only")) return 0;
+                if (ok("licm-only")) return 0;
+
+                bool c = true;
+                while (c) {
+                    c = false;
+                    c |= ConstantFold(module.get()).run();
+                    if (okIter("licm", licmIter, "cf")) return 0;
+                    c |= CSE(module.get()).run();
+                    if (okIter("licm", licmIter, "cse")) return 0;
+                    c |= GVN(module.get()).run();
+                    if (okIter("licm", licmIter, "gvn")) return 0;
+                    c |= GVNHoist(module.get()).run();
+                    if (okIter("licm", licmIter, "gvnhoist")) return 0;
+                    c |= InstSimplify(module.get()).run();
+                    if (okIter("licm", licmIter, "instsimplify")) return 0;
+                    c |= SimplifyCFG(module.get()).run();
+                    if (okIter("licm", licmIter, "simplifycfg")) return 0;
+                    c |= DSE(module.get()).run();
+                    if (okIter("licm", licmIter, "dse")) return 0;
+                    c |= DCE(module.get()).run();
+                    if (okIter("licm", licmIter, "dce")) return 0;
+                }
+            }
+        } while (anyChanged);
+        if (!licmChanged && okIter("licm", 1, "only")) return 0;
+        if (!licmChanged && ok("licm-only")) return 0;
     }
     if (ok("licm")) return 0;
 
-    // LICM preserves loop form, so rerun DLE directly without re-canonicalizing.
     if (DeadLoopElim(module.get()).run()) {
         SimplifyCFG(module.get()).run();
         DCE(module.get()).run();

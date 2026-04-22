@@ -160,6 +160,8 @@ bool GVNHoist::runFunc(Function* f) {
 
         auto* hoisted = cloneToBlock(insts[0], L);
         if (!hoisted) return false;
+        if (!insts[0]->getName().empty())
+            hoisted->setName(insts[0]->getName());
         for (auto inst : insts) {
             inst->replaceAllUsesWith(hoisted);
             toRemove.push_back(inst);
