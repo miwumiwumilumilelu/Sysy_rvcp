@@ -302,18 +302,23 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
         // Cond: while (i < totalSize)
         builder.SetInsertPoint(condBB);
         auto iLoad = builder.Create<LoadInst>(idxAlloca);
+        iLoad->setName(nextValueName());
         auto cmp = builder.Create<ICmpInst>(ICmpInst::SLT, iLoad, new ConstantInt(totalSize));
+        cmp->setName(nextValueName());
         builder.Create<BranchInst>(cmp, bodyBB, endBB);
 
         // Body: *curPtr = 0; curPtr++; idx++;
-        builder.SetInsertPoint(bodyBB); 
+        builder.SetInsertPoint(bodyBB);
         auto currentPtr = builder.Create<LoadInst>(ptrAlloca);
+        currentPtr->setName(nextValueName());
         builder.Create<StoreInst>(constZero, currentPtr);
 
         auto nextPtr = builder.Create<GetElementPtrInst>(currentPtr, new ConstantInt(1));
+        nextPtr->setName(nextValueName());
         builder.Create<StoreInst>(nextPtr, ptrAlloca);
 
         auto iNext = builder.Create<BinaryInst>(Instruction::Add, iLoad, new ConstantInt(1));
+        iNext->setName(nextValueName());
         builder.Create<StoreInst>(iNext, idxAlloca);
 
         builder.Create<BranchInst>(condBB);

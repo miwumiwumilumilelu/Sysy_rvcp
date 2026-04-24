@@ -106,7 +106,9 @@ bool IndVarSimplify::simplifyShiftRec(Loop* L, SCEV& scev) {
         auto insertPos = exitInsts.begin();
         while (insertPos != exitInsts.end() && isa<PhiInst>(*insertPos)) ++insertPos;
 
+        static int shiftRecID = 0;
         auto emit = [&](BinaryInst* inst) -> BinaryInst* {
+            inst->setName("sr" + std::to_string(shiftRecID++));
             inst->setParent(exitBB);
             exitInsts.insert(insertPos, inst);
             return inst;
