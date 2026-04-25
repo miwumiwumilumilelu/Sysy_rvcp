@@ -8,6 +8,8 @@
 
 using namespace sysy;
 
+static int lmpID = 0;
+
 bool LoopMemPromote::runOnLoop(Loop* L, Dominators& dt, SCEV& /*scev*/) {
     return promoteLoop(L, dt);
 }
@@ -106,10 +108,12 @@ bool LoopMemPromote::promoteLoop(Loop* L, Dominators& dt) {
         Type* ty = slot.lds[0]->getType();
 
         auto* preload = new LoadInst(addr, nullptr);
+        preload->setName("lmp_pre" + std::to_string(lmpID));
         preload->setParent(preBlock);
         { auto& ins = preBlock->getInstructions(); ins.insert(std::prev(ins.end()), preload); }
 
         auto* hphi = new PhiInst(ty, nullptr);
+        hphi->setName("lmp" + std::to_string(lmpID++));
         hphi->setParent(L->head);
         hphi->addIncoming(preload, preBlock);
         hphi->addIncoming(sval, L->latch);
@@ -143,6 +147,7 @@ bool LoopMemPromote::promoteLoop(Loop* L, Dominators& dt) {
                 exitVal = incomings[0].first;
             } else {
                 auto* ephi = new PhiInst(ty, nullptr);
+                ephi->setName("lmp_exit" + std::to_string(lmpID++));
                 ephi->setParent(exitBB);
                 for (auto& [val, bb] : incomings)
                     ephi->addIncoming(val, bb);
