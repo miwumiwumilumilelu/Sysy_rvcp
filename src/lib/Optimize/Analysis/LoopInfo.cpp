@@ -94,11 +94,10 @@ void LoopInfo::analyzePreh(Loop* L) {
             ext.push_back(pred);
     }
 
-    if (ext.size() == 1) {
-        auto& succs = DT.getSuccessors(ext[0]);
-        if (succs.size() == 1 && succs[0] == L->head)
-            L->pre = ext[0];
-    }
+    // LoopInfo will be used after LoopRotate, so the preheader branchInst is cond br.
+    // So we just require unique ext but not require the succ of ext is the Loop header.
+    if (ext.size() == 1)
+        L->pre = ext[0];
 }
 
 void LoopInfo::analyzeExits(Loop* L) {
