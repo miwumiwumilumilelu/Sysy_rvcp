@@ -7,6 +7,7 @@
 #include <list>
 #include <vector>
 #include <sstream>
+#include <algorithm>
 
 namespace sysy {
 
@@ -77,6 +78,9 @@ class Module {
 public:
     void addFunction(Function *func) { Functions.push_back(func); }
     const std::vector<Function*>& getFunctions() const { return Functions; }
+    void removeFunction(Function* func) {
+        Functions.erase(std::remove(Functions.begin(), Functions.end(), func), Functions.end());
+    }
 
     Function* getFunction(const std::string &name) const {
         for (auto func : Functions) {

@@ -21,6 +21,7 @@
 #include "Optimize/CFG/SimplifyCFG.h"
 #include "Optimize/Scalar/DCE.h"
 #include "Optimize/Scalar/DSE.h"
+#include "Optimize/Scalar/DFE.h"
 #include "Optimize/Scalar/StrengthReduce.h"
 #include "Optimize/Scalar/SSAInline.h"
 #include "Optimize/Scalar/ConstSpec.h"
@@ -190,6 +191,11 @@ int main(int argc, char **argv) {
         runCleanup(module.get());
     }
     if (ok("post-spec-inline")) return 0;
+
+// ======== Dead Function Elimination ========
+
+    DFE(module.get()).run();
+    if (ok("dfe")) return 0;
 
 // ======== StrengthReduce ========
 
