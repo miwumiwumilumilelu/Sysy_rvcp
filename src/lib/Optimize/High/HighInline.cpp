@@ -47,13 +47,8 @@ Instruction* HighInline::tailParent(ReturnInst* ret) {
 
 void HighInline::erase(Instruction* inst) {
     if (!inst) return;
-    if (inst->getParent())
-        inst->getParent()->getInstructions().remove(inst);
     inst->replaceAllUsesWith(nullptr);
-    for (int i = 0; i < inst->getNumOperands(); ++i)
-        inst->setOperand(i, nullptr);
-    inst->setParent(nullptr);
-    delete inst;
+    inst->eraseInst();
 }
 
 bool HighInline::foldTailReturns(Function* f) {
@@ -344,9 +339,7 @@ void HighInline::doInline(CallInst* call) {
     if (retVal)
         call->replaceAllUsesWith(retVal);
 
-    insts.erase(callIt);
-    call->setParent(nullptr);
-    delete call;
+    call->eraseInst();
 }
 
 bool HighInline::run() {

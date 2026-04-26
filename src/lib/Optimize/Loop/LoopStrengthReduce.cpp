@@ -160,12 +160,8 @@ bool LoopStrengthReduce::runOnLoop(Loop* L, SCEV& scev) {
         ptrPhi->addIncoming(nextPtr, L->latch);
 
         // Replace the original GEP with the recurrence.
-        auto* parent = gep->getParent();
         gep->replaceAllUsesWith(ptrPhi);
-        parent->getInstructions().remove(gep);
-        for (int i = 0; i < gep->getNumOperands(); ++i) gep->setOperand(i, nullptr);
-        gep->setParent(nullptr);
-        delete gep;
+        gep->eraseInst();
 
         changed = true;
     }
@@ -187,12 +183,8 @@ bool LoopStrengthReduce::runOnLoop(Loop* L, SCEV& scev) {
                                                 new ConstantInt((int)ar->step), nullptr));
         valPhi->addIncoming(nextVal, L->latch);
 
-        auto* parent = inst->getParent();
         inst->replaceAllUsesWith(valPhi);
-        parent->getInstructions().remove(inst);
-        for (int i = 0; i < inst->getNumOperands(); ++i) inst->setOperand(i, nullptr);
-        inst->setParent(nullptr);
-        delete inst;
+        inst->eraseInst();
 
         changed = true;
     }

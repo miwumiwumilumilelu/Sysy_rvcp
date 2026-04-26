@@ -120,11 +120,8 @@ bool SimplifyCFG::eliminateUnreachableBlocks(Region* region) {
             auto& insts = bb->getInstructions();
             while (!insts.empty()) {
                 auto deadInst = insts.back();
-                insts.pop_back();
                 deadInst->replaceAllUsesWith(nullptr);
-                for(int i = 0; i < deadInst->getNumOperands(); i++) deadInst->setOperand(i, nullptr);
-                deadInst->setParent(nullptr);
-                delete deadInst;
+                deadInst->eraseInst();
             }
 
             bb->replaceAllUsesWith(nullptr);
@@ -161,21 +158,15 @@ bool SimplifyCFG::mergeBasicBlocks(Region* region) {
                             }
                         }
                         if (incomingVal) phi->replaceAllUsesWith(incomingVal);
-                        for(int i = 0; i < phi->getNumOperands(); i++) phi->setOperand(i, nullptr);
-                        phi->setParent(nullptr);
-                        succIt = succInsts.erase(succIt);
-                        delete phi;
+                        ++succIt;
+                        phi->eraseInst();
                     } else {
                         break;
                     }
                 }
                 
-                bb->getInstructions().remove(term);
-
                 term->replaceAllUsesWith(nullptr);
-                for(int i = 0; i < term->getNumOperands(); i++) term->setOperand(i, nullptr);
-                term->setParent(nullptr);
-                delete term;
+                term->eraseInst();
 
                 bb->getInstructions().splice(bb->getInstructions().end(), succInsts);
 
@@ -254,9 +245,7 @@ bool SimplifyCFG::eliminateEmptyBlocks(Region* region) {
                     }
                     bb->replaceAllUsesWith(nullptr);
                     br->replaceAllUsesWith(nullptr);
-                    for(int i = 0; i < br->getNumOperands(); i++) br->setOperand(i, nullptr);
-                    br->setParent(nullptr);
-                    delete br;
+                    br->eraseInst();
 
                     blocks.erase(it);
                     delete bb; 
@@ -309,12 +298,8 @@ bool SimplifyCFG::simplifyBranches(Region* region) {
             if (br->getNumOperands() == 3) {
                 if (br->getOperand(1) == br->getOperand(2)) {
                     if (BasicBlock* dest = dyn_cast<BasicBlock>(br->getOperand(1))) {
-                        bb->getInstructions().remove(br);
-
                         br->replaceAllUsesWith(nullptr);
-                        for(int i = 0; i < br->getNumOperands(); i++) br->setOperand(i, nullptr);
-                        br->setParent(nullptr);
-                        delete br;
+                        br->eraseInst();
 
                         new BranchInst(dest, bb);
                         changed = true;
@@ -325,4 +310,3 @@ bool SimplifyCFG::simplifyBranches(Region* region) {
     }
     return changed;
 }
-

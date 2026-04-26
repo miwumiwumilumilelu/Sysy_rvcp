@@ -169,9 +169,7 @@ void CFGInline::doInline(CallInst* call) {
         auto& callInsts = callBB->getInstructions();
         auto callIt = std::find(callInsts.begin(), callInsts.end(), call);
         assert(callIt != callInsts.end());
-        callInsts.erase(callIt);
-        call->setParent(nullptr);
-        delete call;
+        call->eraseInst();
 
         auto* firstClone = bbMap[callee->getBody()->getEntryBlock()];
         auto* br = new BranchInst(firstClone, nullptr);

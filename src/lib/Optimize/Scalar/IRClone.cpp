@@ -44,6 +44,8 @@ Instruction* sysy::cloneSkeleton(Instruction* src, BasicBlock* target) {
         break;
     case Instruction::GetElementPtr:
         c = new GetElementPtrInst(src->getOperand(0), nullptr, nullptr);
+        // preserve GEP indexedtype when cloning IR
+        cast<GetElementPtrInst>(c)->setIndexedType(cast<GetElementPtrInst>(src)->getIndexedType());
         break;
     case Instruction::Br:
         if (src->getNumOperands() == 1)

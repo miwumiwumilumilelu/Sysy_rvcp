@@ -103,11 +103,7 @@ bool DSE::runOnFunction(Function* func) {
         return false;
 
     for (auto* store : deadStores) {
-        for (int i = 0; i < store->getNumOperands(); i++)
-            store->setOperand(i, nullptr);
-        store->getParent()->getInstructions().remove(store);
-        store->setParent(nullptr);
-        delete store;
+        store->eraseInst();
     }
 
     return true;

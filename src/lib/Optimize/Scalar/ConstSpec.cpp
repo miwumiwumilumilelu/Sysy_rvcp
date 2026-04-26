@@ -170,9 +170,8 @@ static void redirectCall(CallInst* call, Function* spec,
     call->replaceAllUsesWith(newCall);
 
     // Erase the old call (it == position of old call after insert).
-    insts.erase(it);
-    call->setParent(nullptr);
-    delete call;
+    (void)it;
+    call->eraseInst();
 }
 
 bool ConstSpec::run() {

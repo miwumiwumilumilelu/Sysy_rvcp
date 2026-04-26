@@ -235,11 +235,7 @@ bool LoopExitFold::foldExitValues(Loop* L, SCEV& scev) {
         }
 
         lt.lcssaPhi->replaceAllUsesWith(exitVal);
-        for (int i = 0; i < lt.lcssaPhi->getNumOperands(); ++i)
-            lt.lcssaPhi->setOperand(i, nullptr);
-        lt.lcssaPhi->setParent(nullptr);
-        exitInsts.remove(lt.lcssaPhi);
-        delete lt.lcssaPhi;
+        lt.lcssaPhi->eraseInst();
         didWork = true;
     }
 
@@ -263,18 +259,11 @@ bool LoopExitFold::foldExitValues(Loop* L, SCEV& scev) {
 
         for (auto* lp : lcssaPhis) {
             lp->replaceAllUsesWith(exitVal);
-            for (int i = 0; i < lp->getNumOperands(); ++i) 
-                lp->setOperand(i, nullptr);
-            lp->setParent(nullptr);
-            exitInsts.remove(lp);
-            delete lp;
+            lp->eraseInst();
         }
 
         if (t.vNext->getUsers().empty()) {
-            for (int i = 0; i < t.vNext->getNumOperands(); ++i)
-                t.vNext->setOperand(i, nullptr);
-            t.vNext->getParent()->getInstructions().remove(t.vNext);
-            delete t.vNext;
+            t.vNext->eraseInst();
 
             for (int i = 0; i + 1 < t.phi->getNumOperands(); i += 2) {
                 auto* bb = dyn_cast<BasicBlock>(t.phi->getOperand(i + 1));
@@ -284,10 +273,7 @@ bool LoopExitFold::foldExitValues(Loop* L, SCEV& scev) {
                 }
             }
             if (t.phi->getUsers().empty()) {
-                for (int i = 0; i < t.phi->getNumOperands(); ++i) t.phi->setOperand(i, nullptr);
-                t.phi->setParent(nullptr);
-                L->head->getInstructions().remove(t.phi);
-                delete t.phi;
+                t.phi->eraseInst();
             }
         }
         didWork = true;
@@ -329,7 +315,7 @@ bool LoopExitFold::deduplicateRec(Loop* L, SCEV& scev) {
 
     for (int k = (int)phis.size() - 1; k >= 0; k--) {
         if (!dead[k]) continue;
-        L->head->getInstructions().remove(phis[k]);
+        phis[k]->eraseInst();
     }
     return any;
 }

@@ -226,7 +226,7 @@ bool GVNHoist::runFunc(Function* f) {
         }
 
         for (auto inst : toRemove)
-            inst->getParent()->getInstructions().remove(inst);
+            inst->eraseInst();
     }
 
     return anyTotal;

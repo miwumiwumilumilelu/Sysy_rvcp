@@ -185,17 +185,11 @@ static bool breakBackedgeIfNotTaken(Loop* L, BasicBlock* exitBB, Dominators& dt)
         phi->replaceAllUsesWith(initVal);
     }
     for (auto* phi : phis) {
-        for (int i = 0; i < phi->getNumOperands(); ++i) phi->setOperand(i, nullptr);
-        phi->setParent(nullptr);
-        headInsts.remove(phi);
-        delete phi;
+        phi->eraseInst();
     }
 
-    latchInsts.pop_back();
     br->replaceAllUsesWith(nullptr);
-    for (int i = 0; i < br->getNumOperands(); ++i) br->setOperand(i, nullptr);
-    br->setParent(nullptr);
-    delete br;
+    br->eraseInst();
     new BranchInst(exitBB, L->latch);
     return true;
 }
@@ -265,10 +259,7 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
         Value* repl = materializeForDeletion(val, L, entryPred, matCache, vis);
         if (!repl) return false;
         phi->replaceAllUsesWith(repl);
-        for (int i = 0; i < phi->getNumOperands(); i++) phi->setOperand(i, nullptr);
-        phi->setParent(nullptr);
-        exitBB->getInstructions().remove(phi);
-        delete phi;
+        phi->eraseInst();
     }
 
     // Delete dead exit phis that still mention the loop.
@@ -286,10 +277,8 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
                 if (auto* src = dyn_cast<BasicBlock>(phi->getOperand(k)))
                     if (L->has(src)) { hasLoopIncoming = true; break; }
             if (hasLoopIncoming && phi->getUsers().empty()) {
-                for (int i = 0; i < phi->getNumOperands(); i++) phi->setOperand(i, nullptr);
-                phi->setParent(nullptr);
-                it = exitInsts.erase(it);
-                delete phi;
+                ++it;
+                phi->eraseInst();
             } else {
                 ++it;
             }
@@ -298,11 +287,8 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
 
     // Redirect the unique entry edge to the exit block.
     auto* entryTerm = entryInsts.back();
-    entryInsts.pop_back();
     entryTerm->replaceAllUsesWith(nullptr);
-    for (int i = 0; i < entryTerm->getNumOperands(); i++) entryTerm->setOperand(i, nullptr);
-    entryTerm->setParent(nullptr);
-    delete entryTerm;
+    entryTerm->eraseInst();
 
     new BranchInst(exitBB, entryPred);
     return true;

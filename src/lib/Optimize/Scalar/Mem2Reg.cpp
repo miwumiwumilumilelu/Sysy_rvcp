@@ -199,16 +199,7 @@ void Mem2Reg::rename(BasicBlock* bb) {
         auto inst = instsToRemove.back();
         instsToRemove.pop_back();
 
-        bb->getInstructions().remove(inst);
-
         inst->replaceAllUsesWith(nullptr);
-
-        for (int i = 0; i < inst->getNumOperands(); i++) {
-            inst->setOperand(i, nullptr);
-        }
-
-        inst->setParent(nullptr);
-
-        delete inst; 
+        inst->eraseInst();
     }   
 }

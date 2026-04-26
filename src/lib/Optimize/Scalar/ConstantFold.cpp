@@ -48,7 +48,7 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
         if (c1 && c2) {
             if (auto folded = computeBinary(bin->getOpID(), c1, c2)) {
                 inst->replaceAllUsesWith(folded);
-                currentBB->getInstructions().remove(inst);
+                inst->eraseInst();
                 return true;
             }
         }
@@ -60,7 +60,7 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
         if (c1 && c2) {
             if (auto folded = computeICmp(cmp->getPredicate(), c1, c2)) {
                 inst->replaceAllUsesWith(folded);
-                currentBB->getInstructions().remove(inst);
+                inst->eraseInst();
                 return true;
             }
         }
@@ -87,9 +87,7 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
                     replacement = newCmp;
                 }
                 inst->replaceAllUsesWith(replacement);
-                for (int i = 0; i < inst->getNumOperands(); ++i)
-                    inst->setOperand(i, nullptr);
-                currentBB->getInstructions().remove(inst);
+                inst->eraseInst();
                 return true;
             }
         }
@@ -101,7 +99,7 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
         if (c1 && c2) {
             if (auto folded = computeFCmp(fcmp->getPredicate(), c1, c2)) {
                 inst->replaceAllUsesWith(folded);
-                currentBB->getInstructions().remove(inst);
+                inst->eraseInst();
                 return true;
             }
         }
@@ -111,13 +109,13 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
             if (castInst->getOpID() == Instruction::SIToFP && isa<ConstantInt>(c)) {
                 float fval = (float)cast<ConstantInt>(c)->getValue();
                 castInst->replaceAllUsesWith(new ConstantFloat(fval));
-                currentBB->getInstructions().remove(castInst);
+                castInst->eraseInst();
                 return true;
             }
             else if (castInst->getOpID() == Instruction::FPToSI && isa<ConstantFloat>(c)) {
                 int ival = (int)cast<ConstantFloat>(c)->getValue();
                 castInst->replaceAllUsesWith(new ConstantInt(ival));
-                currentBB->getInstructions().remove(castInst);
+                castInst->eraseInst();
                 return true;
             }
         }
@@ -129,7 +127,7 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
                 Constant* init = gv->getInit();
                 if (isa<ConstantInt>(init) || isa<ConstantFloat>(init)) {
                     ld->replaceAllUsesWith(init);
-                    currentBB->getInstructions().remove(ld);
+                    ld->eraseInst();
                     return true;
                 }
             }
@@ -157,12 +155,8 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
                 }
 
                 BasicBlock* dest = (cond->getValue() != 0) ? cast<BasicBlock>(br->getOperand(1)) : cast<BasicBlock>(br->getOperand(2));
-                currentBB->getInstructions().remove(br);
-
                 br->replaceAllUsesWith(nullptr);
-                for(int i = 0; i < br->getNumOperands(); i++) br->setOperand(i, nullptr);
-                br->setParent(nullptr);
-                delete br;
+                br->eraseInst();
 
                 new BranchInst(dest, currentBB);
 

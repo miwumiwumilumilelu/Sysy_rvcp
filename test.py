@@ -11,7 +11,7 @@ COMPILER_CMD = "./compiler"
 SYLIB_C = "src/lib/sylib.c"
 GCC_CMD = "riscv64-linux-gnu-gcc"
 QEMU_CMD = "qemu-riscv64"
-TIMEOUT = 180.0
+TIMEOUT = 60.0
 
 GCC_FLAGS = ["-static"]
 DEFAULT_OUT_DIR = "out"
@@ -32,12 +32,14 @@ IR_PASSES = [
     "scalar-cleanup",
     "inline",
     "post-spec-inline",
+    "dfe",
     "strength-reduce",
     "loop-simplify",
     "loop-rotate",
     "lcssa",
     "loop-unroll",
     "deadloop-elim-pre-licm",
+    "loop-strength-reduce",
     "licm-only",
     "licm",
     "deadloop-elim-post-licm",

@@ -121,9 +121,9 @@ bool LoopMemPromote::promoteLoop(Loop* L, Dominators& dt) {
 
         for (auto* ld : slot.lds) {
             ld->replaceAllUsesWith(hphi);
-            ld->getParent()->getInstructions().remove(ld);
+            ld->eraseInst();
         }
-        st->getParent()->getInstructions().remove(st);
+        st->eraseInst();
 
         for (auto* exitBB : L->exits) {
             auto preds = dt.getPredecessors(exitBB);

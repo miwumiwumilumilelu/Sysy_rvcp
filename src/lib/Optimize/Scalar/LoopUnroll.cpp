@@ -252,8 +252,7 @@ static bool unrollLoop(Loop* /*L*/, BasicBlock* pre, UnrollInfo& info,
     {
         auto& insts = pre->getInstructions();
         assert(!insts.empty() && isa<BranchInst>(insts.back()));
-        delete insts.back();
-        insts.pop_back();
+        insts.back()->eraseInst();
     }
 
     // Emit one body copy per iteration.
@@ -350,19 +349,13 @@ static bool unrollLoop(Loop* /*L*/, BasicBlock* pre, UnrollInfo& info,
     // Delete the original loop blocks.
     {
         auto& blist = region->getBlocks();
-        for (auto* inst : head->getInstructions()) {
-            inst->setParent(nullptr);
-            delete inst;
-        }
-        head->getInstructions().clear();
+        while (!head->getInstructions().empty())
+            head->getInstructions().front()->eraseInst();
         blist.remove(head);
         delete head;
 
-        for (auto* inst : latch->getInstructions()) {
-            inst->setParent(nullptr);
-            delete inst;
-        }
-        latch->getInstructions().clear();
+        while (!latch->getInstructions().empty())
+            latch->getInstructions().front()->eraseInst();
         blist.remove(latch);
         delete latch;
     }

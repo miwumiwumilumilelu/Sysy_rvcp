@@ -137,6 +137,19 @@ Instruction::Instruction(Type *ty, OpID id, BasicBlock *parent)
 // unique_ptr automatically cleans up Regions.
 Instruction::~Instruction() {}
 
+void Instruction::dropAllOperands() {
+    for (int i = 0; i < getNumOperands(); ++i)
+        setOperand(i, nullptr);
+}
+
+void Instruction::eraseInst() {
+    if (Parent)
+        Parent->getInstructions().remove(this);
+    dropAllOperands();
+    Parent = nullptr;
+    delete this;
+}
+
 bool Instruction::isTerminator() const {
     return OpCode == Br || OpCode == Ret || OpCode == Break || OpCode == Continue || OpCode == Flow;
 }

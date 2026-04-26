@@ -79,11 +79,7 @@ bool DCE::eliminateDeadCode(Function *func) {
 
         inst->replaceAllUsesWith(nullptr);
 
-        if (inst->getParent()) {
-            inst->getParent()->getInstructions().remove(inst);
-        }
-
-        delete inst;
+        inst->eraseInst();
         changed = true;
     }
 

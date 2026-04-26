@@ -156,11 +156,8 @@ bool HighMem2Reg::insertFlowInst(Region* region, const std::vector<Value*>& vals
 }
 
 void HighMem2Reg::eraseInst(Instruction* inst) {
-    if (inst->getParent()) inst->getParent()->getInstructions().remove(inst);
     inst->replaceAllUsesWith(nullptr);
-    for (int i = 0; i < inst->getNumOperands(); i++) inst->setOperand(i, nullptr);
-    inst->setParent(nullptr);
-    delete inst;
+    inst->eraseInst();
 }
 
 void HighMem2Reg::run() {

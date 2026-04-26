@@ -90,7 +90,7 @@ void FlattenCFG::flattenRegion(Region* region, BasicBlock* loopHeader, BasicBloc
             if (loopExit) {
                 builder.SetInsertPoint(bb);
                 builder.CreateBr(loopExit);
-                bb->getInstructions().remove(brk);
+                brk->eraseInst();
             } else {
                 std::cerr << "Error: Break outside loop" << std::endl;
             }
@@ -99,7 +99,7 @@ void FlattenCFG::flattenRegion(Region* region, BasicBlock* loopHeader, BasicBloc
             if (loopHeader) {
                 builder.SetInsertPoint(bb);
                 builder.CreateBr(loopHeader);
-                bb->getInstructions().remove(cont);
+                cont->eraseInst();
             } else {
                 std::cerr << "Error: Continue outside loop" << std::endl;
             }
@@ -122,10 +122,7 @@ collectAndReplaceFlows(Region* region, BasicBlock* targetBB, IRBuilder& builder)
                 vals.push_back(flow->getOperand(i));
             result.push_back({bb, vals});
             // Remove FlowInst and replace with br targetBB.
-            for (int i = 0; i < flow->getNumOperands(); i++) flow->setOperand(i, nullptr);
-            flow->setParent(nullptr);
-            bb->getInstructions().remove(flow);
-            delete flow;
+            flow->eraseInst();
             builder.SetInsertPoint(bb);
             builder.CreateBr(targetBB);
         }
@@ -194,8 +191,7 @@ void FlattenCFG::handleIf(IfInst* inst, BasicBlock* currentBB, BasicBlock* merge
     }
 
     moveBlocksFromRegion(thenRegion, parentRegion);
-    for (int i = 0; i < inst->getNumOperands(); i++) inst->setOperand(i, nullptr);
-    currentBB->getInstructions().remove(inst);
+    inst->eraseInst();
 }
 
 void FlattenCFG::handleWhile(WhileInst* inst, BasicBlock* currentBB, BasicBlock* mergeBB) {
@@ -269,6 +265,5 @@ void FlattenCFG::handleWhile(WhileInst* inst, BasicBlock* currentBB, BasicBlock*
 
     moveBlocksFromRegion(condRegion, parentRegion);
     moveBlocksFromRegion(bodyRegion, parentRegion);
-    for (int i = 0; i < inst->getNumOperands(); i++) inst->setOperand(i, nullptr);
-    currentBB->getInstructions().remove(inst);
+    inst->eraseInst();
 }

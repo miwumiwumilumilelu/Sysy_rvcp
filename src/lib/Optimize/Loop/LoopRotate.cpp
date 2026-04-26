@@ -353,15 +353,7 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
     auto replaceTerminator = [](BasicBlock* bb, auto makeNew) {
         auto& ins = bb->getInstructions();
         auto* term = ins.back();
-        // Clear operands before deletion so user lists are properly cleaned up.
-        // Without this, the deleted branch leaves stale pointers in its operands' UseList, 
-        // which can cause DCE to believe dead instructions still have live users.
-        // especially when the allocator reuses the freed address :)
-        for (int i = 0; i < term->getNumOperands(); i++)
-            term->setOperand(i, nullptr);
-        term->setParent(nullptr);
-        ins.pop_back();
-        delete term;
+        term->eraseInst();
         makeNew();
     };
     if (condTrueIsBody) {

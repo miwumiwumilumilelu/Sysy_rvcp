@@ -7,6 +7,7 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 using namespace sysy;
@@ -215,13 +216,27 @@ bool GVN::runFunc(Function* f) {
         {
             std::unordered_map<Value*, Value*> repMap;
             for (auto& [old, rep] : toReplace) repMap[old] = rep;
+            auto resolve = [&](Value* v) {
+                std::set<Value*> seen;
+                while (repMap.count(v) && !seen.count(v)) {
+                    seen.insert(v);
+                    v = repMap[v];
+                }
+                return v;
+            };
             for (auto& [old, rep] : toReplace) {
-                while (repMap.count(rep)) rep = repMap[rep];
+                rep = resolve(rep);
             }
+
+            std::map<Value*, Value*> remappedLoadTab;
+            for (auto& [ptr, val] : loadTab) {
+                remappedLoadTab[resolve(ptr)] = resolve(val);
+            }
+            loadTab = std::move(remappedLoadTab);
         }
         for (auto& [old, rep] : toReplace) {
             old->replaceAllUsesWith(rep);
-            bb->getInstructions().remove(old);
+            old->eraseInst();
             any = true;
         }
 

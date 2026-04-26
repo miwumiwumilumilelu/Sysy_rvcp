@@ -71,6 +71,6 @@ bool CSE::localCSE(BasicBlock* bb) {
         }
     }
 
-    for (auto inst : toRemove) bb->getInstructions().remove(inst);
+    for (auto inst : toRemove) inst->eraseInst();
     return changed;
 }
