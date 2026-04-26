@@ -12,6 +12,9 @@ Value* sysy::getLoopBaseObject(Value* v, std::set<Value*>& vis) {
         Value* base = nullptr;
         for (int k = 0; k < (int)phi->getNumOperands(); k += 2) {
             Value* b = getLoopBaseObject(phi->getOperand(k), vis);
+            // Skip cycle-markers (b == v): address recurrence phi created by LoopSR.
+            // Its non-self-referential incomings reveal the true base.
+            if (b == v) continue;
             if (!base) base = b;
             else if (base != b) return v;
         }

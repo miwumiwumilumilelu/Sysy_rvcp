@@ -220,6 +220,7 @@ public:
     GetElementPtrInst(Value* base, Value* index, BasicBlock* parent);
     std::string toString() const override;
     Type* getIndexedType() const { return indexedType; }
+    void setIndexedType(Type* ty) { indexedType = ty; }
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == GetElementPtr;

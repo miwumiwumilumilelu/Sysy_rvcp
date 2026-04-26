@@ -162,7 +162,10 @@ SE* SCEV::buildPhi(PhiInst* phi) {
 
 SE* SCEV::buildGEP(GetElementPtrInst* gep) {
     auto* baseTy = static_cast<PointerType*>(gep->getOperand(0)->getType());
-    int esize = elemBytes(baseTy->getPointeeType());
+    Type* indexedTy = gep->getIndexedType();
+    if (!indexedTy)
+        indexedTy = baseTy->getPointeeType();
+    int esize = elemBytes(indexedTy);
     SE* baseSE = get(gep->getOperand(0));
     SE* idxSE = get(gep->getOperand(1));
     // baseSE + idxSE * esize

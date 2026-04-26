@@ -30,9 +30,10 @@
 #include "Optimize/Loop/LCSSA.h"
 #include "Optimize/Loop/DeadLoopElim.h"
 #include "Optimize/Loop/LICM.h"
-#include "Optimize/Loop/IndVarSimplify.h"
+#include "Optimize/Loop/LoopExitFold.h"
 #include "Optimize/Loop/LoopMemPromote.h"
 #include "Optimize/Loop/SubloopHoist.h"
+#include "Optimize/Loop/LoopStrengthReduce.h"
 #include "rv/InstSel.h"
 #include "rv/RegAlloc.h"
 #include "rv/MCPeephole.h"
@@ -221,7 +222,10 @@ int main(int argc, char **argv) {
     }
     if (ok("deadloop-elim-pre-licm")) return 0;
 
-// ======== IndVarSimplify + LICM + LoopMemPromote + SubloopHoist (fixpoint) ========
+    LoopStrengthReduce(module.get()).run();
+    if (ok("loop-strength-reduce")) return 0;
+
+// ======== LoopExitFold + LICM + LoopMemPromote + SubloopHoist (fixpoint) ========
 
     {
         bool licmChanged = false;
@@ -229,7 +233,7 @@ int main(int argc, char **argv) {
         bool anyChanged;
         do {
             anyChanged = false;
-            anyChanged |= IndVarSimplify(module.get()).run();
+            anyChanged |= LoopExitFold(module.get()).run();
             anyChanged |= LICM(module.get()).run();
             anyChanged |= LoopMemPromote(module.get()).run();
             anyChanged |= SubloopHoist(module.get()).run();
