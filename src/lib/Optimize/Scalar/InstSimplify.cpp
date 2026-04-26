@@ -20,9 +20,22 @@ bool InstSimplify::run() {
     return anyChanged;
 }
 
-static bool replaceTo(Instruction* inst, BasicBlock* bb, Value* v) {
+static bool same(Value* v, ConstantInt* c) {
+    auto* val = dyn_cast<ConstantInt>(v);
+    return val && c && val->getValue() == c->getValue();
+}
+
+static bool replaceTo(Instruction* inst, Value* v) {
     inst->replaceAllUsesWith(v);
-    bb->getInstructions().remove(inst);
+    inst->eraseInst();
+    return true;
+}
+
+// Check Inst def-use.
+static bool tryerase(BinaryInst* inst) {
+    if (!inst || !inst->getParent() || !inst->getUsers().empty())
+        return false;
+    inst->eraseInst();
     return true;
 }
 
@@ -43,36 +56,68 @@ bool InstSimplify::simplify(BasicBlock* bb) {
 
         switch (bin->getOpID()) {
             case Instruction::Add:
+            // C + (x - C) -> (x - C) + C -> x
                 if (ci_l && !ci_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(ci_l, ci_r); std::swap(lhs, rhs);}
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, bb, lhs); continue; }
+                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, lhs); continue; }
+                if (ci_r) {
+                    if (auto* inner = dyn_cast<BinaryInst>(lhs)) {
+                        if (inner->getOpID() == Instruction::Sub &&
+                            same(inner->getOperand(1), ci_r)) {
+                            auto* dead = inner;
+                            changed |= replaceTo(inst, inner->getOperand(0));
+                            changed |= tryerase(dead);
+                            continue;
+                        }
+                    }
+                }
                 if (cf_l && !cf_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(cf_l, cf_r); std::swap(lhs, rhs);}
-                if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, bb, lhs); continue; }
+                if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, lhs); continue; }
                 break;
             case Instruction::Sub:
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (lhs == rhs) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
+            // (x + C) - C -> x
+            // (C + x) - C -> x
+                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, lhs); continue; }
+                if (ci_r) {
+                    if (auto* inner = dyn_cast<BinaryInst>(lhs)) {
+                        if (inner->getOpID() == Instruction::Add) {
+                            if (same(inner->getOperand(1), ci_r)) {
+                                auto* dead = inner;
+                                changed |= replaceTo(inst, inner->getOperand(0));
+                                changed |= tryerase(dead);
+                                continue;
+                            }
+                            if (same(inner->getOperand(0), ci_r)) {
+                                auto* dead = inner;
+                                changed |= replaceTo(inst, inner->getOperand(1));
+                                changed |= tryerase(dead);
+                                continue;
+                            }
+                        }
+                    }
+                }
+                if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, lhs); continue; }
+                if (lhs == rhs) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
                 break;
             case Instruction::Mul:
                 if (ci_l && !ci_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(ci_l, ci_r); std::swap(lhs, rhs);}
-                if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
+                if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, lhs); continue; }
+                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
                 if (cf_l && !cf_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(cf_l, cf_r); std::swap(lhs, rhs);}
-                if (cf_r && cf_r->getValue() == 1.0f) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, bb, new ConstantFloat(0.0f)); continue; }
+                if (cf_r && cf_r->getValue() == 1.0f) { changed |= replaceTo(inst, lhs); continue; }
+                if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, new ConstantFloat(0.0f)); continue; }
                 break;
             case Instruction::Div:
-                if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (cf_r && cf_r->getValue() == 1.0f) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
-                if (cf_l && cf_l->getValue() == 0.0f) { changed |= replaceTo(inst, bb, new ConstantFloat(0.0f)); continue; }
+                if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, lhs); continue; }
+                if (cf_r && cf_r->getValue() == 1.0f) { changed |= replaceTo(inst, lhs); continue; }
+                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
+                if (cf_l && cf_l->getValue() == 0.0f) { changed |= replaceTo(inst, new ConstantFloat(0.0f)); continue; }
                 break;
             case Instruction::Mod:
-                if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
+                if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
                 break;
             case Instruction::Shl:
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
+                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, lhs); continue; }
+                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
                 if (ci_r && ci_r->getValue() >= 0) {
                     if (auto* inner = dyn_cast<BinaryInst>(lhs)) {
                         // Shl(Shl(x, c1), c2) -> Shl(x, c1+c2), but if c1+c2 >= 32 then it's 0.
@@ -80,7 +125,7 @@ bool InstSimplify::simplify(BasicBlock* bb) {
                             if (auto* ic = dyn_cast<ConstantInt>(inner->getOperand(1))) {
                                 if (ic->getValue() >= 0 &&
                                     ci_r->getValue() + ic->getValue() >= 32) {
-                                    changed |= replaceTo(inst, bb, new ConstantInt(0));
+                                    changed |= replaceTo(inst, new ConstantInt(0));
                                     continue;
                                 }
                             }
@@ -89,14 +134,14 @@ bool InstSimplify::simplify(BasicBlock* bb) {
                 }
                 break;
             case Instruction::Ashr:
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
+                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, lhs); continue; }
+                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
                 break;
             case Instruction::And:
                 if (ci_l && !ci_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(ci_l, ci_r); std::swap(lhs, rhs);}
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, bb, new ConstantInt(0)); continue; }
-                if (ci_r && ci_r->getValue() == -1) { changed |= replaceTo(inst, bb, lhs); continue; }
-                if (lhs == rhs) { changed |= replaceTo(inst, bb, lhs); continue; }
+                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
+                if (ci_r && ci_r->getValue() == -1) { changed |= replaceTo(inst, lhs); continue; }
+                if (lhs == rhs) { changed |= replaceTo(inst, lhs); continue; }
                 break;
             default:
                 break;
