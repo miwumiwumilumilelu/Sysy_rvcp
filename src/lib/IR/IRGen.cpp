@@ -623,7 +623,6 @@ void IRGen::visit(LValAST &node) {
         }
     }
 
-    // 神级修复：局部数组强制衰减，剥离外层维度
     if (!isParamPointer) {
         if (auto ptrTy = dyn_cast<PointerType>(addr->getType())) {
             if (ptrTy->getPointeeType()->isArray()) {
@@ -649,19 +648,13 @@ void IRGen::visit(LValAST &node) {
         addr = gep;
     }
 
-    if (isLValMode) {
+    // Return the current address/pointer directly if no full index to a scalar element 
+    if (isLValMode || isPartial) {
         LastVal = addr;
     } else {
-        if (isPartial) {
-            auto zero = new ConstantInt(0);
-            auto gep = builder.Create<GetElementPtrInst>(addr, zero);
-            gep->setName(nextValueName());
-            LastVal = gep;
-        } else {
-            auto load = builder.Create<LoadInst>(addr);
-            load->setName(nextValueName());
-            LastVal = load;
-        }
+        auto load = builder.Create<LoadInst>(addr);
+        load->setName(nextValueName());
+        LastVal = load;
     }
 }
 
