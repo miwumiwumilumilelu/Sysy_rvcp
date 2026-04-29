@@ -96,10 +96,16 @@ bool LoopStrengthReduce::runOnLoop(Loop* L, SCEV& scev) {
     std::vector<GEPCandidate> gepCands;
 
     struct MulCandidate {
-        BinaryInst* inst; 
-        SEAddRec* ar; 
+        BinaryInst* inst;
+        SEAddRec* ar;
     };
     std::vector<MulCandidate> mulCands;
+
+    struct SIToFPCandidate {
+        CastInst* inst;
+        SEAddRec* ar;
+    };
+    std::vector<SIToFPCandidate> sitofpCands;
 
     for (auto* bb : L->blocks) {
         for (auto* inst : bb->getInstructions()) {
@@ -118,11 +124,33 @@ bool LoopStrengthReduce::runOnLoop(Loop* L, SCEV& scev) {
                 auto* ar = dyn_cast<SEAddRec>(scev.get(bin));
                 if (!ar || ar->loop != L || ar->step == 0) continue;
                 mulCands.push_back({bin, ar});
+                continue;
+            }
+
+            if (auto* cast = dyn_cast<CastInst>(inst)) {
+                if (cast->getOpID() != Instruction::SIToFP) continue;
+                auto* ar = dyn_cast<SEAddRec>(scev.get(cast->getOperand(0)));
+                if (!ar || ar->loop != L || ar->step == 0) continue;
+
+                auto* startC = dyn_cast<SEConst>(ar->start);
+                if (!startC) continue;
+                ExitBranchInfo info;
+                int64_t tc = -1;
+                if (!analyzeExitBranch(L, L->latch, scev, info) ||
+                    !getConstantTripCountFromInfo(info, L, tc) || tc <= 0) continue;
+
+                constexpr int64_t kFloatExact = 1LL << 24;
+                __int128 first = startC->val;
+                __int128 last  = startC->val + (__int128)(tc - 1) * ar->step;
+                __int128 lo = first < last ? first : last;
+                __int128 hi = first < last ? last : first;
+                if (lo < -kFloatExact || hi > kFloatExact) continue;
+                sitofpCands.push_back({cast, ar});
             }
         }
     }
 
-    if (gepCands.empty() && mulCands.empty()) return false;
+    if (gepCands.empty() && mulCands.empty() && sitofpCands.empty()) return false;
 
     bool changed = false;
 
@@ -186,6 +214,27 @@ bool LoopStrengthReduce::runOnLoop(Loop* L, SCEV& scev) {
         inst->replaceAllUsesWith(valPhi);
         inst->eraseInst();
 
+        changed = true;
+    }
+
+    // Reduce sitofp to float recurrences.
+    for (auto& [inst, ar] : sitofpCands) {
+        Value* intStart = tryExpandPre(ar->start);
+        if (!intStart) continue;
+
+        auto* floatStart = emitPre(new CastInst(Instruction::SIToFP, intStart, Type::getFloatTy(), nullptr));
+
+        auto* floatPhi = new PhiInst(Type::getFloatTy(), nullptr);
+        floatPhi->setName("sr_f" + std::to_string(srID++));
+        floatPhi->setParent(L->head);
+        floatPhi->addIncoming(floatStart, L->pre);
+        L->head->getInstructions().push_front(floatPhi);
+
+        auto* nextFloat = emitLatch(new BinaryInst(Instruction::FAdd, floatPhi, new ConstantFloat((float)ar->step), nullptr));
+        floatPhi->addIncoming(nextFloat, L->latch);
+
+        inst->replaceAllUsesWith(floatPhi);
+        inst->eraseInst();
         changed = true;
     }
 
