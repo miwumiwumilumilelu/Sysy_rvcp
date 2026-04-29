@@ -23,6 +23,7 @@
 #include "Optimize/Scalar/DSE.h"
 #include "Optimize/Scalar/DFE.h"
 #include "Optimize/Scalar/StrengthReduce.h"
+#include "Optimize/Scalar/TailCallElim.h"
 #include "Optimize/Scalar/SSAInline.h"
 #include "Optimize/Scalar/ConstSpec.h"
 #include "Optimize/Scalar/LoopUnroll.h"
@@ -168,6 +169,11 @@ int main(int argc, char **argv) {
 
     runCleanup(module.get());
     if (ok("scalar-cleanup")) return 0;
+
+// ======== Tail Call Elimination ========
+
+    TCE(module.get()).run();
+    if (ok("tce")) return 0;
 
 // ======== Inline ========
 
