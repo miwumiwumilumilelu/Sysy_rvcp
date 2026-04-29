@@ -35,6 +35,7 @@
 #include "Optimize/Loop/LoopMemPromote.h"
 #include "Optimize/Loop/SubloopHoist.h"
 #include "Optimize/Loop/LoopStrengthReduce.h"
+#include "Optimize/Loop/LoopGVN.h"
 #include "rv/InstSel.h"
 #include "rv/RegAlloc.h"
 #include "rv/MCPeephole.h"
@@ -227,6 +228,16 @@ int main(int argc, char **argv) {
         DCE(module.get()).run();
     }
     if (ok("deadloop-elim-pre-licm")) return 0;
+
+// ======== LoopGVN ========
+//    if (LoopGVN(module.get()).run()) {
+//        runCleanup(module.get());
+//        if (DeadLoopElim(module.get()).run()) {
+//            SimplifyCFG(module.get()).run();
+//            DCE(module.get()).run();
+//        }
+//    }
+//     if (ok("loop-gvn")) return 0;
 
     LoopStrengthReduce(module.get()).run();
     if (ok("loop-strength-reduce")) return 0;
