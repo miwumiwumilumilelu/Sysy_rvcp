@@ -9,15 +9,15 @@ using namespace sysy;
 
 static int SSAInlineID = 0;
 
-static std::string uniqueName(const std::string& seed) {
+static std::string inlineName(const std::string& seed, int siteID) {
     if (!seed.empty())
-        return seed + ".inl" + std::to_string(SSAInlineID++);
-    return "%inl" + std::to_string(SSAInlineID++);
+        return seed + ".i" + std::to_string(siteID);
+    return "%i" + std::to_string(siteID);
 }
 
-static void renameClone(Instruction* c) {
+static void renameClone(Instruction* c, int siteID) {
     if (c && !c->getType()->isVoid())
-        c->setName(uniqueName(c->getName()));
+        c->setName(inlineName(c->getName(), siteID));
 }
 
 bool SSAInline::isRecursive(Function* f) {
@@ -51,6 +51,7 @@ bool SSAInline::isInlineable(Function* f) const {
 //
 // callBB -> callee_bb0 -> callee_bb1 -> ... -> callee_bbN -> endBB -> nextBBs
 void SSAInline::doInline(CallInst* call) {
+    int siteID = SSAInlineID++;
     Function* callee = call->getFunction();
     BasicBlock* callBB = call->getParent();
     Region* callRegion = callBB->getParent();
@@ -65,7 +66,7 @@ void SSAInline::doInline(CallInst* call) {
         }
     }
 
-    BasicBlock* endBB = new BasicBlock(uniqueName(callee->getName() + "_end"), nullptr);
+    BasicBlock* endBB = new BasicBlock(inlineName(callee->getName() + "_end", siteID), nullptr);
 
     // Move everything after the call into endBB.
     {
@@ -83,7 +84,7 @@ void SSAInline::doInline(CallInst* call) {
     BlockMap bbMap;
     std::vector<BasicBlock*> calleeBlocks;
     for (auto bb : callee->getBody()->getBlocks()) {
-        auto* cloned = new BasicBlock(uniqueName(callee->getName() + "_" + bb->getName()), nullptr);
+        auto* cloned = new BasicBlock(inlineName(callee->getName() + "_" + bb->getName(), siteID), nullptr);
         bbMap[bb] = cloned;
         calleeBlocks.push_back(bb);
     }
@@ -113,7 +114,7 @@ void SSAInline::doInline(CallInst* call) {
             if (inst->getOpID() == Instruction::Ret ||
                 inst->getOpID() == Instruction::Br) continue;
             auto* c = cloneSkeleton(inst, clonedBB);
-            renameClone(c);
+            renameClone(c, siteID);
             vmap[inst] = c;
         }
     }

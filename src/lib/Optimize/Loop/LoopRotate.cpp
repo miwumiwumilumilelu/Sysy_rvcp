@@ -8,17 +8,15 @@
 
 using namespace sysy;
 
-static int LoopRotateID = 0;
-
-static std::string LoopName(const std::string& seed) {
+static std::string LoopName(const std::string& seed, const std::string& suffix) {
     if (!seed.empty())
-        return seed + ".lr" + std::to_string(LoopRotateID++);
-    return "%lr" + std::to_string(LoopRotateID++);
+        return seed + suffix;
+    return "%" + suffix.substr(1);
 }
 
-static void AssignName(Instruction* inst, const std::string& seed = "") {
+static void AssignName(Instruction* inst, const std::string& seed, const std::string& suffix) {
     if (!inst || inst->getType()->isVoid()) return;
-    inst->setName(LoopName(seed));
+    inst->setName(LoopName(seed, suffix));
 }
 
 static Value* GetBase(Value* v, std::set<Value*>& vis) {
@@ -96,7 +94,8 @@ static bool dominatesLoopRotateUse(Value* val, Instruction* userInst, int operan
 // Clone an arithmetic/comparison/cast/GEP instruction, remapping operands via vmap.
 // Returns nullptr for unsupported opcodes (caller should abort the rotation).
 static Instruction* cloneInst(Instruction* inst,
-                               const std::unordered_map<Value*, Value*>& vmap) {
+                            const std::unordered_map<Value*, Value*>& vmap,
+                            const std::string& suffix) {
     auto remap = [&](Value* v) -> Value* {
         auto it = vmap.find(v);
         return it != vmap.end() ? it->second : v;
@@ -124,7 +123,7 @@ static Instruction* cloneInst(Instruction* inst,
                                     remap(inst->getOperand(1)), nullptr);
 
     if (clone)
-        AssignName(clone, inst->getName());
+        AssignName(clone, inst->getName(), suffix);
     return clone;
 }
 
@@ -236,10 +235,10 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
     }
 
     // Emit a clone of the condition chain into tgt before its terminator.
-    auto emitChain = [&](BasicBlock* tgt, std::unordered_map<Value*, Value*> vm)
-                     -> std::pair<bool, Value*> {
+    auto emitChain = [&](BasicBlock* tgt, std::unordered_map<Value*, Value*> vm,
+                        const std::string& suffix) -> std::pair<bool, Value*> {
         for (auto* orig : chainOrd) {
-            auto* cl = cloneInst(orig, vm);
+            auto* cl = cloneInst(orig, vm, suffix);
             if (!cl) return {false, nullptr};
             cl->setParent(tgt);
             auto& ins = tgt->getInstructions();
@@ -254,11 +253,11 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
         return {true, rc};
     };
 
-    auto preChainRes = emitChain(L->pre,   initMap);
+    auto preChainRes = emitChain(L->pre, initMap, ".rp");
     if (!preChainRes.first) return false;
     Value* pcond = preChainRes.second;
 
-    auto latChainRes = emitChain(L->latch, latMap);
+    auto latChainRes = emitChain(L->latch, latMap, ".rl");
     if (!latChainRes.first) return false;
     Value* lcond = latChainRes.second;
 
@@ -306,7 +305,7 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
         if (it != epCache.end()) return it->second;
         auto* ep = new PhiInst(cast<Instruction>(v)->getType(), nullptr);
         ep->setParent(exit);
-        AssignName(ep, v->getName());
+        AssignName(ep, v->getName(), ".rx");
         ep->addIncoming(remap(v, preMap),  L->pre);
         ep->addIncoming(remap(v, latMap2), L->latch);
         // v is a chain instruction defined in head,
@@ -337,7 +336,7 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
 
         auto* ep = new PhiInst(phi->getType(), nullptr);
         ep->setParent(exit);
-        AssignName(ep, phi->getName());
+        AssignName(ep, phi->getName(), ".rx");
         ep->addIncoming(remap(preVal, preMap),  L->pre);
         ep->addIncoming(remap(latVal, latMap2), L->latch);
         // phi is a header phi defined in head; head dominates all body blocks,
