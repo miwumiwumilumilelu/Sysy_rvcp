@@ -1,9 +1,0 @@
-int main() {
-  int i = 0;
-  int y = 7;
-  while (i < 200000000) {
-    y = 7;
-    i = i + 1;
-  }
-  return y;
-}

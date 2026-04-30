@@ -1,5 +1,0 @@
-int main() {
-  int big[10000];
-  big[9999] = 1;
-  return big[9999];
-}

@@ -24,7 +24,6 @@ TEST_DIR_ALIASES = {
     "f": "test/official_Functional/functional_recover/functional",
     "hf": "test/official_Functional/functional_recover/h_functional",
     "p": "test/official_Performance",
-    "c": "test/custom",
 }
 
 TEST_DIR_GROUPS = {
@@ -521,14 +520,14 @@ if __name__ == "__main__":
         "--dir",
         type=str,
         default="all",
-        help="测试目录：all=f+hf+p, f=functional, hf=h_functional, p=performance, c=custom",
+        help="测试目录：all=f+hf+p, f=functional, hf=h_functional, p=performance",
     )
     parser.add_argument(
         "-f",
         "--file",
         nargs=2,
         metavar=("SCOPE", "CASE"),
-        help="单测：`-f p 03_sort2` / `-f f 00_main` / `-f hf 00_comment2` / `-f c loop_case`",
+        help="单测：`-f p 03_sort2` / `-f f 00_main` / `-f hf 00_comment2`",
     )
     parser.add_argument("--dump-ir", action="store_true", help="将 IR 打印到仓库根目录 out/ 文件夹")
     parser.add_argument(
