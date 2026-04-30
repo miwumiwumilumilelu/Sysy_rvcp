@@ -33,7 +33,9 @@ public:
     MCOperand newVReg(bool isFloat = false);
 
     static bool isFloatType(Type* ty) { return ty && ty->isFloat(); }
-    static bool isIntType(Type* ty) { return ty && ty->isInt(); }
+    static bool isPtrType(Type* ty) {
+        return ty && (ty->isPointer() || ty->isArray());
+    }
 };
 
 class InstSelPass {

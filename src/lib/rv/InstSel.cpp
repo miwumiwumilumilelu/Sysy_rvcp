@@ -34,45 +34,40 @@ MCOperand InstSelContext::getVReg(Value* v, bool isFloat) {
     }
 
     if (auto* cf = dyn_cast<ConstantFloat>(v)) {
-        if (cf->getValue() == 0.0f) {
-            if (isFloat) {
-                auto cit = constMap.find(v);
-                if (cit != constMap.end()) return cit->second;
-                auto vreg = newVReg(true);
-                insertSafe(new FMvWXOp(vreg, MCOperand(Reg::zero)));
-                constMap[v] = vreg;
-                return vreg;
-            } else {
-                return MCOperand(Reg::zero);
-            }
-        }
-    }
-
-    if (isa<ConstantZero>(v) && !isFloat) {
-        return MCOperand(Reg::zero);
-    }
-
-    // ConstantZero (float)：fmv.w.x fd, zero → 0.0f
-    if (isa<ConstantZero>(v) && isFloat) {
         auto cit = constMap.find(v);
         if (cit != constMap.end()) return cit->second;
+
+        float fval = cf->getValue();
+
+        if (fval == 0.0f) {
+            if (!isFloat)
+                return MCOperand(Reg::zero);
+
+            auto vreg = newVReg(true);
+            insertSafe(new FMvWXOp(vreg, MCOperand(Reg::zero)));
+            constMap[v] = vreg;
+            return vreg;
+        }
+
+        int bits;
+        memcpy(&bits, &fval, sizeof(int));
+        auto tmpInt = newVReg(false);
         auto vreg = newVReg(true);
-        insertSafe(new FMvWXOp(vreg, MCOperand(Reg::zero)));
+        insertSafe(new LiOp(tmpInt, bits));
+        insertSafe(new FMvWXOp(vreg, tmpInt));
         constMap[v] = vreg;
         return vreg;
     }
 
-    // bits -> intVReg -> floatVReg
-    if (auto* cf = dyn_cast<ConstantFloat>(v)) {
+    if (isa<ConstantZero>(v)) {
+        if (!isFloat)
+            return MCOperand(Reg::zero);
+
         auto cit = constMap.find(v);
         if (cit != constMap.end()) return cit->second;
-        float fval = cf->getValue();
-        int bits;
-        memcpy(&bits, &fval, sizeof(int));
-        auto tmpInt = newVReg(false);
-        auto vreg   = newVReg(true);
-        insertSafe(new LiOp(tmpInt, bits));
-        insertSafe(new FMvWXOp(vreg, tmpInt));
+
+        auto vreg = newVReg(true);
+        insertSafe(new FMvWXOp(vreg, MCOperand(Reg::zero)));
         constMap[v] = vreg;
         return vreg;
     }
@@ -122,7 +117,7 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
         int intIdx = 0, floatIdx = 0, stackSlot = 0;
         for (auto* arg : irFunc->getArgs()) {
             bool isFloat = InstSelContext::isFloatType(arg->getType());
-            bool isPtr = arg->getType()->isPointer() || arg->getType()->isArray();
+            bool isPtr = InstSelContext::isPtrType(arg->getType());
             auto vreg = ctx.newVReg(isFloat);
             ctx.valueMap[arg] = vreg;
             if (isPtr) {
