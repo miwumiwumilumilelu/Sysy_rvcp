@@ -1,16 +1,36 @@
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
-import shutil
 
 # ================= 配置区域 =================
-COMPILER = "g++"
-# 编译选项
-CFLAGS = ["-std=c++17", "-g", "-Wall", "-Wextra", "-Isrc/include"]
-# 目标文件名
-TARGET_NAME = "compiler" 
+COMPILER = os.environ.get("CXX", "clang++")
+TARGET_NAME = "compiler"
+
+BASE_FLAGS = ["-std=c++17", "-O2"]
+WARN_FLAGS = []
+LINK_FLAGS = ["-lm"]
 # ===========================================
+
+
+def include_flags(project_root: Path) -> list[str]:
+    include_root = project_root / "src" / "include"
+    dirs = [include_root]
+    if include_root.exists():
+        dirs.extend(sorted(p for p in include_root.rglob("*") if p.is_dir()))
+    dirs.append(project_root / "src" / "lib")
+
+    flags: list[str] = []
+    for d in dirs:
+        if d.exists():
+            flags.extend(["-I", str(d)])
+
+    extlibs = Path("/extlibs")
+    if extlibs.exists():
+        flags.extend(["-L/extlibs", "-I/extlibs", "-lantlr4-runtime", "-Wl,-rpath=/extlibs"])
+
+    return flags
 
 def clean():
     """清理所有编译产物"""
@@ -43,18 +63,31 @@ def build():
 
     source_files = []
     src_dir = project_root / "src"
-    for file_path in src_dir.rglob("*.cpp"):
+    for file_path in sorted(src_dir.rglob("*.cpp")):
         source_files.append(str(file_path))
 
     if not source_files:
         print("❌ 错误: src 目录下未找到任何 .cpp 文件！")
         sys.exit(1)
 
+    runtime_c = src_dir / "lib" / "sylib.c"
+    if runtime_c.exists():
+        print("⚠️  不编译 src/lib/sylib.c：它是测试时链接目标程序用的运行库")
+
     print(f"📂 发现 {len(source_files)} 个源文件")
 
-    cmd = [COMPILER] + CFLAGS + source_files + ["-o", str(target_path)]
+    cmd = (
+        [COMPILER]
+        + BASE_FLAGS
+        + WARN_FLAGS
+        + include_flags(project_root)
+        + source_files
+        + LINK_FLAGS
+        + ["-o", str(target_path)]
+    )
 
     print(f"🚀 正在编译 {target_path.name}...")
+    print(" ".join(cmd))
     try:
         subprocess.run(cmd, check=True)
         
@@ -83,4 +116,7 @@ if __name__ == "__main__":
         if os.path.exists(arg_file):
             print(f"\n🚀 立即运行: ./{exe_path.name} {arg_file}")
             print("-" * 40)
-            subprocess.run([str(exe_path), arg_file])
+            out_file = str(Path("out") / (Path(arg_file).stem + ".s"))
+            Path("out").mkdir(exist_ok=True)
+            subprocess.run([str(exe_path), "-S", "-o", out_file, arg_file])
+            print(f"📄 汇编输出: {out_file}")

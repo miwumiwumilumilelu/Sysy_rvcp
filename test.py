@@ -331,6 +331,14 @@ def normalize_output(text: str) -> str:
     return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
+def compiler_cmd_for_case(sy_path: str, asm_path: str) -> list[str]:
+    cmd = [COMPILER_CMD, "-S", "-o", asm_path, sy_path]
+    parts = Path(sy_path).parts
+    if "official_Performance" in parts:
+        cmd.append("-O1")
+    return cmd
+
+
 def run_case_once(
     sy_path: str,
     in_path: str,
@@ -347,18 +355,26 @@ def run_case_once(
         kind, _ = runner_kind(runner)
         if kind == "ours":
             try:
-                with open(asm_path, "w", encoding="utf-8") as asm_file:
-                    subprocess.run(
-                        [COMPILER_CMD, sy_path],
-                        stdout=asm_file,
-                        stderr=subprocess.DEVNULL,
-                        check=True,
-                        timeout=TIMEOUT,
-                    )
+                result = subprocess.run(
+                    compiler_cmd_for_case(sy_path, asm_path),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=True,
+                    timeout=TIMEOUT,
+                )
             except subprocess.TimeoutExpired:
                 return False, "编译超时", 0.0
-            except subprocess.CalledProcessError:
-                return False, "编译崩溃", 0.0
+            except subprocess.CalledProcessError as e:
+                err = e.stderr.decode("utf-8", errors="ignore").strip()
+                return False, err or "编译崩溃", 0.0
+
+            if result.stdout:
+                return False, "编译器 stdout 非空", 0.0
+            if result.stderr:
+                err = result.stderr.decode("utf-8", errors="ignore").strip()
+                return False, f"编译器 stderr 非空: {err}", 0.0
+            if not os.path.exists(asm_path) or os.path.getsize(asm_path) == 0:
+                return False, "编译器未生成汇编文件", 0.0
 
             ok, msg = build_exec(asm_path, exe_path)
             if not ok:

@@ -12,11 +12,19 @@
 
 using namespace sysy;
 
-// Remove load from loadtab.
-static void killAlias(std::map<Value*, Value*>& tab, Value* storePtr,
-                      const AliasAnalysis& aa) {
-    for (auto it = tab.begin(); it != tab.end(); )
-        it = aa.mayAlias(it->first, storePtr) ? tab.erase(it) : ++it;
+// Drop memory facts only when this store may change their value.
+//
+// %v = load %p -> tab[%p] = %v
+// store %v, %q -> if %q may alias %p, %p still contains %v
+// store %v, %p -> redundant, because tab[%p] is still %v
+static void killChangedAliases(std::map<Value*, Value*>& tab, Value* sptr, 
+                            Value* sval, const AliasAnalysis& aa) {
+    for (auto it = tab.begin(); it != tab.end(); ) {
+        if (aa.mayAlias(it->first, sptr) && it->second != sval)
+            it = tab.erase(it);
+        else
+            ++it;
+    }
 }
 
 using PtrSet = std::set<Value*>;
@@ -140,6 +148,7 @@ bool GVN::runFunc(Function* f) {
         std::vector<ExprKey> newExpr;
         std::vector<CallKey> newCall;
         std::vector<std::pair<Instruction*, Value*>> toReplace;
+        std::vector<Instruction*> toErase;
 
         auto savedLoadTab = loadTab;
         {
@@ -157,7 +166,14 @@ bool GVN::runFunc(Function* f) {
             if (op == Instruction::Store) {
                 Value* ptr = inst->getOperand(1);
                 Value* val = inst->getOperand(0);
-                killAlias(loadTab, ptr, aa);
+
+                auto it = loadTab.find(ptr);
+                if (it != loadTab.end() && it->second == val) {
+                    toErase.push_back(inst);
+                    continue;
+                }
+                
+                killChangedAliases(loadTab, ptr, val, aa);
                 loadTab[ptr] = val;
                 continue;
             }
@@ -237,6 +253,10 @@ bool GVN::runFunc(Function* f) {
         for (auto& [old, rep] : toReplace) {
             old->replaceAllUsesWith(rep);
             old->eraseInst();
+            any = true;
+        }
+        for (auto* inst : toErase) {
+            inst->eraseInst();
             any = true;
         }
 
