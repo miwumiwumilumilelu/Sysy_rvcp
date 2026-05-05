@@ -1,4 +1,4 @@
-#include "rv/RegAlloc.h"
+#include "../../include/rv/RegAlloc.h"
 #include <algorithm>
 #include <cassert>
 #include <vector>
@@ -290,6 +290,84 @@ void RegAlloc::rewriteOperands(MCFunction* func, int spillBase, int allocaBase) 
         for (RvOp* op : ops) {
             if (op->opcode == RvOp::CallOp) {
                 auto* call = static_cast<CallOp*>(op);
+                auto isIntArgReg = [](Reg r) {
+                    int idx = static_cast<int>(r);
+                    return idx >= static_cast<int>(Reg::a0) &&
+                           idx <= static_cast<int>(Reg::a7);
+                };
+                auto isFloatArgReg = [](Reg r) {
+                    int idx = static_cast<int>(r);
+                    return idx >= static_cast<int>(Reg::fa0) &&
+                           idx <= static_cast<int>(Reg::fa7);
+                };
+                auto isScratchReg = [&](Reg r) {
+                    return r == spillReg || r == spillReg2 ||
+                           r == fspillReg || r == fspillReg2;
+                };
+                auto isCallSetupMove = [&](RvOp* setup) -> bool {
+                    if (!setup) return false;
+                    if (setup->opcode == RvOp::MvOp) {
+                        auto* mv = static_cast<MvOp*>(setup);
+                        return mv->rd.isPReg() && isIntArgReg(mv->rd.getPReg());
+                    }
+                    if (setup->opcode == RvOp::LiOp) {
+                        auto* li = static_cast<LiOp*>(setup);
+                        return li->rd.isPReg() && isIntArgReg(li->rd.getPReg());
+                    }
+                    if (setup->opcode == RvOp::FMvSOp) {
+                        auto* mv = static_cast<FMvSOp*>(setup);
+                        return mv->rd.isPReg() && isFloatArgReg(mv->rd.getPReg());
+                    }
+                    return false;
+                };
+                auto canHoistAcrossForStackArgs = [&](RvOp* setup) -> bool {
+                    if (!setup) return false;
+                    if (isCallSetupMove(setup)) return true;
+
+                    switch (setup->opcode) {
+                        case RvOp::RetOp:
+                        case RvOp::JOp:
+                        case RvOp::JrOp:
+                        case RvOp::JALOp:
+                        case RvOp::JALROp:
+                        case RvOp::BeqOp: case RvOp::BneOp: case RvOp::BltOp:
+                        case RvOp::BleOp: case RvOp::BgtOp: case RvOp::BgeOp:
+                        case RvOp::BeqzOp: case RvOp::BnezOp: case RvOp::BlezOp:
+                        case RvOp::BgezOp: case RvOp::BltzOp: case RvOp::BgtzOp:
+                        case RvOp::CallOp:
+                        case RvOp::SwOp: case RvOp::SdOp: case RvOp::FSwOp:
+                            return false;
+                        default:
+                            break;
+                    }
+
+                    MCOperand* def = setup->getDef();
+                    if (def) {
+                        if (def->isVReg()) return false;
+                        if (def->isPReg()) {
+                            Reg r = def->getPReg();
+                            if (isIntArgReg(r) || isFloatArgReg(r)) return false;
+                            if (!isScratchReg(r)) return false;
+                        }
+                    }
+
+                    std::vector<MCOperand*> uses;
+                    setup->collectUses(uses);
+                    for (auto* u : uses) {
+                        if (u->isVReg()) return false;
+                        if (u->isPReg()) {
+                            Reg r = u->getPReg();
+                            if (r != Reg::sp && !isScratchReg(r)) return false;
+                        }
+                    }
+                    return true;
+                };
+
+                RvOp* stackArgInsertPos = op;
+                for (RvOp* cur = op->prev; canHoistAcrossForStackArgs(cur); cur = cur->prev) {
+                    stackArgInsertPos = cur;
+                }
+
                 for (auto& sa : call->stackArgs) {
                     Reg srcReg;
                     bool isPtr = false;
@@ -305,7 +383,7 @@ void RegAlloc::rewriteOperands(MCFunction* func, int spillBase, int allocaBase) 
                         if (spillLocal.count(v)) {
                             srcReg = vi->isFloat ? fspillReg : spillReg;
                             int off = spillBase + spillLocal[v];
-                            emitLS(blk, op, /*load=*/true, vi->isFloat, isPtr, 
+                            emitLS(blk, stackArgInsertPos, /*load=*/true, vi->isFloat, isPtr,
                                 srcReg, Reg::sp, off);
                         } else {
                             srcReg = assignment.count(v) ? assignment[v] : Reg::zero;
@@ -316,7 +394,7 @@ void RegAlloc::rewriteOperands(MCFunction* func, int spillBase, int allocaBase) 
                     }
 
                     int stackOff = sa.slotIdx * 8;
-                    emitLS(blk, op, /*load=*/false, sa.isFloat, isPtr,
+                    emitLS(blk, stackArgInsertPos, /*load=*/false, sa.isFloat, isPtr,
                         srcReg, Reg::sp, stackOff);
                 }
                 continue;
@@ -643,7 +721,57 @@ void RegAlloc::fixParallelMoves(MCFunction* func) {
                     }
                     break; // LiOp not to a0-a7
                 }
-                break; // non-setup instruction
+                // skip if it doesn't write to argument registers.
+                {
+                    bool shouldStop = false;
+                    switch (cur->opcode) {
+                        case RvOp::RetOp:
+                        case RvOp::JOp:
+                        case RvOp::JrOp:
+                        case RvOp::JALOp:
+                        case RvOp::JALROp:
+                        case RvOp::BeqOp: case RvOp::BneOp: case RvOp::BltOp:
+                        case RvOp::BleOp: case RvOp::BgtOp: case RvOp::BgeOp:
+                        case RvOp::BeqzOp: case RvOp::BnezOp: case RvOp::BlezOp:
+                        case RvOp::BgezOp: case RvOp::BltzOp: case RvOp::BgtzOp:
+                        case RvOp::CallOp:
+                        case RvOp::SwOp: case RvOp::SdOp: case RvOp::FSwOp:
+                            shouldStop = true;
+                            break;
+                        default: {
+                            MCOperand* def = cur->getDef();
+                            if (def && def->isPReg()) {
+                                int di = static_cast<int>(def->getPReg());
+                                if ((di >= a0Idx && di < a0Idx + 8) ||
+                                    (di >= fa0Idx && di < fa0Idx + 8))
+                                    shouldStop = true;
+                            } else if (def && def->isVReg()) {
+                                shouldStop = true;
+                            }
+                            if (!shouldStop) {
+                                std::vector<MCOperand*> uses;
+                                cur->collectUses(uses);
+                                for (auto* u : uses) {
+                                    if (u->isPReg()) {
+                                        int ui = static_cast<int>(u->getPReg());
+                                        if ((ui >= a0Idx && ui < a0Idx + 8) ||
+                                            (ui >= fa0Idx && ui < fa0Idx + 8)) {
+                                            shouldStop = true;
+                                            break;
+                                        }
+                                    } else if (u->isVReg()) {
+                                        shouldStop = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if (shouldStop) break;
+                    cur = cur->prev;
+                    continue;
+                }
             }
 
             // Reverse to restore forward (emission) order.
