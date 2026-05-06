@@ -3,8 +3,48 @@
 #include "Optimize/Loop/LoopUtils/LoopTripUtils.h"
 #include "IR/Instruction.h"
 #include <functional>
+#include <utility>
 
 using namespace sysy;
+
+static bool visitRealUses(Region* region, Instruction* target, Value* repl) {
+    if (!region || !target) return false;
+
+    bool changed = false;
+    for (auto* bb : region->getBlocks()) {
+        for (auto* inst : bb->getInstructions()) {
+            if (inst != target) {
+                for (int i = 0; i < inst->getNumOperands(); ++i) {
+                    if (inst->getOperand(i) == target) {
+                        if (repl) inst->setOperand(i, repl);
+                        changed = true;
+                    }
+                }
+            }
+
+            for (const auto& sub : inst->getRegions())
+                changed |= visitRealUses(sub.get(), target, repl);
+        }
+    }
+    return changed;
+}
+
+static Region* realUseRoot(Instruction* target) {
+    if (!target || !target->getParent() || !target->getParent()->getParent())
+        return nullptr;
+
+    if (auto* f = target->getParent()->getParentFunc())
+        return f->getBody();
+    return target->getParent()->getParent();
+}
+
+static bool hasRealUse(Instruction* target) {
+    return visitRealUses(realUseRoot(target), target, nullptr);
+}
+
+static bool replaceRealUsesWith(Instruction* target, Value* repl) {
+    return visitRealUses(realUseRoot(target), target, repl);
+}
 
 bool LoopExitFold::runOnLoop(Loop* L, Dominators& /*dt*/, SCEV& scev) {
     return deduplicateRec(L, scev);
@@ -151,8 +191,43 @@ bool LoopExitFold::foldExitValues(Loop* L, SCEV& scev) {
             shiftWork.push_back({t, std::move(lcssaPhis)});
     }
 
+    bool prunedDead = false;
+    bool didFold = false;
+
+    std::vector<LinearTarget> liveLinearTargets;
+    liveLinearTargets.reserve(linearTargets.size());
+    for (auto& lt : linearTargets) {
+        if (!hasRealUse(lt.lcssaPhi)) {
+            lt.lcssaPhi->eraseInst();
+            prunedDead = true;
+        } else {
+            liveLinearTargets.push_back(lt);
+        }
+    }
+    linearTargets.swap(liveLinearTargets);
+
+    std::vector<ShiftWork> liveShiftWork;
+    liveShiftWork.reserve(shiftWork.size());
+    for (auto& work : shiftWork) {
+        std::vector<PhiInst*> livePhis;
+        livePhis.reserve(work.phis.size());
+        for (auto* lp : work.phis) {
+            if (!hasRealUse(lp)) {
+                lp->eraseInst();
+                prunedDead = true;
+            } else {
+                livePhis.push_back(lp);
+            }
+        }
+        if (!livePhis.empty()) {
+            work.phis = std::move(livePhis);
+            liveShiftWork.push_back(std::move(work));
+        }
+    }
+    shiftWork.swap(liveShiftWork);
+
     if (linearTargets.empty() && shiftWork.empty()) 
-        return false;
+        return prunedDead;
 
     auto& exitInsts = exitBB->getInstructions();
     auto insertPos = exitInsts.begin();
@@ -160,11 +235,13 @@ bool LoopExitFold::foldExitValues(Loop* L, SCEV& scev) {
         ++insertPos;
 
     static int recID = 0;
+    std::vector<Instruction*> emittedInsts;
     // Insert the newly generated closed solution instruction uniformly after the LCSSA Phi of the export block.
     auto emit = [&](BinaryInst* inst) -> BinaryInst* {
         inst->setName("rec" + std::to_string(recID++));
         inst->setParent(exitBB);
         exitInsts.insert(insertPos, inst);
+        emittedInsts.push_back(inst);
         return inst;
     };
 
@@ -211,8 +288,6 @@ bool LoopExitFold::foldExitValues(Loop* L, SCEV& scev) {
         return nullptr;
     };
 
-    bool didWork = false;
-
     // Handle linear inductive variables: 
     // Generate a closed solution (Start + TripCount * Step) and replace the use at the exit.
     for (auto& lt : linearTargets) {
@@ -234,9 +309,9 @@ bool LoopExitFold::foldExitValues(Loop* L, SCEV& scev) {
             exitVal = emit(new BinaryInst(Instruction::Add, startVal, delta, nullptr));
         }
 
-        lt.lcssaPhi->replaceAllUsesWith(exitVal);
+        bool replaced = replaceRealUsesWith(lt.lcssaPhi, exitVal);
         lt.lcssaPhi->eraseInst();
-        didWork = true;
+        didFold |= replaced;
     }
 
     // Handle shift inductive variables:
@@ -258,11 +333,12 @@ bool LoopExitFold::foldExitValues(Loop* L, SCEV& scev) {
         Value* exitVal = emit(new BinaryInst(Instruction::Ashr, t.initVal, clamped, nullptr));
 
         for (auto* lp : lcssaPhis) {
-            lp->replaceAllUsesWith(exitVal);
+            bool replaced = replaceRealUsesWith(lp, exitVal);
             lp->eraseInst();
+            didFold |= replaced;
         }
 
-        if (t.vNext->getUsers().empty()) {
+        if (!hasRealUse(t.vNext)) {
             t.vNext->eraseInst();
 
             for (int i = 0; i + 1 < t.phi->getNumOperands(); i += 2) {
@@ -272,14 +348,24 @@ bool LoopExitFold::foldExitValues(Loop* L, SCEV& scev) {
                     break; 
                 }
             }
-            if (t.phi->getUsers().empty()) {
+            if (!hasRealUse(t.phi)) {
                 t.phi->eraseInst();
             }
         }
-        didWork = true;
     }
 
-    return didWork;
+    bool hasLiveEmit = false;
+    for (int i = (int)emittedInsts.size() - 1; i >= 0; --i) {
+        auto* inst = emittedInsts[i];
+        if (hasRealUse(inst)) {
+            hasLiveEmit = true;
+            continue;
+        }
+        inst->eraseInst();
+    }
+
+    didFold &= hasLiveEmit || emittedInsts.empty();
+    return prunedDead || didFold;
 }
 
 bool LoopExitFold::deduplicateRec(Loop* L, SCEV& scev) {

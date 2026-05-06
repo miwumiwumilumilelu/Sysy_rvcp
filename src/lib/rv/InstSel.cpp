@@ -6,6 +6,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cassert>
+#include <map>
 
 namespace sysy {
 namespace rv {
@@ -176,20 +177,75 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
         });
     }
 
-    // Phi Elimination & Critical Edge Splitting
-    // Insert Jump Block "
+    // Phi Elimination & Critical Edge Splitting.
     //
-    // src_to_dst: 
-    // mv ...; 
-    // j dst;
-    //
-    // " 
-    // and redirected bnez to the springboard to fix the critical edge issue
-    for (auto* irBB : irFunc->getBody()->getBlocks()) {
-        MCBlock* dstMCBlock = nullptr;
+    // Phi copies on the same CFG edge are parallel assignments. Emitting them
+    // one-by-one can clobber values in chains/cycles such as A<-D, D<-C, C<-B.
+    // Collect copies per edge first, then schedule them as parallel copies.
+    struct PhiCopy {
+        MCOperand dst;
+        MCOperand src;
+        bool isFloat;
+    };
+    std::map<MCBlock*, std::vector<PhiCopy>> edgeCopies;
+
+    auto findMCBlock = [&](BasicBlock* irBB) -> MCBlock* {
         for (auto& mb : func->blocks) {
-            if (mb->name == func->name + "." + irBB->getName()) { dstMCBlock = mb.get(); break; }
+            if (mb->name == func->name + "." + irBB->getName())
+                return mb.get();
         }
+        return nullptr;
+    };
+
+    auto getPhiInsertBlock = [&](MCBlock* srcMCBlock, MCBlock* dstMCBlock) -> MCBlock* {
+        std::string trampolineName = srcMCBlock->name + "_to_" + dstMCBlock->name;
+        MCBlock* trampoline = nullptr;
+        for (auto& mb : func->blocks) {
+            if (mb->name == trampolineName) {
+                trampoline = mb.get();
+                break;
+            }
+        }
+        if (trampoline) return trampoline;
+
+        RvOp* term0 = srcMCBlock->getTerminator();
+        RvOp* branchOp = nullptr;
+        if (term0 && term0->opcode == RvOp::JOp) {
+            for (RvOp* op = term0->prev; op != nullptr; op = op->prev) {
+                if (op->opcode >= RvOp::BeqOp && op->opcode <= RvOp::BgtzOp &&
+                    static_cast<RVInstB*>(op)->target == dstMCBlock->name) {
+                    branchOp = op;
+                    break;
+                }
+                if (op->opcode == RvOp::JOp || op->opcode == RvOp::RetOp) break;
+            }
+        }
+
+        if (!branchOp) return srcMCBlock;
+
+        trampoline = func->createBlock(trampolineName);
+        trampoline->index = static_cast<int>(func->blocks.size() - 1);
+        trampoline->append(new JOp(dstMCBlock->name));
+        static_cast<RVInstB*>(branchOp)->target = trampolineName;
+
+        if (static_cast<JOp*>(term0)->label == dstMCBlock->name)
+            static_cast<JOp*>(term0)->label = trampolineName;
+
+        auto itSrc = std::find(srcMCBlock->succs.begin(), srcMCBlock->succs.end(), dstMCBlock);
+        if (itSrc != srcMCBlock->succs.end())
+            srcMCBlock->succs.erase(itSrc);
+
+        auto itDst = std::find(dstMCBlock->preds.begin(), dstMCBlock->preds.end(), srcMCBlock);
+        if (itDst != dstMCBlock->preds.end())
+            dstMCBlock->preds.erase(itDst);
+
+        srcMCBlock->addSucc(trampoline);
+        trampoline->addSucc(dstMCBlock);
+        return trampoline;
+    };
+
+    for (auto* irBB : irFunc->getBody()->getBlocks()) {
+        MCBlock* dstMCBlock = findMCBlock(irBB);
         if (!dstMCBlock) continue;
 
         for (auto* inst : irBB->getInstructions()) {
@@ -204,88 +260,82 @@ MCFunction* InstSelPass::selectFunction(Function* irFunc) {
                 Value* incomingVal = phi->getOperand(i);
                 auto* incomingBB = static_cast<BasicBlock*>(phi->getOperand(i + 1));
 
-                MCBlock* srcMCBlock = nullptr;
-                for (auto& mb : func->blocks) {
-                    if (mb->name == func->name + "." + incomingBB->getName()) { srcMCBlock = mb.get(); break; }
-                }
+                MCBlock* srcMCBlock = findMCBlock(incomingBB);
                 if (!srcMCBlock) continue;
 
-                // Determine the insertion block before calling getVReg.
-                std::string trampolineName = srcMCBlock->name + "_to_" + dstMCBlock->name;
-                MCBlock* trampoline = nullptr;
-                for (auto& mb : func->blocks) {
-                    if (mb->name == trampolineName) { trampoline = mb.get(); break; }
-                }
-
-                if (!trampoline) {
-                    RvOp* term0 = srcMCBlock->getTerminator();
-                    RvOp* branchOp = nullptr;
-                    if (term0 && term0->opcode == RvOp::JOp) {
-                        for (RvOp* op = term0->prev; op != nullptr; op = op->prev) {
-                            if (op->opcode >= RvOp::BeqOp && op->opcode <= RvOp::BgtzOp &&
-                                static_cast<RVInstB*>(op)->target == dstMCBlock->name) {
-                                branchOp = op;
-                                break;
-                            }
-                            // Stop if we hit another terminator-like op.
-                            if (op->opcode == RvOp::JOp || op->opcode == RvOp::RetOp) break;
-                        }
-                    }
-
-                    if (branchOp) {
-                        // Create the trampoline now, before any getVReg calls.
-                        trampoline = func->createBlock(trampolineName);
-                        trampoline->index = static_cast<int>(func->blocks.size() - 1);
-                        trampoline->append(new JOp(dstMCBlock->name));
-                        static_cast<RVInstB*>(branchOp)->target = trampolineName;
-
-                        if (static_cast<JOp*>(term0)->label == dstMCBlock->name) {
-                            static_cast<JOp*>(term0)->label = trampolineName;
-                        }
-
-                        auto itSrc = std::find(srcMCBlock->succs.begin(), srcMCBlock->succs.end(), dstMCBlock);
-                        if (itSrc != srcMCBlock->succs.end())
-                            srcMCBlock->succs.erase(itSrc);
-                        
-                        auto itDst = std::find(dstMCBlock->preds.begin(), dstMCBlock->preds.end(), srcMCBlock);
-                        if (itDst != dstMCBlock->preds.end())
-                            dstMCBlock->preds.erase(itDst);
-
-                        srcMCBlock->addSucc(trampoline);
-                        trampoline->addSucc(dstMCBlock);
-                    }
-                }
-
-                // Direct ctx.block to the insertion block so getVReg inserts there.
-                MCBlock* insertBlock = trampoline ? trampoline : srcMCBlock;
+                MCBlock* insertBlock = getPhiInsertBlock(srcMCBlock, dstMCBlock);
                 ctx.block = insertBlock;
 
                 ctx.constMap.clear();
                 ctx.scaledIndexCache.clear();
 
-                // Build mvOp
-                RvOp* mvOp = nullptr;
-                if (!isFloat) {
-                    if (auto* ci = dyn_cast<ConstantInt>(incomingVal))
-                        mvOp = new LiOp(dstReg, ci->getValue());
-                    else if (isa<ConstantZero>(incomingVal))
-                        mvOp = new MvOp(dstReg, MCOperand(Reg::zero));
-                } else if (isa<ConstantZero>(incomingVal)) {
-                    mvOp = new FMvWXOp(dstReg, MCOperand(Reg::zero));
-                }
+                MCOperand srcReg = ctx.getVReg(incomingVal, isFloat);
+                if (dstReg != srcReg)
+                    edgeCopies[insertBlock].push_back({dstReg, srcReg, isFloat});
+            }
+        }
+    }
 
-                if (!mvOp) {
-                    MCOperand srcReg = ctx.getVReg(incomingVal, isFloat);
-                    if (dstReg == srcReg) continue;
-                    mvOp = isFloat
-                        ? static_cast<RvOp*>(new FMvSOp(dstReg, srcReg))
-                        : static_cast<RvOp*>(new MvOp(dstReg, srcReg));
-                }
+    auto insertBeforeTerm = [](MCBlock* block, RvOp* op) {
+        RvOp* term = block->getTerminator();
+        if (term) block->insertBefore(term, op);
+        else block->append(op);
+    };
 
-                // Insert mvOp into the correct block before its terminator.
-                RvOp* tTerm = insertBlock->getTerminator();
-                if (tTerm) insertBlock->insertBefore(tTerm, mvOp);
-                else insertBlock->append(mvOp);
+    auto makeCopyOp = [](const PhiCopy& copy) -> RvOp* {
+        return copy.isFloat
+            ? static_cast<RvOp*>(new FMvSOp(copy.dst, copy.src))
+            : static_cast<RvOp*>(new MvOp(copy.dst, copy.src));
+    };
+
+    auto markTempPtr = [&](MCOperand tmp, const PhiCopy& copy) {
+        if (!tmp.isVReg() || copy.isFloat) return;
+        bool isPtr = false;
+        if (copy.dst.isVReg()) {
+            if (auto* info = func->getVRegInfo(copy.dst.getVReg()))
+                isPtr |= info->isPtr;
+        }
+        if (copy.src.isVReg()) {
+            if (auto* info = func->getVRegInfo(copy.src.getVReg()))
+                isPtr |= info->isPtr;
+        }
+        if (isPtr) {
+            if (auto* info = func->getVRegInfo(tmp.getVReg()))
+                info->isPtr = true;
+        }
+    };
+
+    for (auto& [block, copies] : edgeCopies) {
+        copies.erase(std::remove_if(copies.begin(), copies.end(),
+            [](const PhiCopy& c) { return c.dst == c.src; }), copies.end());
+
+        while (!copies.empty()) {
+            bool emitted = false;
+            for (auto it = copies.begin(); it != copies.end(); ++it) {
+                bool dstUsedAsSrc = false;
+                for (auto& other : copies) {
+                    if (other.src == it->dst) {
+                        dstUsedAsSrc = true;
+                        break;
+                    }
+                }
+                if (dstUsedAsSrc) continue;
+
+                insertBeforeTerm(block, makeCopyOp(*it));
+                copies.erase(it);
+                emitted = true;
+                break;
+            }
+            if (emitted) continue;
+
+            PhiCopy first = copies.front();
+            MCOperand tmp = ctx.newVReg(first.isFloat);
+            markTempPtr(tmp, first);
+            insertBeforeTerm(block, makeCopyOp({tmp, first.src, first.isFloat}));
+
+            for (auto& copy : copies) {
+                if (copy.src == first.src)
+                    copy.src = tmp;
             }
         }
     }

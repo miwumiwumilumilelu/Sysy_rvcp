@@ -16,7 +16,7 @@ public:
     bool run();
 
 private:
-    bool isInlineable(Function* f) const;
+    bool isInlineable(CallInst* call, bool callSiteInLoop) const;
 
     void doInline(CallInst* call);
 

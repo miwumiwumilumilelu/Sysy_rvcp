@@ -1,7 +1,10 @@
 #include "Optimize/Scalar/SSAInline.h"
 #include "Optimize/Scalar/IRClone.h"
+#include "Optimize/Analysis/Dominators.h"
 #include <algorithm>
 #include <assert.h>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -37,10 +40,88 @@ int SSAInline::countInsts(Function* f) {
     return n;
 }
 
-bool SSAInline::isInlineable(Function* f) const {
+static std::vector<BasicBlock*> successorsOf(BasicBlock* bb) {
+    std::vector<BasicBlock*> succs;
+    if (bb->getInstructions().empty()) return succs;
+    auto* br = dyn_cast<BranchInst>(bb->getInstructions().back());
+    if (!br) return succs;
+
+    int start = (br->getNumOperands() == 1 ? 0 : 1);
+    for (int i = start; i < br->getNumOperands(); ++i) {
+        if (auto* target = dyn_cast<BasicBlock>(br->getOperand(i)))
+            succs.push_back(target);
+    }
+    return succs;
+}
+
+static bool hasLoop(Function* f) {
+    Dominators dom(f);
+    dom.run();
+    for (auto bb : f->getBody()->getBlocks()) {
+        for (auto* succ : successorsOf(bb))
+            if (dom.dominates(succ, bb))
+                return true;
+    }
+    return false;
+}
+
+static bool isDerivedFromGlobal(Value* v) {
+    if (isa<GlobalVariable>(v)) return true;
+    if (auto* gep = dyn_cast<GetElementPtrInst>(v))
+        return isDerivedFromGlobal(gep->getOperand(0));
+    return false;
+}
+
+static bool writesGlobal(Function* f) {
+    for (auto bb : f->getBody()->getBlocks()) {
+        for (auto inst : bb->getInstructions()) {
+            if (auto* st = dyn_cast<StoreInst>(inst)) {
+                if (isDerivedFromGlobal(st->getOperand(1)))
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
+static std::set<BasicBlock*> naturalLoopBlocks(Function* f) {
+    std::map<BasicBlock*, std::vector<BasicBlock*>> preds;
+    for (auto bb : f->getBody()->getBlocks()) {
+        preds[bb];
+        for (auto* succ : successorsOf(bb))
+            preds[succ].push_back(bb);
+    }
+
+    Dominators dom(f);
+    dom.run();
+
+    std::set<BasicBlock*> loopBlocks;
+    for (auto latch : f->getBody()->getBlocks()) {
+        for (auto* header : successorsOf(latch)) {
+            if (!dom.dominates(header, latch)) continue;
+
+            std::vector<BasicBlock*> stack{latch};
+            loopBlocks.insert(header);
+            while (!stack.empty()) {
+                BasicBlock* bb = stack.back();
+                stack.pop_back();
+                if (!loopBlocks.insert(bb).second) continue;
+                for (auto* pred : preds[bb]) {
+                    if (pred != header)
+                        stack.push_back(pred);
+                }
+            }
+        }
+    }
+    return loopBlocks;
+}
+
+bool SSAInline::isInlineable(CallInst* call, bool callSiteInLoop) const {
+    Function* f = call ? call->getFunction() : nullptr;
     if (!f) return false;
     if (f->getBody()->getBlocks().empty()) return false;
     if (isRecursive(f)) return false;
+    if (callSiteInLoop && hasLoop(f) && writesGlobal(f)) return false;
     if (countInsts(f) > threshold) return false;
     return true;
 }
@@ -221,10 +302,11 @@ bool SSAInline::run() {
         changed = false;
         for (auto func : M->getFunctions()) {
             std::vector<CallInst*> toInline;
+            auto loopBlocks = naturalLoopBlocks(func);
             for (auto bb : func->getBody()->getBlocks())
                 for (auto inst : bb->getInstructions())
                     if (auto call = dyn_cast<CallInst>(inst))
-                        if (isInlineable(call->getFunction()))
+                        if (isInlineable(call, loopBlocks.count(bb)))
                             toInline.push_back(call);
 
             for (auto call : toInline) {
