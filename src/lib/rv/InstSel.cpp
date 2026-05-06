@@ -1,7 +1,7 @@
-#include "rv/InstSel.h"
-#include "IR/Module.h"
-#include "IR/Value.h"
-#include "IR/Type.h"
+#include "../../include/rv/InstSel.h"
+#include "../../include/IR/Module.h"
+#include "../../include/IR/Value.h"
+#include "../../include/IR/Type.h"
 #include <iostream>
 #include <cstring>
 #include <algorithm>
@@ -77,12 +77,20 @@ MCOperand InstSelContext::getVReg(Value* v, bool isFloat) {
         auto cit = constMap.find(v);
         if (cit != constMap.end()) return cit->second;
         auto vreg = newVReg(false);
+        if (vreg.isVReg()) {
+            VReg rv = vreg.getVReg();
+            if (rv < func->vregInfo.size()) func->vregInfo[rv].isPtr = true;
+        }
         insertSafe(new LaOp(vreg, gv->getName()));
         constMap[v] = vreg;
         return vreg;
     }
 
     auto vreg = newVReg(isFloat);
+    if (InstSelContext::isPtrType(v->getType()) && vreg.isVReg()) {
+        VReg rv = vreg.getVReg();
+        if (rv < func->vregInfo.size()) func->vregInfo[rv].isPtr = true;
+    }
     valueMap[v] = vreg;
     return vreg;
 }
@@ -468,22 +476,24 @@ void InstSelPass::selectDiv(BinaryInst* inst, InstSelContext& ctx) {
     auto* rhs = inst->getOperand(1);
     auto rd = ctx.getVReg(inst, false);
 
-    // Cannot directly use right shift to replace div,
-    // because -3 >> 1 == -2, but -3 / 2 == -1.
-    // So we need to add Bias 2^k - 1 for x < 0 case.
-    // (x + (x<0 ? 2^k - 1 : 0)) >> k
+    // x / 2^k -> (x + ((x >> 31) & (2^k - 1))) >> k.
     if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
         int v = ci->getValue();
         if (v > 1 && (v & (v - 1)) == 0) {
             int k = __builtin_ctz(static_cast<unsigned>(v));
+            int mask = v - 1;
             auto rs = ctx.getVReg(lhs, false);
-            // adj = (x >> 31) >> (32-k); (x + adj) >> k
             auto sign = ctx.newVReg(false);
             ctx.block->append(new SraiwOp(sign, rs, 31));
             auto adj = ctx.newVReg(false);
-            ctx.block->append(new SrliwOp(adj, sign, 32 - k));
+            if (mask <= 2047) {
+                ctx.block->append(new AndiOp(adj, sign, mask));
+            } else {
+                auto mReg = ctx.newVReg(false);
+                ctx.block->append(new LiOp(mReg, mask));
+                ctx.block->append(new AndOp(adj, sign, mReg));
+            }
             auto xadj = ctx.newVReg(false);
-            // rs + adj
             ctx.block->append(new AddwOp(xadj, rs, adj));
             ctx.block->append(new SraiwOp(rd, xadj, k));
             return;
@@ -500,33 +510,33 @@ void InstSelPass::selectMod(BinaryInst* inst, InstSelContext& ctx) {
     auto* rhs = inst->getOperand(1);
     auto rd  = ctx.getVReg(inst, false);
 
-    // adj = (x>>31) >> (32-k);  
-    // t = (x+adj) & (2^k-1);  
-    // t - adj
+    // x % 2^k -> ((x + adj) & (2^k - 1)) - adj,
+    // where adj = (x >> 31) & (2^k - 1).
     if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
         int v = ci->getValue();
         if (v > 1 && (v & (v - 1)) == 0) {
-            int k = __builtin_ctz(static_cast<unsigned>(v));
             int mask = v - 1;
             auto rs = ctx.getVReg(lhs, false);
-            // adj = (rs >> 31) >> (32 - k)
             auto sign = ctx.newVReg(false);
             ctx.block->append(new SraiwOp(sign, rs, 31));
             auto adj = ctx.newVReg(false);
-            ctx.block->append(new SrliwOp(adj, sign, 32 - k));
-            // rs + adj
+            if (mask <= 2047) {
+                ctx.block->append(new AndiOp(adj, sign, mask));
+            } else {
+                auto mReg = ctx.newVReg(false);
+                ctx.block->append(new LiOp(mReg, mask));
+                ctx.block->append(new AndOp(adj, sign, mReg));
+            }
             auto xadj = ctx.newVReg(false);
             ctx.block->append(new AddwOp(xadj, rs, adj));
             auto masked = ctx.newVReg(false);
             if (mask <= 2047) {
                 ctx.block->append(new AndiOp(masked, xadj, mask));
             } else {
-                // mask too large for 12-bit imm: use li + and
                 auto mReg = ctx.newVReg(false);
                 ctx.block->append(new LiOp(mReg, mask));
                 ctx.block->append(new AndOp(masked, xadj, mReg));
             }
-            // masked - adj
             ctx.block->append(new SubwOp(rd, masked, adj));
             return;
         }
