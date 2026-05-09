@@ -3,6 +3,7 @@
 #include "IR/Region.h"
 #include "IR/Type.h"
 #include <iostream>
+#include <map>
 #include <sstream>
 
 using namespace sysy;
@@ -370,6 +371,38 @@ std::string WhileInst::toString() const {
     return ss.str();
 }
 
+ForInst::ForInst(Value* start, Value* stop, Value* step, Value* ivAddr,
+                ICmpInst::CmpOp pred, BasicBlock* parent)
+    : Instruction(Type::getVoidTy(), For, parent), Pred(pred) {
+    addOperand(start);
+    addOperand(stop);
+    addOperand(step);
+    addOperand(ivAddr);
+    addRegion(std::make_unique<Region>(this)); // body
+}
+
+static const char* predName(ICmpInst::CmpOp p) {
+    switch (p) {
+        case ICmpInst::SLT: return "<.i";
+        case ICmpInst::SLE: return "<=.i";
+        case ICmpInst::SGT: return ">.i";
+        case ICmpInst::SGE: return ">=.i";
+        default: return "?.i";
+    }
+}
+
+std::string ForInst::toString() const {
+    std::stringstream ss;
+    ss << "for (store " << getIVAddr()->getName() << ", " << fmtOperand(getStart())
+        << "; load " << getIVAddr()->getName() << " " << predName(Pred)
+        << " " << fmtOperand(getStop())
+        << "; load " << getIVAddr()->getName() << " += " << fmtOperand(getStep()) << ") {\n";
+    for (auto bb : getRegion(0)->getBlocks())
+        ss << bb->toString();
+    ss << "}";
+    return ss.str();
+}
+
 FlowInst::FlowInst(std::vector<Value*> vals, BasicBlock* parent)
     : Instruction(Type::getVoidTy(), Flow, parent) {
     for (auto v : vals) addOperand(v);
@@ -452,6 +485,16 @@ PhiInst::PhiInst(Type *ty, BasicBlock *parent)
 void PhiInst::addIncoming(Value *val, BasicBlock *bb) {
     addOperand(val);
     addOperand(bb);
+}
+
+void PhiInst::removeIncomingAt(int index) {
+    if (index < 0 || index + 1 >= static_cast<int>(Operands.size()))
+        return;
+    Value* val = Operands[index];
+    Value* block = Operands[index + 1];
+    if (val) val->removeUser(this);
+    if (block) block->removeUser(this);
+    Operands.erase(Operands.begin() + index, Operands.begin() + index + 2);
 }
 
 void PhiInst::removeIncomingByBlock(BasicBlock* bb) {
@@ -548,16 +591,206 @@ std::string GlobalVariable::toString() const {
     std::stringstream ss;
     ss << "@" << Name << " = ";
     if (IsConst) ss << "constant "; else ss << "global ";
-    
+
     Type* baseTy = dyn_cast<PointerType>(Ty)->getPointeeType();
     ss << baseTy->toString() << " ";
-    
+
     if (InitVal) {
         ss << InitVal->toString();
     } else {
         ss << "zeroinitializer";
     }
     return ss.str();
+}
+
+// ===== Clone infrastructure =====
+
+static Value* remapVal(Value* v, const std::map<Value*, Value*>& vmap) {
+    if (!v) return nullptr;
+    auto it = vmap.find(v);
+    return it != vmap.end() ? it->second : v;
+}
+
+static void mergeVmap(std::map<Value*, Value*>& dst,
+                      const std::map<Value*, Value*>& src) {
+    for (auto& [k, v] : src)
+        dst[k] = v;
+}
+
+bool Instruction::isTerminatingFlow() const {
+    return OpCode == Break || OpCode == Continue || OpCode == Ret || OpCode == Br;
+}
+
+bool Instruction::isPureCloneable() const {
+    switch (OpCode) {
+    case Add: case Sub: case Mul: case Div: case Mod:
+    case Shl: case Ashr: case And:
+    case FAdd: case FSub: case FMul: case FDiv:
+    case ICmp: case FCmp:
+    case SIToFP: case FPToSI:
+    case Load: case GetElementPtr:
+        return true;
+    default:
+        return false;
+    }
+}
+
+Instruction* Instruction::clone(std::map<Value*, Value*>&) { return nullptr; }
+
+Instruction* BinaryInst::clone(std::map<Value*, Value*>& vmap) {
+    return new BinaryInst(getOpID(), remapVal(getOperand(0), vmap),
+                          remapVal(getOperand(1), vmap), nullptr);
+}
+
+Instruction* AllocaInst::clone(std::map<Value*, Value*>&) {
+    return new AllocaInst(getAllocatedType(), nullptr);
+}
+
+Instruction* LoadInst::clone(std::map<Value*, Value*>& vmap) {
+    return new LoadInst(remapVal(getOperand(0), vmap), nullptr);
+}
+
+Instruction* StoreInst::clone(std::map<Value*, Value*>& vmap) {
+    return new StoreInst(remapVal(getOperand(0), vmap),
+                         remapVal(getOperand(1), vmap), nullptr);
+}
+
+Instruction* ICmpInst::clone(std::map<Value*, Value*>& vmap) {
+    return new ICmpInst(Pred, remapVal(getOperand(0), vmap),
+                        remapVal(getOperand(1), vmap), nullptr);
+}
+
+Instruction* FCmpInst::clone(std::map<Value*, Value*>& vmap) {
+    return new FCmpInst(Pred, remapVal(getOperand(0), vmap),
+                        remapVal(getOperand(1), vmap), nullptr);
+}
+
+Instruction* CastInst::clone(std::map<Value*, Value*>& vmap) {
+    return new CastInst(getOpID(), remapVal(getOperand(0), vmap), getType(), nullptr);
+}
+
+Instruction* GetElementPtrInst::clone(std::map<Value*, Value*>& vmap) {
+    auto* g = new GetElementPtrInst(remapVal(getOperand(0), vmap),
+                                    remapVal(getOperand(1), vmap), nullptr);
+    g->setIndexedType(indexedType);
+    return g;
+}
+
+Instruction* CallInst::clone(std::map<Value*, Value*>& vmap) {
+    std::vector<Value*> args;
+    for (int i = 1; i < getNumOperands(); ++i)
+        args.push_back(remapVal(getOperand(i), vmap));
+    return new CallInst(getFunction(), args, nullptr);
+}
+
+Instruction* BreakInst::clone(std::map<Value*, Value*>&) {
+    return new BreakInst(nullptr);
+}
+
+Instruction* ContinueInst::clone(std::map<Value*, Value*>&) {
+    return new ContinueInst(nullptr);
+}
+
+Instruction* FlowInst::clone(std::map<Value*, Value*>& vmap) {
+    std::vector<Value*> vals;
+    for (int i = 0; i < getNumOperands(); ++i)
+        vals.push_back(remapVal(getOperand(i), vmap));
+    return new FlowInst(vals, nullptr);
+}
+
+Instruction* IfInst::clone(std::map<Value*, Value*>& vmap) {
+    auto baseMap = vmap;
+    auto* c = new IfInst(remapVal(getOperand(0), vmap), nullptr);
+    c->setName(getName());
+    if (getElseRegion()) c->addElseRegion();
+    for (auto* rv : Results) {
+        auto* nrv = c->createResult(rv->getType());
+        nrv->setName(rv->getName());
+        vmap[rv] = nrv;
+        baseMap[rv] = nrv;
+    }
+    auto thenMap = baseMap;
+    getThenRegion()->clone(c->getThenRegion(), thenMap);
+    mergeVmap(vmap, thenMap);
+    if (getElseRegion()) {
+        auto elseMap = baseMap;
+        getElseRegion()->clone(c->getElseRegion(), elseMap);
+        mergeVmap(vmap, elseMap);
+    }
+    vmap[this] = c;
+    return c;
+}
+
+Instruction* WhileInst::clone(std::map<Value*, Value*>& vmap) {
+    auto baseMap = vmap;
+    auto* c = new WhileInst(nullptr);
+    c->setName(getName());
+    for (auto* rv : Results) {
+        auto* nrv = c->createResult(rv->getType());
+        nrv->setName(rv->getName());
+        vmap[rv] = nrv;
+        baseMap[rv] = nrv;
+    }
+    auto condMap = baseMap;
+    auto bodyMap = baseMap;
+    getCondRegion()->clone(c->getCondRegion(), condMap);
+    getBodyRegion()->clone(c->getBodyRegion(), bodyMap);
+    mergeVmap(vmap, condMap);
+    mergeVmap(vmap, bodyMap);
+    vmap[this] = c;
+    return c;
+}
+
+Instruction* ForInst::clone(std::map<Value*, Value*>& vmap) {
+    auto* c = new ForInst(remapVal(getStart(), vmap), remapVal(getStop(), vmap),
+                          remapVal(getStep(), vmap), remapVal(getIVAddr(), vmap),
+                          Pred, nullptr);
+    c->setName(getName());
+    auto bodyMap = vmap;
+    getBodyRegion()->clone(c->getBodyRegion(), bodyMap);
+    mergeVmap(vmap, bodyMap);
+    vmap[this] = c;
+    return c;
+}
+
+void Region::clone(Region* dst, std::map<Value*, Value*>& vmap) {
+    std::map<BasicBlock*, BasicBlock*> bbMap;
+    std::vector<std::pair<PhiInst*, PhiInst*>> pendingPhis;
+
+    for (auto* bb : Blocks)
+        bbMap[bb] = new BasicBlock(bb->getName(), dst);
+
+    for (auto* bb : Blocks) {
+        auto* dstBB = bbMap[bb];
+        for (auto* inst : bb->getInstructions()) {
+            if (auto* phi = dyn_cast<PhiInst>(inst)) {
+                auto* cphi = new PhiInst(phi->getType(), nullptr);
+                cphi->setName(phi->getName());
+                cphi->setParent(dstBB);
+                dstBB->addInstruction(cphi);
+                vmap[phi] = cphi;
+                pendingPhis.push_back({phi, cphi});
+                continue;
+            }
+            auto* cloned = inst->clone(vmap);
+            if (!cloned) continue;
+            cloned->setName(inst->getName());
+            cloned->setParent(dstBB);
+            dstBB->addInstruction(cloned);
+            if (!cloned->getType()->isVoid())
+                vmap[inst] = cloned;
+        }
+    }
+
+    for (auto [orig, cphi] : pendingPhis) {
+        for (int i = 0; i < orig->getNumOperands(); i += 2) {
+            Value* val = remapVal(orig->getOperand(i), vmap);
+            auto* bb = dyn_cast<BasicBlock>(orig->getOperand(i + 1));
+            auto bit = bbMap.find(bb);
+            BasicBlock* newBB = (bit != bbMap.end()) ? bit->second : bb;
+            cphi->addIncoming(val, newBB);
+        }
+    }
 }
 
 std::string Module::print() {
