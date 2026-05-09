@@ -3,6 +3,7 @@
 
 #include "IR/Value.h"
 #include "IR/Region.h"
+#include <map>
 
 namespace sysy {
 
@@ -22,7 +23,7 @@ public:
         FAdd, FSub, FMul, FDiv,
         SIToFP, FPToSI,
         ICmp, FCmp, Br, Ret, Call,
-        If, While, Break, Continue,
+        If, While, For, Break, Continue,
         GetElementPtr,
         Phi,
         Flow
@@ -45,6 +46,12 @@ public:
     Region* getRegion(int index) const { return Regions[index].get(); }
     const std::vector<std::unique_ptr<Region>>& getRegions() const {return Regions; }
 
+    // Deep-clone this instruction, remapping operands through vmap.
+    // Returns nullptr for instruction types that are not cloneable (e.g. Br, Ret, Phi).
+    virtual Instruction* clone(std::map<Value*, Value*>& vmap);
+    bool isTerminatingFlow() const;
+    bool isPureCloneable() const;
+
     static bool classof(const Value* v) {
         return v->getValueKind() == VK_Instruction;
     }
@@ -60,6 +67,7 @@ public:
     CallInst(Function* func, std::vector<Value*> args, BasicBlock* parent);
     Function* getFunction() const;
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Call;
@@ -71,6 +79,7 @@ class BinaryInst : public Instruction {
 public:
     BinaryInst(OpID id, Value* lhs, Value* rhs, BasicBlock* parent);
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         if (!isa<Instruction>(v)) return false;
@@ -85,7 +94,8 @@ public:
     AllocaInst(Type* ty, BasicBlock* parent);
     std::string toString() const override;
     Type* getAllocatedType() const { return AllocatedType; }
-    
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
+
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Alloca;
     }
@@ -95,6 +105,7 @@ class LoadInst : public Instruction {
 public:
     LoadInst(Value* ptr, BasicBlock* parent);
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Load;
@@ -105,6 +116,7 @@ class StoreInst : public Instruction {
 public:
     StoreInst(Value* val, Value* ptr, BasicBlock* parent);
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Store;
@@ -143,6 +155,7 @@ public:
     ICmpInst(CmpOp op, Value* lhs, Value* rhs, BasicBlock* parent);
     CmpOp getPredicate() const { return Pred; }
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == ICmp;
@@ -168,6 +181,7 @@ public:
     const std::vector<ResultValue*>& getResults() const { return Results; }
 
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == If;
@@ -189,9 +203,36 @@ public:
     const std::vector<ResultValue*>& getResults() const { return Results; }
 
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == While;
+    }
+};
+
+// while (cmp(load(ivAddr), stop)) { body; store(ivAddr, load(ivAddr)+step); }
+//
+// The body Region does NOT contain the IV update — that is implicit in ForInst.
+// Operands: [start, stop, step, ivAddr]
+class ForInst : public Instruction {
+    ICmpInst::CmpOp Pred; // SLT / SLE / SGT / SGE
+public:
+    ForInst(Value* start, Value* stop, Value* step, Value* ivAddr,
+            ICmpInst::CmpOp pred, BasicBlock* parent);
+
+    Value* getStart() const { return getOperand(0); }
+    Value* getStop() const { return getOperand(1); }
+    Value* getStep() const { return getOperand(2); }
+    Value* getIVAddr() const { return getOperand(3); }
+    ICmpInst::CmpOp getPred() const { return Pred; }
+
+    Region* getBodyRegion() { return getRegion(0); }
+
+    std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == For;
     }
 };
 
@@ -199,6 +240,7 @@ class BreakInst : public Instruction {
 public:
     BreakInst(BasicBlock* parent);
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Break;
@@ -209,6 +251,7 @@ class ContinueInst : public Instruction {
 public:
     ContinueInst(BasicBlock* parent);
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Continue;
@@ -223,6 +266,7 @@ public:
     std::string toString() const override;
     Type* getIndexedType() const { return indexedType; }
     void setIndexedType(Type* ty) { indexedType = ty; }
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == GetElementPtr;
@@ -236,6 +280,7 @@ class CastInst : public Instruction {
 public:
     CastInst(OpID op, Value* val, Type* targetTy, BasicBlock* parent);
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) &&
@@ -251,6 +296,7 @@ public:
     FCmpInst(CmpOp op, Value* lhs, Value* rhs, BasicBlock* parent);
     CmpOp getPredicate() const { return Pred; }
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == FCmp;
@@ -265,6 +311,8 @@ public:
     PhiInst(Type* ty, BasicBlock* parent);
 
     void addIncoming(Value* val, BasicBlock* bb);
+
+    void removeIncomingAt(int index);
 
     void removeIncomingByBlock(BasicBlock* bb);
     
@@ -285,6 +333,7 @@ public:
     Value* getValue(unsigned i) const { return getOperand(i); }
 
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Flow;
