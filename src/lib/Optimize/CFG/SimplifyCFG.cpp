@@ -266,11 +266,19 @@ bool SimplifyCFG::removeGhostPhiEdges(Region* region) {
             if (auto phi = dyn_cast<PhiInst>(inst)) {
             // Only store BasicBlock* that have been confirmed by dyn_cast, eliminate UB from C-style casting.
                 std::vector<BasicBlock*> ghosts;
+                std::vector<int> invalid;
                 for (int i = 0; i < phi->getNumOperands(); i += 2) {
                     BasicBlock* inBB = dyn_cast<BasicBlock>(phi->getOperand(i + 1));
-                    if (inBB && std::find(bbPreds.begin(), bbPreds.end(), inBB) == bbPreds.end()) {
+                    if (!phi->getOperand(i) || !inBB) {
+                        invalid.push_back(i);
+                    } else if (std::find(bbPreds.begin(), bbPreds.end(), inBB) == bbPreds.end()) {
                         ghosts.push_back(inBB);
                     }
+                }
+                // remove [null, null] pair in PHI.
+                for (auto it = invalid.rbegin(); it != invalid.rend(); ++it) {
+                    phi->removeIncomingAt(*it);
+                    changed = true;
                 }
                 for (auto g : ghosts) {
                     phi->removeIncomingByBlock(g);

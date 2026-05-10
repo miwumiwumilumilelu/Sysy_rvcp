@@ -683,6 +683,14 @@ Instruction* CallInst::clone(std::map<Value*, Value*>& vmap) {
     return new CallInst(getFunction(), args, nullptr);
 }
 
+Instruction* BranchInst::clone(std::map<Value*, Value*>& vmap) {
+    if (getNumOperands() == 1)
+        return new BranchInst(cast<BasicBlock>(remapVal(getOperand(0), vmap)), nullptr);
+    return new BranchInst(remapVal(getOperand(0), vmap),
+                        cast<BasicBlock>(remapVal(getOperand(1), vmap)),
+                        cast<BasicBlock>(remapVal(getOperand(2), vmap)), nullptr);
+}
+
 Instruction* BreakInst::clone(std::map<Value*, Value*>&) {
     return new BreakInst(nullptr);
 }
@@ -759,6 +767,11 @@ void Region::clone(Region* dst, std::map<Value*, Value*>& vmap) {
 
     for (auto* bb : Blocks)
         bbMap[bb] = new BasicBlock(bb->getName(), dst);
+
+    // Branch targets are BasicBlock* (which is a Value subclass), 
+    // so they must appear in vmap for FlowInst::clone to correctly remap intra-region edges.
+    for (auto& [orig, cloned] : bbMap)
+        vmap[orig] = cloned;
 
     for (auto* bb : Blocks) {
         auto* dstBB = bbMap[bb];

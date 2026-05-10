@@ -143,6 +143,7 @@ public:
     void replaceSuccessor(BasicBlock* oldBB, BasicBlock* newBB);
 
     std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Br;

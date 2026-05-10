@@ -2,6 +2,7 @@
 #define REGION_H
 
 #include <list>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,6 +28,9 @@ public:
 
     void addBlock(BasicBlock* bb);
     void removeBlock(BasicBlock* bb);
+
+    // Deep-clone all blocks from this region into dst, remapping values via vmap.
+    void clone(Region* dst, std::map<Value*, Value*>& vmap);
 
     Instruction* getParentInst() const { return ParentInst; }
     Function* getParentFunc() const { return ParentFunc; }

@@ -252,6 +252,14 @@ void FlattenCFG::handleWhile(WhileInst* inst, BasicBlock* currentBB, BasicBlock*
         condVal = *it;
         break;
     }
+    // while (1) {
+    //     if (x > 0) {
+    //         use(x);                                                                                                      
+    //     }
+    // }
+    // when cond region is null fix with ConstantInt(1): while() -> while (1)
+    if (!condVal)
+        condVal = new ConstantInt(1);
 
     builder.SetInsertPoint(condExit);
     builder.Create<BranchInst>(condVal, bodyEntry, mergeBB);
