@@ -21,6 +21,7 @@ Instruction* sysy::cloneSkeleton(Instruction* src, BasicBlock* target) {
     case Instruction::Add:  case Instruction::Sub:
     case Instruction::Mul:  case Instruction::Div:  case Instruction::Mod:
     case Instruction::Shl:  case Instruction::Ashr: case Instruction::And:
+    case Instruction::Or:   case Instruction::Xor:
     case Instruction::FAdd: case Instruction::FSub:
     case Instruction::FMul: case Instruction::FDiv:
         c = new BinaryInst(src->getOpID(), nullptr, nullptr, nullptr);
@@ -92,6 +93,7 @@ void sysy::fillOperands(Instruction* clone, Instruction* src,
     case Instruction::Add:  case Instruction::Sub:
     case Instruction::Mul:  case Instruction::Div:  case Instruction::Mod:
     case Instruction::Shl:  case Instruction::Ashr: case Instruction::And:
+    case Instruction::Or:   case Instruction::Xor:
     case Instruction::FAdd: case Instruction::FSub:
     case Instruction::FMul: case Instruction::FDiv:
     case Instruction::ICmp: case Instruction::FCmp:

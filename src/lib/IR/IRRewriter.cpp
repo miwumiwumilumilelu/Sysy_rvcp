@@ -4,6 +4,25 @@
 
 namespace sysy {
 
+static void dropNestedUses(Instruction* inst) {
+    if (!inst)
+        return;
+
+    for (auto& region : inst->getRegions()) {
+        if (!region)
+            continue;
+        for (auto* bb : region->getBlocks()) {
+            std::vector<Instruction*> insts(bb->getInstructions().begin(),
+                                            bb->getInstructions().end());
+            for (auto* nested : insts) {
+                dropNestedUses(nested);
+                nested->replaceAllUsesWith(nullptr);
+                nested->dropAllOperands();
+            }
+        }
+    }
+}
+
 IRRewriter::InstIter IRRewriter::findInst(BasicBlock* bb, Instruction* inst) {
     if (!bb) return {};
     auto& list = bb->getInstructions();
@@ -13,6 +32,7 @@ IRRewriter::InstIter IRRewriter::findInst(BasicBlock* bb, Instruction* inst) {
 void IRRewriter::eraseOp(Instruction* inst) {
     if (!inst) return;
     inst->replaceAllUsesWith(nullptr);
+    dropNestedUses(inst);
     inst->eraseInst();
 }
 

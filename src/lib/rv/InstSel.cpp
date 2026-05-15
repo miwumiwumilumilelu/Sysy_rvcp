@@ -384,6 +384,12 @@ void InstSelPass::selectInstruction(Instruction* inst, InstSelContext& ctx) {
         case Instruction::And:
             selectAnd(static_cast<BinaryInst*>(inst), ctx);
             break;
+        case Instruction::Or:
+            selectOr(static_cast<BinaryInst*>(inst), ctx);
+            break;
+        case Instruction::Xor:
+            selectXor(static_cast<BinaryInst*>(inst), ctx);
+            break;
         case Instruction::FAdd:
             selectFAdd(static_cast<BinaryInst*>(inst), ctx);
             break;
@@ -645,6 +651,50 @@ void InstSelPass::selectAnd(BinaryInst* inst, InstSelContext& ctx) {
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
     ctx.block->append(new AndOp(rd, rs1, rs2));
+}
+
+void InstSelPass::selectOr(BinaryInst* inst, InstSelContext& ctx) {
+    auto* lhs = inst->getOperand(0);
+    auto* rhs = inst->getOperand(1);
+    auto rd = ctx.getVReg(inst, false);
+    if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
+        int v = ci->getValue();
+        if (v >= -2048 && v <= 2047) {
+            auto rs = ctx.getVReg(lhs, false);
+            ctx.block->append(new OriOp(rd, rs, v));
+            return;
+        }
+        auto rs = ctx.getVReg(lhs, false);
+        auto mReg = ctx.newVReg(false);
+        ctx.block->append(new LiOp(mReg, v));
+        ctx.block->append(new OrOp(rd, rs, mReg));
+        return;
+    }
+    auto rs1 = ctx.getVReg(lhs, false);
+    auto rs2 = ctx.getVReg(rhs, false);
+    ctx.block->append(new OrOp(rd, rs1, rs2));
+}
+
+void InstSelPass::selectXor(BinaryInst* inst, InstSelContext& ctx) {
+    auto* lhs = inst->getOperand(0);
+    auto* rhs = inst->getOperand(1);
+    auto rd = ctx.getVReg(inst, false);
+    if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
+        int v = ci->getValue();
+        if (v >= -2048 && v <= 2047) {
+            auto rs = ctx.getVReg(lhs, false);
+            ctx.block->append(new XoriOp(rd, rs, v));
+            return;
+        }
+        auto rs = ctx.getVReg(lhs, false);
+        auto mReg = ctx.newVReg(false);
+        ctx.block->append(new LiOp(mReg, v));
+        ctx.block->append(new XorOp(rd, rs, mReg));
+        return;
+    }
+    auto rs1 = ctx.getVReg(lhs, false);
+    auto rs2 = ctx.getVReg(rhs, false);
+    ctx.block->append(new XorOp(rd, rs1, rs2));
 }
 
 void InstSelPass::selectFAdd(BinaryInst* inst, InstSelContext& ctx) {

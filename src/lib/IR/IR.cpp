@@ -57,6 +57,8 @@ static std::string binarySymbol(Instruction::OpID op) {
         case Instruction::Shl:  return "<<";
         case Instruction::Ashr: return ">>";
         case Instruction::And:  return "&";
+        case Instruction::Or:   return "|";
+        case Instruction::Xor:  return "^";
         case Instruction::FAdd: return "+.f";
         case Instruction::FSub: return "-.f";
         case Instruction::FMul: return "*.f";
@@ -194,6 +196,8 @@ BinaryInst::BinaryInst(OpID id, Value *lhs, Value *rhs, BasicBlock *parent)
         case Shl:  OpStr = "shl";  break;
         case Ashr: OpStr = "ashr"; break;
         case And:  OpStr = "and";  break;
+        case Or:   OpStr = "or";   break;
+        case Xor:  OpStr = "xor";  break;
         case FAdd: OpStr = "fadd"; break;
         case FSub: OpStr = "fsub"; break;
         case FMul: OpStr = "fmul"; break;
@@ -624,7 +628,7 @@ bool Instruction::isTerminatingFlow() const {
 bool Instruction::isPureCloneable() const {
     switch (OpCode) {
     case Add: case Sub: case Mul: case Div: case Mod:
-    case Shl: case Ashr: case And:
+    case Shl: case Ashr: case And: case Or: case Xor:
     case FAdd: case FSub: case FMul: case FDiv:
     case ICmp: case FCmp:
     case SIToFP: case FPToSI:

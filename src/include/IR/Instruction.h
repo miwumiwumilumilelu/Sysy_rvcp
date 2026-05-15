@@ -18,8 +18,8 @@ public:
         // x << n <-> x * (2^n)
         Shl, 
         // x >> n <-> ⌊x/2n⌋
-        Ashr, 
-        And,
+        Ashr,
+        And, Or, Xor,
         FAdd, FSub, FMul, FDiv,
         SIToFP, FPToSI,
         ICmp, FCmp, Br, Ret, Call,

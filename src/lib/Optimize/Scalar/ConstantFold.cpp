@@ -133,6 +133,34 @@ bool ConstantFold::foldInstruction(Instruction* inst, BasicBlock* currentBB) {
             }
         }
     }
+    // phi [ v, _ ], [ v, _ ], ... -> v   (all incoming values identical)
+    else if (auto* phi = dyn_cast<PhiInst>(inst)) {
+        int n = phi->getNumOperands();
+        if (n < 2) return false;
+        Value* first = phi->getOperand(0);
+        if (!first) return false;
+        auto* first_ci = dyn_cast<ConstantInt>(first);
+        auto* first_cf = dyn_cast<ConstantFloat>(first);
+        bool allSame = true;
+        for (int i = 2; i < n; i += 2) {
+            Value* v = phi->getOperand(i);
+            if (v == first) continue;
+            if (first_ci) {
+                auto* v_ci = dyn_cast<ConstantInt>(v);
+                if (v_ci && v_ci->getValue() == first_ci->getValue()) continue;
+            }
+            if (first_cf) {
+                auto* v_cf = dyn_cast<ConstantFloat>(v);
+                if (v_cf && v_cf->getValue() == first_cf->getValue()) continue;
+            }
+            allSame = false; break;
+        }
+        if (allSame) {
+            phi->replaceAllUsesWith(first);
+            phi->eraseInst();
+            return true;
+        }
+    }
     // if (true) {
     //     block1;
     // } else {
@@ -182,6 +210,8 @@ Constant* ConstantFold::computeBinary(Instruction::OpID op, Constant* lhs, Const
                 case Instruction::Shl:  return new ConstantInt(v1 << v2);
                 case Instruction::Ashr: return new ConstantInt(v1 >> v2);
                 case Instruction::And:  return new ConstantInt(v1 & v2);
+                case Instruction::Or:   return new ConstantInt(v1 | v2);
+                case Instruction::Xor:  return new ConstantInt(v1 ^ v2);
                 default: return nullptr;
             }
         }

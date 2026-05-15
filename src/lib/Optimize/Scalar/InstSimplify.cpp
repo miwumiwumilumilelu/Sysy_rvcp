@@ -1,5 +1,8 @@
 #include "Optimize/Scalar/InstSimplify.h"
+#include "Optimize/Analysis/Range.h"
+#include "Optimize/Utils/PatternMatch.h"
 #include <algorithm>
+#include <memory>
 
 using namespace sysy;
 
@@ -20,191 +23,153 @@ bool InstSimplify::run() {
     return anyChanged;
 }
 
-static bool same(Value* v, ConstantInt* c) {
-    auto* val = dyn_cast<ConstantInt>(v);
-    return val && c && val->getValue() == c->getValue();
-}
+// Match table for local expression rewrites.
+static Match regularMatches[] = {
+    Match("(rewrite (add 'a 'b) (!add 'a 'b))"),
+    Match("(rewrite (add x 0) x)"),
+    Match("(rewrite (add x (sub y x)) y)"),
+    Match("(rewrite (add (sub x 'a) 'a) x)"),
 
-static bool replaceTo(Instruction* inst, Value* v) {
-    inst->replaceAllUsesWith(v);
-    inst->eraseInst();
-    return true;
-}
+    Match("(rewrite (sub 'a 'b) (!sub 'a 'b))"),
+    Match("(rewrite (sub x 0) x)"),
+    Match("(rewrite (sub x x) 0)"),
+    Match("(rewrite (sub (add x 'a) 'a) x)"),
+    Match("(rewrite (sub (add x y) x) y)"),
+    Match("(rewrite (sub (add x y) y) x)"),
 
-// Check Inst def-use.
-static bool tryerase(BinaryInst* inst) {
-    if (!inst || !inst->getParent() || !inst->getUsers().empty())
-        return false;
-    inst->eraseInst();
-    return true;
+    Match("(rewrite (mul 'a 'b) (!mul 'a 'b))"),
+    Match("(rewrite (mul x 1) x)"),
+    Match("(rewrite (mul x 0) 0)"),
+
+    Match("(rewrite (div 'a 'b) (!div 'a 'b))"),
+    Match("(rewrite (div x 1) x)"),
+    Match("(rewrite (div 0 x) 0)"),
+
+    Match("(rewrite (mod 'a 'b) (!mod 'a 'b))"),
+    Match("(rewrite (mod x 1) 0)"),
+
+    Match("(rewrite (shl x 0) x)"),
+    Match("(rewrite (shl 0 x) 0)"),
+    Match("(rewrite (ashr x 0) x)"),
+    Match("(rewrite (ashr 0 x) 0)"),
+
+    Match("(rewrite (and x 0) 0)"),
+    Match("(rewrite (and x -1) x)"),
+    Match("(rewrite (and x x) x)"),
+
+    Match("(rewrite (or x 0) x)"),
+    Match("(rewrite (or x -1) -1)"),
+    Match("(rewrite (or x x) x)"),
+
+    Match("(rewrite (xor x 0) x)"),
+    Match("(rewrite (xor x x) 0)"),
+
+    Match("(rewrite (fadd *a *b) (?add *a *b))"),
+    Match("(rewrite (fadd x *0) x)"),
+    Match("(rewrite (fsub *a *b) (?sub *a *b))"),
+    Match("(rewrite (fsub x *0) x)"),
+    Match("(rewrite (fmul *a *b) (?mul *a *b))"),
+    Match("(rewrite (fmul x *1) x)"),
+    Match("(rewrite (fmul x *0) *0)"),
+    Match("(rewrite (fdiv *a *b) (?div *a *b))"),
+    Match("(rewrite (fdiv x *1) x)"),
+    Match("(rewrite (fdiv *0 x) *0)"),
+
+    Match("(rewrite-if (!and (!and (!ge 'a 0) (!ge 'b 0)) (!lt (!add 'a 'b) 32)) (shl (shl x 'a) 'b) (shl x (!add 'a 'b)))"),
+    Match("(rewrite-if (!and (!and (!ge 'a 0) (!ge 'b 0)) (!ge (!add 'a 'b) 32)) (shl (shl x 'a) 'b) 0)"),
+    Match("(rewrite-if (!and (!ge 'a 0) (!ge 'b 0)) (ashr (ashr x 'a) 'b) (ashr x (!min (!add 'a 'b) 31)))"),
+    Match("(rewrite (and (and x 'a) 'b) (and x (!and 'a 'b)))"),
+    Match("(rewrite (or (or x 'a) 'b) (or x (!or 'a 'b)))"),
+    Match("(rewrite (xor (xor x 'a) 'b) (xor x (!xor 'a 'b)))"),
+
+    Match("(rewrite-if (!and (!and (!gt 'shift 0) (!lt 'shift 32)) (!and (!ge 'mask 0) (!eq (!ashr 'mask 'shift) 0))) (ashr (and x 'mask) 'shift) 0)"),
+
+    Match("(rewrite (or (and X 'c1) (and X 'c2)) (and X (!or 'c1 'c2)))"),
+    Match("(rewrite (or (and X 'c) (and Y 'c)) (and (or X Y) 'c))"),
+    Match("(rewrite (xor (and X 'c) (and Y 'c)) (and (xor X Y) 'c))"),
+
+    Match("(rewrite (ne (mod X 2) 0) (ne (and X 1) 0))"),
+    Match("(rewrite (eq (mod X 2) 0) (eq (and X 1) 0))"),
+    Match("(rewrite (ne (and X 'm) (and Y 'm)) (ne (and (xor X Y) 'm) 0))"),
+    Match("(rewrite-if (!pow2 'm) (and (ne (and X 'm) 0) (ne (and Y 'm) 0)) (ne (and (and X Y) 'm) 0))"),
+    Match("(rewrite-if (!ge 'k 0) (and (ashr X 'k) (ashr Y 'k)) (ashr (and X Y) 'k))"),
+    Match("(rewrite-if (!ge 'k 0) (or (ashr X 'k) (ashr Y 'k)) (ashr (or X Y) 'k))"),
+    Match("(rewrite-if (!ge 'k 0) (xor (ashr X 'k) (ashr Y 'k)) (ashr (xor X Y) 'k))"),
+    Match("(rewrite-if (!and (!ge 'k 0) (!lt 'k 32)) (shl (and (ashr X 'k) 1) 'k) (and X (!shl 1 'k)))"),
+};
+
+static bool applyRegularMatches(Instruction* inst) {
+    for (auto& match : regularMatches) {
+        if (match.rewrite(inst))
+            return true;
+    }
+    return false;
 }
 
 bool InstSimplify::simplify(BasicBlock* bb) {
     bool changed = false;
+    std::unique_ptr<RangeAnalysis> range;
+    auto isNonNeg = [&](Value* v) -> bool {
+        if (auto* ci = dyn_cast<ConstantInt>(v))
+            return ci->getValue() >= 0;
+        if (!range) {
+            auto* f = bb->getParentFunc();
+            if (!f) return false;
+            range = std::make_unique<RangeAnalysis>(f);
+        }
+        return range->isNonNeg(v);
+    };
 
     std::vector<Instruction*> worklist(bb->getInstructions().begin(), bb->getInstructions().end());
     for (auto inst : worklist) {
-        auto bin = dyn_cast<BinaryInst>(inst);
-        if (!bin) continue;
-
-        Value* lhs = bin->getOperand(0);
-        Value* rhs = bin->getOperand(1);
-        auto ci_l = dyn_cast<ConstantInt>(lhs);
-        auto ci_r = dyn_cast<ConstantInt>(rhs);
-        auto cf_l = dyn_cast<ConstantFloat>(lhs);
-        auto cf_r = dyn_cast<ConstantFloat>(rhs);
-
-        switch (bin->getOpID()) {
-            case Instruction::Add:
-            // C + (x - C) -> (x - C) + C -> x
-                if (ci_l && !ci_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(ci_l, ci_r); std::swap(lhs, rhs);}
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, lhs); continue; }
-                if (ci_r) {
-                    if (auto* inner = dyn_cast<BinaryInst>(lhs)) {
-                        if (inner->getOpID() == Instruction::Sub &&
-                            same(inner->getOperand(1), ci_r)) {
-                            auto* dead = inner;
-                            changed |= replaceTo(inst, inner->getOperand(0));
-                            changed |= tryerase(dead);
-                            continue;
-                        }
-                    }
-                }
-                if (cf_l && !cf_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(cf_l, cf_r); std::swap(lhs, rhs);}
-                if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, lhs); continue; }
-                break;
-            case Instruction::Sub:
-            // (x + C) - C -> x
-            // (C + x) - C -> x
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, lhs); continue; }
-                if (ci_r) {
-                    if (auto* inner = dyn_cast<BinaryInst>(lhs)) {
-                        if (inner->getOpID() == Instruction::Add) {
-                            if (same(inner->getOperand(1), ci_r)) {
-                                auto* dead = inner;
-                                changed |= replaceTo(inst, inner->getOperand(0));
-                                changed |= tryerase(dead);
-                                continue;
-                            }
-                            if (same(inner->getOperand(0), ci_r)) {
-                                auto* dead = inner;
-                                changed |= replaceTo(inst, inner->getOperand(1));
-                                changed |= tryerase(dead);
-                                continue;
-                            }
-                        }
-                    }
-                }
-                if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, lhs); continue; }
-                if (lhs == rhs) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
-                break;
-            case Instruction::Mul:
-                if (ci_l && !ci_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(ci_l, ci_r); std::swap(lhs, rhs);}
-                if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, lhs); continue; }
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
-                if (cf_l && !cf_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(cf_l, cf_r); std::swap(lhs, rhs);}
-                if (cf_r && cf_r->getValue() == 1.0f) { changed |= replaceTo(inst, lhs); continue; }
-                if (cf_r && cf_r->getValue() == 0.0f) { changed |= replaceTo(inst, new ConstantFloat(0.0f)); continue; }
-                break;
-            case Instruction::Div:
-                if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, lhs); continue; }
-                if (cf_r && cf_r->getValue() == 1.0f) { changed |= replaceTo(inst, lhs); continue; }
-                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
-                if (cf_l && cf_l->getValue() == 0.0f) { changed |= replaceTo(inst, new ConstantFloat(0.0f)); continue; }
-                break;
-            case Instruction::Mod:
-                if (ci_r && ci_r->getValue() == 1) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
-                break;
-            case Instruction::Shl:
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, lhs); continue; }
-                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
-                if (ci_r && ci_r->getValue() >= 0) {
-                    if (auto* inner = dyn_cast<BinaryInst>(lhs)) {
-                        // Shl(Shl(x, c1), c2) -> Shl(x, c1+c2), but if c1+c2 >= 32 then it's 0.
-                        if (inner->getOpID() == Instruction::Shl) {
-                            if (auto* ic = dyn_cast<ConstantInt>(inner->getOperand(1))) {
-                                if (ic->getValue() >= 0 &&
-                                    ci_r->getValue() + ic->getValue() >= 32) {
-                                    changed |= replaceTo(inst, new ConstantInt(0));
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
-                break;
-            case Instruction::Ashr:
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, lhs); continue; }
-                if (ci_l && ci_l->getValue() == 0) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
-                break;
-            case Instruction::And:
-                if (ci_l && !ci_r) { bin->setOperand(0, rhs); bin->setOperand(1, lhs); std::swap(ci_l, ci_r); std::swap(lhs, rhs);}
-                if (ci_r && ci_r->getValue() == 0) { changed |= replaceTo(inst, new ConstantInt(0)); continue; }
-                if (ci_r && ci_r->getValue() == -1) { changed |= replaceTo(inst, lhs); continue; }
-                if (lhs == rhs) { changed |= replaceTo(inst, lhs); continue; }
-                break;
-            default:
-                break;
+        if (!inst->getParent()) continue;
+        if (applyRegularMatches(inst)) {
+            changed = true;
+            continue;
         }
     }
 
-    // shl(shl(x, c1), c2) -> shl(x, c1+c2)
-    // ashr(ashr(x, c1), c2) -> ashr(x, min(c1+c2, 31))
-    // and(and(x, m1), m2) -> and(x, m1 & m2)
-    {
-        struct Rewrite { 
-            Instruction* old_inst; 
-            Instruction* new_inst; 
+    auto insertBefore = [&](Instruction* pos_inst, Instruction* newInst) {
+        auto& il = bb->getInstructions();
+        auto it = std::find(il.begin(), il.end(), pos_inst);
+        il.insert(it, newInst);
+        newInst->setParent(bb);
+    };
+
+    std::vector<Instruction*> wl2(bb->getInstructions().begin(), bb->getInstructions().end());
+    for (auto* inst : wl2) {
+        if (!inst->getParent()) continue;
+
+        // X % 2 != Y % 2 -> (X^Y) & 1 != 0
+        // This is sound only when both X and Y are proven non-negative.
+        auto* cmp = dyn_cast<ICmpInst>(inst);
+        if (!cmp || cmp->getPredicate() != ICmpInst::NE)
+            continue;
+
+        auto isMod2 = [](Value* v) -> Value* {
+            auto* b = dyn_cast<BinaryInst>(v);
+            if (!b || b->getOpID() != Instruction::Mod) return nullptr;
+            auto* c = dyn_cast<ConstantInt>(b->getOperand(1));
+            return (c && c->getValue() == 2) ? b->getOperand(0) : nullptr;
         };
-        std::vector<Rewrite> rewrites;
 
-        for (auto* inst : bb->getInstructions()) {
-            auto* outer = dyn_cast<BinaryInst>(inst);
-            if (!outer) continue;
-            auto op = outer->getOpID();
-            if (op != Instruction::Shl &&
-                op != Instruction::Ashr &&
-                op != Instruction::And) continue;
+        Value* X = isMod2(cmp->getOperand(0));
+        Value* Y = isMod2(cmp->getOperand(1));
+        if (!X || !Y || !isNonNeg(X) || !isNonNeg(Y))
+            continue;
 
-            Value* lhs = outer->getOperand(0);
-            auto* ci_r = dyn_cast<ConstantInt>(outer->getOperand(1));
-            if (!ci_r) continue;
-
-            auto* inner = dyn_cast<BinaryInst>(lhs);
-            if (!inner || inner->getOpID() != op) continue;
-
-            auto* ci_r2 = dyn_cast<ConstantInt>(inner->getOperand(1));
-            if (!ci_r2) continue;
-
-            int c1 = ci_r2->getValue();
-            int c2 = ci_r->getValue();
-
-            if (c1 < 0 || c2 < 0) continue;
-
-            Value* x = inner->getOperand(0);
-            int c;
-            if (op == Instruction::Shl) {
-                c = c1 + c2;
-                if (c >= 32) continue;
-            } else if (op == Instruction::Ashr) {
-                c = std::min(c1 + c2, 31);
-            } else {
-                c = c1 & c2;
-            }
-
-            auto* newInst = new BinaryInst(op, x, new ConstantInt(c), nullptr);
-            newInst->setParent(bb);
-            rewrites.push_back({inst, newInst});
-        }
-
-        for (auto& rw : rewrites) {
-            auto& instList = bb->getInstructions();
-            auto it = std::find(instList.begin(), instList.end(), rw.old_inst);
-            instList.insert(it, rw.new_inst);
-            rw.old_inst->replaceAllUsesWith(rw.new_inst);
-            instList.erase(it);
-            changed = true;
-        }
+        auto* xorInst = new BinaryInst(Instruction::Xor, X, Y, nullptr);
+        xorInst->setName("^");
+        insertBefore(inst, xorInst);
+        auto* andInst = new BinaryInst(Instruction::And, xorInst, new ConstantInt(1), nullptr);
+        andInst->setName("(^)&");
+        insertBefore(inst, andInst);
+        auto* newCmp = new ICmpInst(ICmpInst::NE, andInst, new ConstantInt(0), nullptr);
+        newCmp->setName(cmp->getName());
+        insertBefore(inst, newCmp);
+        cmp->replaceAllUsesWith(newCmp);
+        cmp->eraseInst();
+        changed = true;
     }
 
     return changed;
