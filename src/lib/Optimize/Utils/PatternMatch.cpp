@@ -8,6 +8,18 @@
 
 namespace sysy {
 
+// x + 0 -> x
+// Parse ( rewrite ( add x 0 ) x )
+// -> S-expression AST :
+// 
+// list
+//   atom rewrite
+//   list
+//     atom add
+//     atom x
+//     atom 0
+//   atom x
+
 struct Pattern::Expr {
     bool atom = true;
     std::string value;
