@@ -153,6 +153,7 @@ Instruction* HighInline::cloneFlatInst(
         case Instruction::GetElementPtr:
         case Instruction::Call:
         case Instruction::Br:
+        case Instruction::Select:
             return cloneInst(inst, target, vmap, bbMap);
         case Instruction::Break:
             return new BreakInst(nullptr);
@@ -166,6 +167,7 @@ Instruction* HighInline::cloneFlatInst(
         }
         case Instruction::Ret:
         case Instruction::Phi:
+        case Instruction::For:
         case Instruction::If:
         case Instruction::While:
             return nullptr;

@@ -75,6 +75,9 @@ Instruction* sysy::cloneSkeleton(Instruction* src, BasicBlock* target) {
     case Instruction::Phi:
         c = new PhiInst(src->getType(), nullptr);
         break;
+    case Instruction::Select:
+        c = new SelectInst(src->getType(), nullptr, nullptr, nullptr, nullptr);
+        break;
     default:
         return nullptr;
     }
@@ -135,6 +138,12 @@ void sysy::fillOperands(Instruction* clone, Instruction* src,
         }
         return;
     }
+
+    case Instruction::Select:
+        clone->setOperand(0, rm(src->getOperand(0)));
+        clone->setOperand(1, rm(src->getOperand(1)));
+        clone->setOperand(2, rm(src->getOperand(2)));
+        return;
 
     case Instruction::Alloca:
         return;

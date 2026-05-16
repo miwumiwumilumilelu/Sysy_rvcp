@@ -26,6 +26,8 @@ public:
         If, While, For, Break, Continue,
         GetElementPtr,
         Phi,
+        // cond ? T : F
+        Select,
         Flow
     };
 
@@ -321,6 +323,24 @@ public:
 
     static bool classof(const Value* v) {
         return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Phi;
+    }
+};
+
+class SelectInst : public Instruction {
+public:
+    // operands: cond (0), T (1), F (2)
+    SelectInst(Value* cond, Value* trueVal, Value* falseVal, BasicBlock* parent);
+    // Type-explicit constructor
+    // Used when cloning (T may be null at skeleton time).
+    SelectInst(Type* ty, Value* cond, Value* trueVal, Value* falseVal, BasicBlock* parent);
+    Value* getCond() const { return getOperand(0); }
+    Value* getTrueVal() const { return getOperand(1); }
+    Value* getFalseVal() const { return getOperand(2); }
+    std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
+
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID() == Select;
     }
 };
 

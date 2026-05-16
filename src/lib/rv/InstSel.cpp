@@ -452,6 +452,13 @@ void InstSelPass::selectInstruction(Instruction* inst, InstSelContext& ctx) {
         case Instruction::Phi:
             selectPhi(static_cast<PhiInst*>(inst), ctx);
             break;
+        // cond is i1 (0 or 1); 
+        // mask = -(cond) 1 -> -1 and 0 -> 0.
+        // 0xffffffff or 0x00000000
+        // select(cond, T, F) -> (T & mask) | (F & ~mask)
+        case Instruction::Select:
+            selectSelect(static_cast<SelectInst*>(inst), ctx);
+            break;
 
         default:
             std::cerr << "Unknown instruction opcode: " << inst->getOpID() << std::endl;
@@ -1091,8 +1098,8 @@ void InstSelPass::selectBranch(BranchInst* inst, InstSelContext& ctx) {
             ctx.block->append(new JOp(falseLabel));
             return;
         }
-        auto condReg = ctx.getVReg(cond, false);
-        ctx.block->append(new BnezOp(condReg, trueLabel));
+        auto cReg = ctx.getVReg(cond, false);
+        ctx.block->append(new BnezOp(cReg, trueLabel));
         ctx.block->append(new JOp(falseLabel));
     }
 }
@@ -1196,6 +1203,36 @@ void InstSelPass::selectPhi(PhiInst* inst, InstSelContext& ctx) {
     // After Early Phi Elimination, here is only valuemap.
     // PhiInst is not corresponding to MCInst.
     ctx.getVReg(inst, InstSelContext::isFloatType(inst->getType()));
+}
+
+void InstSelPass::selectSelect(SelectInst* inst, InstSelContext& ctx) {
+    // Float select must be eliminated by InstSimplify before reaching InstSel.
+    assert(!InstSelContext::isFloatType(inst->getType()) && 
+                "Float SelectInst should be eliminated before InstSel");
+
+    auto cReg = ctx.getVReg(inst->getCond(), false);
+    auto tReg = ctx.getVReg(inst->getTrueVal(), false);
+    auto fReg = ctx.getVReg(inst->getFalseVal(), false);
+    auto result = ctx.getVReg(inst, false);
+
+    auto mask = ctx.newVReg(false);
+    // mask = 0 - cond = -cond
+    ctx.block->append(new SubwOp(mask, MCOperand(Reg::zero), cReg));
+
+    auto r1 = ctx.newVReg(false);
+    // r1 = T & mask
+    ctx.block->append(new AndOp(r1, tReg, mask));
+
+    auto notMask = ctx.newVReg(false);
+    // ~mask = mask ^ 0xffffffff
+    ctx.block->append(new XoriOp(notMask, mask, -1));
+
+    auto r2 = ctx.newVReg(false);
+    // r2 = F & ~mask
+    ctx.block->append(new AndOp(r2, fReg, notMask));
+
+    // result = (T & mask) | (F & ~mask)
+    ctx.block->append(new OrOp(result, r1, r2));
 }
 
 // Through FlattenCFG, If/While/Break/Continue have all been expanded into BranchInst.

@@ -534,7 +534,36 @@ std::string PhiInst::toString() const {
     return ss.str();
 }
 
-Function::Function(const std::string &name, Type *retTy) 
+SelectInst::SelectInst(Value* cond, Value* trueVal, Value* falseVal, BasicBlock* parent)
+    : Instruction(trueVal ? trueVal->getType() : Type::getIntTy(), Select, parent) {
+    addOperand(cond);
+    addOperand(trueVal);
+    addOperand(falseVal);
+}
+
+SelectInst::SelectInst(Type* ty, Value* cond, Value* trueVal, Value* falseVal, BasicBlock* parent)
+    : Instruction(ty, Select, parent) {
+    addOperand(cond);
+    addOperand(trueVal);
+    addOperand(falseVal);
+}
+
+std::string SelectInst::toString() const {
+    return Name + " = select " + fmtOperand(getOperand(0)) + ", " + 
+            fmtOperand(getOperand(1)) + ", " + fmtOperand(getOperand(2));
+}
+
+Instruction* SelectInst::clone(std::map<Value*, Value*>& vmap) {
+    auto remap = [&](Value* v) -> Value* {
+        if (!v) return nullptr;
+        auto it = vmap.find(v);
+        return it != vmap.end() ? it->second : v;
+    };
+    return new SelectInst(remap(getOperand(0)), remap(getOperand(1)),
+                        remap(getOperand(2)), nullptr);
+}
+
+Function::Function(const std::string &name, Type *retTy)
     : Value(retTy, VK_Function, name) {
     Body = std::make_unique<Region>(this);
 }
