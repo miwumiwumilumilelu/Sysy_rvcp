@@ -176,19 +176,9 @@ Value* IRRewriter::buildMinOrMax(Value* a, Value* b, bool wantMin,
     auto* cmp = builder.InsertNew<ICmpInst>(wantMin ? ICmpInst::SLT : ICmpInst::SGT, a, b);
     cmp->setName(wantMin ? "rw.min.cmp" : "rw.max.cmp");
 
-    auto* sel = builder.InsertNew<IfInst>(cmp);
-    sel->setName(wantMin ? "rw.min" : "rw.max");
-    sel->addElseRegion();
-    auto* result = sel->createResult(Type::getIntTy());
-    result->setName(wantMin ? "rw.min.v" : "rw.max.v");
-
-    auto* thenBB = makeBlock(sel->getThenRegion(), wantMin ? "min.t" : "max.t");
-    appendFlow(thenBB, {a});
-
-    auto* elseBB = makeBlock(sel->getElseRegion(), wantMin ? "min.e" : "max.e");
-    appendFlow(elseBB, {b});
-
-    return result;
+    auto* sel = builder.InsertNew<SelectInst>(cmp, a, b);
+    sel->setName(wantMin ? "rw.min.v" : "rw.max.v");
+    return sel;
 }
 
 void IRRewriter::pruneAfterTerminatingFlow(BasicBlock* bb) {

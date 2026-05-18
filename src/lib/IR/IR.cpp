@@ -662,6 +662,7 @@ bool Instruction::isPureCloneable() const {
     case ICmp: case FCmp:
     case SIToFP: case FPToSI:
     case Load: case GetElementPtr:
+    case Select:
         return true;
     default:
         return false;
