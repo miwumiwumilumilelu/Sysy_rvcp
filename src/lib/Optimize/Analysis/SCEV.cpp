@@ -189,8 +189,11 @@ SE* SCEV::get(Value* v) {
     } else if (auto* gep = dyn_cast<GetElementPtrInst>(v)) {
         result = buildGEP(gep);
     } else if (auto* bin = dyn_cast<BinaryInst>(v)) {
+        if (Depth >= 64) { result = own(new SEUnknown(v)); Cache[v] = result; return result; }
+        ++Depth;
         SE* lhs = get(bin->getOperand(0));
         SE* rhs = get(bin->getOperand(1));
+        --Depth;
         switch (bin->getOpID()) {
             case Instruction::Add: result = add(lhs, rhs); break;
             case Instruction::Sub: result = sub(lhs, rhs); break;
