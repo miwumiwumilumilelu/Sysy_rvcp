@@ -3,6 +3,7 @@
 #include <queue>
 #include <set>
 #include <algorithm>
+#include <functional>
 
 using namespace sysy;
 
@@ -25,17 +26,286 @@ bool SimplifyCFG::run() {
     return anyChanged;
 }
 
+// Check if inst is safe to spekulate.
+static bool isSafe(Instruction* inst) {
+    switch (inst->getOpID()) {
+        case Instruction::Add: case Instruction::Sub: case Instruction::Mul:
+        case Instruction::Shl: case Instruction::Ashr:
+        case Instruction::And: case Instruction::Or:  case Instruction::Xor:
+        case Instruction::FAdd: case Instruction::FSub: case Instruction::FMul:
+        case Instruction::ICmp: case Instruction::FCmp:
+        case Instruction::Select:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// head:
+//   br cond1, check, merge
+// check:
+//   insts...
+//   br cond2, then, merge
+// then:
+//   result2 = result + power
+//   br merge
+// merge:
+//   result3 = phi [result, head], [result, check], [result2, then]
+//
+// which represent:
+// if (cond1 && cond2)
+//     result += power;
+//
+// Move the pure computations in the check to the head,
+// and merge the cond1, cond2
+//
+// like this:
+// head:
+//   insts form check...
+//   cond = cond1 & cond2
+//   br cond, then, merge
+//
+// This transform allowing it to subsequently switch to SelectInst.
+// result += select(cond1 & cond2, 1 << k, 0)
+static bool tryHoistConds(Region* region, const std::map<BasicBlock*, std::vector<BasicBlock*>>& preds) {
+    auto& blocks = region->getBlocks();
+    for (auto* head : blocks) {
+        if (head->getInstructions().empty()) continue;
+
+        auto* hbr = dyn_cast<BranchInst>(head->getInstructions().back());
+        if (!hbr || hbr->getNumOperands() != 3) continue;
+        Value* cond1  = hbr->getOperand(0);
+        auto* check = dyn_cast<BasicBlock>(hbr->getOperand(1));
+        auto* merge = dyn_cast<BasicBlock>(hbr->getOperand(2));
+        // br cond a, a -> br a
+        if (!check || !merge || check == merge) continue;
+
+        // Only safely delete this bb if it has only one predecessor.
+        auto it = preds.find(check);
+        if (it == preds.end() || it->second.size() != 1 || it->second[0] != head) continue;
+        if (check->getInstructions().empty()) continue;
+
+        auto* cbr = dyn_cast<BranchInst>(check->getInstructions().back());
+        if (!cbr || cbr->getNumOperands() != 3) continue;
+        Value* cond2 = cbr->getOperand(0);
+        auto* then = dyn_cast<BasicBlock>(cbr->getOperand(1));
+        auto* cmerge = dyn_cast<BasicBlock>(cbr->getOperand(2));
+        if (!then || cmerge != merge) continue;
+
+        // Because then we need to hoist check insts to head and culculate before CondInst,
+        // so Instructions must not have side effects.
+        bool allPure = true;
+        for (auto* inst : check->getInstructions()) {
+            if (dyn_cast<BranchInst>(inst)) continue;
+            if (!isSafe(inst)) { 
+                allPure = false; 
+                break;
+            }
+        }
+        if (!allPure) continue;
+
+        bool phiSafe = true;
+        for (auto* inst : merge->getInstructions()) {
+            auto* phi = dyn_cast<PhiInst>(inst);
+            if (!phi) break;
+            Value* fromHead = nullptr, *fromCheck = nullptr;
+            for (int i = 0; i < phi->getNumOperands(); i += 2) {
+                auto* bb = dyn_cast<BasicBlock>(phi->getOperand(i + 1));
+                if (bb == head) fromHead = phi->getOperand(i);
+                if (bb == check) fromCheck = phi->getOperand(i);
+            }
+            if (fromHead != fromCheck) { 
+                phiSafe = false; 
+                break; 
+            }
+        }
+        if (!phiSafe) continue;
+
+// Perform the transformation:
+        auto& headInsts = head->getInstructions();
+        auto& checkInsts = check->getInstructions();
+        auto brPos = std::prev(headInsts.end());
+
+        for (auto it = checkInsts.begin(); it != std::prev(checkInsts.end()); it++) {
+            (*it)->setParent(head);
+        }
+        headInsts.splice(brPos, checkInsts, checkInsts.begin(), std::prev(checkInsts.end()));
+        
+        // cond = cond1 & cond2
+        auto* comb = new BinaryInst(Instruction::And, cond1, cond2, nullptr);
+        comb->setParent(head);
+        headInsts.insert(brPos, comb);
+
+        // Replace head's branch: br comb, then, merge.
+        hbr->setOperand(0, comb);
+        hbr->setOperand(1, then);
+        hbr->setOperand(2, merge);
+
+        // Update then's phis: check was its predecessor, now head is.
+        for (auto* inst : then->getInstructions()) {
+            auto* phi = dyn_cast<PhiInst>(inst);
+            if (!phi) break;
+            for (int i = 1; i < phi->getNumOperands(); i += 2) {
+                if (dyn_cast<BasicBlock>(phi->getOperand(i)) == check)
+                    phi->setOperand(i, head);
+            }
+        }
+
+        // Remove check's incoming edge from merge's phis.
+        for (auto* inst : merge->getInstructions()) {
+            auto* phi = dyn_cast<PhiInst>(inst);
+            if (!phi) break;
+            phi->removeIncomingByBlock(check);
+        }
+
+        // Delete check (cbr is the only remaining instruction).
+        cbr->eraseInst();
+        check->replaceAllUsesWith(nullptr);
+        blocks.remove(check);
+        delete check;
+
+        return true;
+    }
+    return false;
+}
+
+// head:
+//   br cond, then, merge
+// then:
+//   x = ...
+//   br merge
+// merge:
+//   y = phi [old, head], [x, then]
+//
+// represent:
+//
+// head:
+//   x = ...
+//   y = select(cond, x, old)
+//   br merge
+static bool turnToSelect(Region* region, const std::map<BasicBlock*, std::vector<BasicBlock*>>& preds) {
+    auto& blocks = region->getBlocks();
+    for (auto* head : blocks) {
+        if (head->getInstructions().empty()) continue;
+        auto* hbr = dyn_cast<BranchInst>(head->getInstructions().back());
+        if (!hbr || hbr->getNumOperands() != 3) continue;
+
+        Value* cond = hbr->getOperand(0);
+        auto* then = dyn_cast<BasicBlock>(hbr->getOperand(1));
+        auto* merge = dyn_cast<BasicBlock>(hbr->getOperand(2));
+        if (!then || !merge || then == merge) continue;
+
+        // then must have predecessor head.
+        auto it = preds.find(then);
+        if (it == preds.end() || it->second.size() != 1 || it->second[0] != head) continue;
+
+        // merge must have predecessors head and then.
+        auto it2 = preds.find(merge);
+        if (it2 == preds.end() || it2->second.size() != 2) continue;
+        bool hasHead = false, hasThen = false;
+        for (auto* p : it2->second) {
+            if (p == head) hasHead = true;
+            if (p == then) hasThen = true;
+        }
+        if (!hasHead || !hasThen) continue;
+
+        // then must end with unconditional branch to merge.
+        if (then->getInstructions().empty()) continue;
+        auto* tbr = dyn_cast<BranchInst>(then->getInstructions().back());
+        if (!tbr || tbr->getNumOperands() != 1) continue;
+        if (dyn_cast<BasicBlock>(tbr->getOperand(0)) != merge) continue;
+
+        bool allPure = true;
+        for (auto* inst : then->getInstructions()) {
+            if (dyn_cast<BranchInst>(inst)) continue;
+            if (!isSafe(inst)) { 
+                allPure = false; 
+                break; 
+            }
+        }
+        if (!allPure) continue;
+        // Size budget: don't hoist more than 4 instructions.
+        int thenSize = (int)then->getInstructions().size() - 1; // exclude br
+        if (thenSize > 4) continue;
+
+        // Collect all phis in merge that have entries from head and then.
+        // All must be handled together.
+        std::vector<PhiInst*> phis;
+        for (auto* inst : merge->getInstructions()) {
+            auto* phi = dyn_cast<PhiInst>(inst);
+            if (!phi) break;
+            phis.push_back(phi);
+        }
+
+        // Skip if any phi has float type.
+        bool hasFloat = false;
+        for (auto* phi : phis) {
+            if (phi->getType() && phi->getType()->isFloat()) { hasFloat = true; break; }
+        }
+        if (hasFloat) continue;
+
+// Perform the transformation
+        auto& headInsts = head->getInstructions();
+        auto& thenInsts = then->getInstructions();
+        auto brPos = std::find(headInsts.begin(), headInsts.end(), static_cast<Instruction*>(hbr));
+
+        // Hoist then's pure instructions into head (before the branch).
+        for (auto it = thenInsts.begin(); it != std::prev(thenInsts.end()); it++) {
+            (*it)->setParent(head);
+        }
+
+        headInsts.splice(brPos, thenInsts, thenInsts.begin(), std::prev(thenInsts.end()));
+
+        // For each phi, create select(cond, v_then, v_head) and replace the phi.
+        for (auto* phi : phis) {
+            Value* v_head = nullptr, *v_then = nullptr;
+            for (int i = 0; i < phi->getNumOperands(); i += 2) {
+                auto* bb = dyn_cast<BasicBlock>(phi->getOperand(i + 1));
+                if (bb == head) v_head = phi->getOperand(i);
+                if (bb == then) v_then = phi->getOperand(i);
+            }
+            if (!v_head || !v_then) continue;
+
+            // Insert select before head's branch.
+            auto* sel = new SelectInst(cond, v_then, v_head, nullptr);
+            sel->setName(phi->getName());
+            sel->setParent(head);
+            headInsts.insert(brPos, sel);
+
+            phi->replaceAllUsesWith(sel);
+            phi->eraseInst();
+        }
+
+        hbr->replaceAllUsesWith(nullptr);
+        hbr->eraseInst();
+        new BranchInst(merge, head);
+
+        tbr->eraseInst();
+        then->replaceAllUsesWith(nullptr);
+        blocks.remove(then);
+        delete then;
+
+        return true;
+    }
+    return false;
+}
+
 bool SimplifyCFG::simplifyFunction(Function* func) {
     bool changed = false;
     Region* region = func->getBody();
 
-    changed |= removeGhostPhiEdges(region); 
+    changed |= removeGhostPhiEdges(region);
     changed |= simplifyBranches(region);
 
     changed |= eliminateUnreachableBlocks(region);
     changed |= mergeBasicBlocks(region);
     changed |= eliminateEmptyBlocks(region);
-    
+
+    auto preds = computePredecessors(region);
+    if (tryHoistConds(region, preds)) return true;
+    preds = computePredecessors(region);
+    if (turnToSelect(region, preds)) return true;
+
     return changed;
 }
 
@@ -55,6 +325,7 @@ std::map<BasicBlock*, std::vector<BasicBlock*>> SimplifyCFG::computePredecessors
         }
     }
 
+    // Use std::set to avoid duplicate.
     for (auto& pair : preds) {
         auto& vec = pair.second;
         std::set<BasicBlock*> s(vec.begin(), vec.end());
