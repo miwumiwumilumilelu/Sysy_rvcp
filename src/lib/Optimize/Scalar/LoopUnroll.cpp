@@ -3,29 +3,54 @@
 #include "Optimize/Analysis/Dominators.h"
 #include "Optimize/Analysis/LoopInfo.h"
 #include "Optimize/Analysis/SCEV.h"
+#include "Optimize/Analysis/ValueTracking.h"
 #include "Optimize/Loop/LoopUtils/LoopTripUtils.h"
 #include "IR/Instruction.h"
 #include <algorithm>
 #include <cassert>
+#include <queue>
 #include <unordered_map>
 #include <vector>
 
 using namespace sysy;
 
-static bool isSupportedInst(Instruction* inst) {
+static bool isSafe(Instruction* inst) {
     switch (inst->getOpID()) {
     case Instruction::Add: case Instruction::Sub:
     case Instruction::Mul: case Instruction::Div: case Instruction::Mod:
+    case Instruction::Shl: case Instruction::Ashr:
+    case Instruction::And: case Instruction::Or: case Instruction::Xor:
     case Instruction::FAdd: case Instruction::FSub:
     case Instruction::FMul: case Instruction::FDiv:
     case Instruction::ICmp: case Instruction::FCmp:
     case Instruction::SIToFP: case Instruction::FPToSI:
     case Instruction::Load: case Instruction::Store:
     case Instruction::GetElementPtr:
+    case Instruction::Select:
         return true;
     default:
         return false;
     }
+}
+
+// Check if preheader is the only predecessor.
+static bool preEnterSafe(BasicBlock* pre, BasicBlock* head, ValueTracking& vt) {
+    if (!pre || pre->getInstructions().empty()) return false;
+    auto* br = dyn_cast<BranchInst>(pre->getInstructions().back());
+    if (!br) return false;
+
+    if (br->getNumOperands() != 3)
+        return false;
+    if (br->getNumOperands() == 1)
+        return dyn_cast<BasicBlock>(br->getOperand(0)) == head;
+
+    // br cond, A, B
+    // A==head || B==head && cond must knowBool
+    bool cond = false;
+    if (!vt.knownBool(br->getOperand(0), cond))
+        return false;
+    auto* taken = dyn_cast<BasicBlock>(br->getOperand(cond ? 1 : 2));
+    return taken == head;
 }
 
 struct UnrollInfo {
@@ -39,13 +64,84 @@ struct UnrollInfo {
     int stride;
     int tripCount;
     std::vector<PhiInst*> carriedPhis;
+    std::vector<BasicBlock*> bodyOrder;
+    bool multiBlock = false;
 };
 
+// Returns all loop blocks except head, in topological (processing) order, latch last.
+//
+// head:
+//   br body1
+// body1:
+//   ...
+//   br body2
+// bodyx:
+//   ...
+//   br latch
+// latch:
+//   i.next = i + 1
+//   br cond, head, exit
+//
+// turns to:
+// 
+// [body1, body2, ..., latch]
+static std::vector<BasicBlock*> getLoopOrder(Loop* L, BasicBlock* head, BasicBlock* latch) {
+    std::vector<BasicBlock*> order;
+    // Compute in-degrees within L excluding head.
+    std::unordered_map<BasicBlock*, int> inDeg;
+    for (auto* bb : L->blocks)
+        if (bb != head) inDeg[bb] = 0;
+
+    for (auto* bb : L->blocks) {
+        if (bb == head) continue;
+        auto& il = bb->getInstructions();
+        if (il.empty()) continue;
+        auto* term = dyn_cast<BranchInst>(il.back());
+        if (!term) continue;
+
+        // Topological order requires the graph to be acyclic, therefore back edges are not counted.
+        int startIdx = (term->getNumOperands() == 3) ? 1 : 0;
+        for (int i = startIdx; i < term->getNumOperands(); ++i) {
+            auto* succ = dyn_cast<BasicBlock>(term->getOperand(i));
+            if (succ && succ != head && inDeg.count(succ))
+                inDeg[succ]++;
+        }
+    }
+
+    std::queue<BasicBlock*> worklist;
+    for (auto& p : inDeg)
+        if (p.second == 0) worklist.push(p.first);
+
+    while (!worklist.empty()) {
+        auto* bb = worklist.front(); 
+        worklist.pop();
+        order.push_back(bb);
+        auto& il = bb->getInstructions();
+        if (il.empty()) continue;
+        auto* term = dyn_cast<BranchInst>(il.back());
+        if (!term) continue;
+        int startIdx = (term->getNumOperands() == 3) ? 1 : 0;
+        for (int i = startIdx; i < term->getNumOperands(); ++i) {
+            auto* succ = dyn_cast<BasicBlock>(term->getOperand(i));
+            if (succ && succ != head && inDeg.count(succ)) {
+                if (--inDeg[succ] == 0) worklist.push(succ);
+            }
+        }
+    }
+
+    // Ensure latch is last.
+    auto it = std::find(order.begin(), order.end(), latch);
+    if (it != order.end() && it != std::prev(order.end())) {
+        order.erase(it);
+        order.push_back(latch);
+    }
+
+    return order;
+}
+
 // Match counted-loop shape.
-static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
-                      UnrollInfo& info, int threshold) {
+static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev, ValueTracking& vt, UnrollInfo& info, int threshold) {
     if (!pre) return false;
-    if (L->blocks.size() != 2) return false;
 
     BasicBlock* head = L->head;
     BasicBlock* latch = L->latch;
@@ -66,7 +162,8 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
     Instruction* exitCmpInLatch = nullptr;
 
     if (hbr->getNumOperands() == 3 && lbr->getNumOperands() == 1) {
-        // Top-tested shape.
+        // Top-tested shape: must be exactly 2 blocks (head + latch).
+        if (L->blocks.size() != 2) return false;
         if (dyn_cast<BasicBlock>(lbr->getOperand(0)) != head) return false;
 
         cmp = dyn_cast<ICmpInst>(hbr->getOperand(0));
@@ -94,8 +191,9 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
         if (!seenCmp || !seenBr) return false;
     }
     else if (hbr->getNumOperands() == 1 && lbr->getNumOperands() == 3) {
-        // Latch-tested shape after rotate.
-        if (dyn_cast<BasicBlock>(hbr->getOperand(0)) != latch) return false;
+        // Latch-tested shape: head must branch into a loop block (latch directly, or a body block).
+        auto* headSucc = dyn_cast<BasicBlock>(hbr->getOperand(0));
+        if (!headSucc || !L->has(headSucc)) return false;
 
         cmp = dyn_cast<ICmpInst>(lbr->getOperand(0));
         if (!cmp) return false;
@@ -111,10 +209,11 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
         testBB = latch;
         exitCmpInLatch = cmp;
 
-        // Allow only phis and branch.
+        // Head may contain phis, branch, and dead/hoisted instructions left by
+        // LoopRotate (e.g. the rotated exit-cmp that is unused in this block).
+        // We simply allow any instruction that does not introduce a new branch.
         for (auto* inst : headInsts) {
-            if (isa<PhiInst>(inst) || isa<BranchInst>(inst)) continue;
-            return false;
+            if (isa<BranchInst>(inst) && inst != hbr) return false; // unexpected extra branch
         }
     }
     else {
@@ -160,19 +259,52 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
     {
         ExitBranchInfo ebi;
         if (!analyzeExitBranch(L, testBB, scev, ebi)) return false;
+        Value* boundVal = nullptr;
+        if (ebi.lhsRec && ebi.lhsRec->loop == L && !ebi.rhsRec)
+            boundVal = ebi.rhs;
+        else if (ebi.rhsRec && ebi.rhsRec->loop == L && !ebi.lhsRec)
+            boundVal = ebi.lhs;
+        if (!dyn_cast<ConstantInt>(boundVal))
+            return false;
         int64_t exactTrips = -1;
         if (!getConstantTripCountFromInfo(ebi, L, exactTrips)) return false;
+        if (exitCmpInLatch) {
+            if (!preEnterSafe(pre, head, vt)) return false;
+            ++exactTrips;
+        }
         tripCount = (int)exactTrips;
     }
 
     if (tripCount < 0 || tripCount > threshold) return false;
 
-    // Reject latch bodies with unsupported instructions.
-    for (auto inst : latch->getInstructions()) {
-        if (isa<BranchInst>(inst)) continue;
-        if (inst == ivIncrement) continue;
-        if (inst == exitCmpInLatch) continue;
-        if (!isSupportedInst(inst)) return false;
+    // For latch-tested shape: compute body block order and check sizes.
+    std::vector<BasicBlock*> bodyOrder;
+    bool isMultiBlock = false;
+    if (exitCmpInLatch) {
+        bodyOrder = getLoopOrder(L, head, latch);
+        // bodyOrder must be non-empty and end with latch.
+        if (bodyOrder.empty() || bodyOrder.back() != latch) return false;
+        isMultiBlock = (bodyOrder.size() > 1);
+
+        // Limit total cloned instructions: bodyOrder.size() * tripCount <= 200.
+        if (isMultiBlock && bodyOrder.size() * (size_t)tripCount > 200) return false;
+
+        // Reject body blocks with unsupported instructions (for all body blocks).
+        for (auto* bb : bodyOrder) {
+            for (auto* inst : bb->getInstructions()) {
+                if (isa<BranchInst>(inst)) continue;
+                if (inst == ivIncrement) continue;
+                if (inst == exitCmpInLatch) continue;
+                if (!isSafe(inst)) return false;
+            }
+        }
+    } else {
+        // Top-tested shape: only latch.
+        for (auto* inst : latch->getInstructions()) {
+            if (isa<BranchInst>(inst)) continue;
+            if (inst == ivIncrement) continue;
+            if (!isSafe(inst)) return false;
+        }
     }
 
     // Each latch operand must map to exactly one header phi.
@@ -211,6 +343,8 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev,
     info.stride = ivStride;
     info.tripCount = tripCount;
     info.carriedPhis = std::move(carried);
+    info.bodyOrder = std::move(bodyOrder);
+    info.multiBlock = isMultiBlock;
     return true;
 }
 
@@ -277,7 +411,6 @@ static bool unrollLoop(Loop* /*L*/, BasicBlock* pre, UnrollInfo& info,
             }
             iterMap[inst] = clone;
         }
-
         // Refresh carried values after each copied iteration.
         for (auto* phi : info.carriedPhis) {
             Value* latchIncoming = getLatchIncoming(phi);
@@ -346,18 +479,204 @@ static bool unrollLoop(Loop* /*L*/, BasicBlock* pre, UnrollInfo& info,
         phi->replaceAllUsesWith(curVal[phi]);
     info.ivPhi->replaceAllUsesWith(curVal[info.ivPhi]);
 
-    // Delete the original loop blocks.
-    {
-        auto& blist = region->getBlocks();
-        while (!head->getInstructions().empty())
-            head->getInstructions().front()->eraseInst();
-        blist.remove(head);
-        delete head;
+    // Delete the original loop block(head + latch).
+    // head phi uses latch value
+    // latch instruction uses head phi
+    // latch branch uses head block
+    // So Two-pass to delete: 
+    auto& blist = region->getBlocks();
+    for (auto* inst : head->getInstructions())
+        inst->dropAllOperands();
+    for (auto* inst : latch->getInstructions())
+        inst->dropAllOperands();
 
-        while (!latch->getInstructions().empty())
-            latch->getInstructions().front()->eraseInst();
-        blist.remove(latch);
-        delete latch;
+    while (!head->getInstructions().empty())
+        head->getInstructions().front()->eraseInst();
+    blist.remove(head);
+    delete head;
+
+    while (!latch->getInstructions().empty())
+        latch->getInstructions().front()->eraseInst();
+    blist.remove(latch);
+    delete latch;
+
+    return true;
+}
+
+// Unroll a latch-tested loop with multi-block body (head -> body blocks -> latch).
+// pre:
+//   br body1_u0
+// [body1_u0 -> body2_u0 -> ...-> latch_u0]
+// [body1_u1 -> body2_u1 -> ...-> latch_u1]
+// ...
+// [body1_uN -> body2_uN -> ...-> latch_uN]
+// latch_uN -> exit
+static bool unrollMultiBlockLoop(Loop* /*L*/, BasicBlock* pre, UnrollInfo& info, Region* region) {
+    const int N = info.tripCount;
+    BasicBlock* head = info.head;
+    BasicBlock* latch = info.latch;
+    BasicBlock* exit = info.exit;
+    auto& bodyOrder = info.bodyOrder;
+
+    auto getPreIncoming = [&](PhiInst* phi) -> Value* {
+        for (int i = 0; i < phi->getNumOperands(); i += 2) {
+            auto* inBB = dyn_cast<BasicBlock>(phi->getOperand(i + 1));
+            if (inBB == pre) return phi->getOperand(i);
+        }
+        return nullptr;
+    };
+    auto getLatchIncoming = [&](PhiInst* phi) -> Value* {
+        for (int i = 0; i < phi->getNumOperands(); i += 2) {
+            auto* inBB = dyn_cast<BasicBlock>(phi->getOperand(i + 1));
+            if (inBB == latch) return phi->getOperand(i);
+        }
+        return nullptr;
+    };
+
+    // Seed carried values from preheader.
+    ValueMap curVal;
+    for (auto* phi : info.carriedPhis)
+        curVal[phi] = getPreIncoming(phi);
+    curVal[info.ivPhi] = new ConstantInt(info.start);
+
+    // Remove the old preheader branch.
+    auto& insts = pre->getInstructions();
+    assert(!insts.empty() && isa<BranchInst>(insts.back()));
+    insts.back()->eraseInst();
+
+    BasicBlock* prevLatch = nullptr;
+
+    for (int iter = 0; iter < N; ++iter) {
+        curVal[info.ivPhi] = new ConstantInt(info.start + iter * info.stride);
+        // Build block clone map for this iteration.
+        // such as:
+        //  bb2_u0
+        //  bb3_u0
+        //  bb2_u1
+        //  bb3_u1
+        std::unordered_map<BasicBlock*, BasicBlock*> uBlockMap;
+        for (auto* bb : bodyOrder) {
+            std::string cloneName = bb->getName() + "_u" + std::to_string(iter);
+            auto* cloneBlock = new BasicBlock(cloneName, region);
+            uBlockMap[bb] = cloneBlock;
+        }
+        // Build a BlockMap (std::map) for remapping: body blocks -> clones.
+        BlockMap bmap;
+        for (auto& p : uBlockMap) bmap[p.first] = p.second;
+
+        // Value map for this iteration (starts from curVal).
+        ValueMap iterMap = curVal;
+        // Clone all instructions in body blocks (skip latch's back-edge branch).
+        for (auto* bb : bodyOrder) {
+            auto* cloneBlock = uBlockMap[bb];
+            for (auto* inst : bb->getInstructions()) {
+                if (bb == latch && isa<BranchInst>(inst)) continue; // First skip latch.
+
+                auto* cloneI = cloneInst(inst, cloneBlock, iterMap, bmap);
+                if (!cloneI) {
+                    // Delete all cloned blocks.
+                    for (auto& p : uBlockMap) {
+                        auto* cb = p.second;
+                        region->getBlocks().remove(cb);
+                        delete cb;
+                    }
+                    return false;
+                }
+                iterMap[inst] = cloneI;
+            }
+        }
+
+        BasicBlock* iterEntry = uBlockMap[bodyOrder[0]];
+        if (iter == 0) {
+            // pre -> body_u0
+            new BranchInst(iterEntry, pre);
+        } else {
+            new BranchInst(iterEntry, prevLatch);
+        }
+
+        // Record the latch cloned in this iteration.
+        prevLatch = uBlockMap[latch];
+
+        // Update curVal for next iteration from latch incoming values.
+        for (auto* phi : info.carriedPhis) {
+            Value* latchIncoming = getLatchIncoming(phi);
+            if (latchIncoming) {
+                static const BlockMap emptyBM;
+                curVal[phi] = remapValue(latchIncoming, iterMap, emptyBM);
+            }
+        }
+        // IV is updated at the top of the next iteration via new ConstantInt.
+    }
+    // latch_un -> exit
+    new BranchInst(exit, prevLatch);
+
+    // Unlike regular Phi, it doesn't need to derive from dependencies on other instructions,
+    // because the trip count is known.
+    curVal[info.ivPhi] = new ConstantInt(info.start + N * info.stride);
+
+    // pre -> head
+    // head/body/latch -> exit
+    // exit:
+    //      x.out = phi [x.init, pre], [x.next, latch]
+    // 
+    // turns to:
+    //
+    // latch_u31 -> exit
+    // exit:
+    //      x.out = phi [final_x, latch_u31]
+    // Fix exit block phis: the predecessor is now prevLatch instead of latch.
+    // Also update the values coming from latch if they're in curVal.
+    {
+        std::unordered_map<Value*, PhiInst*> latchValToPhi;
+        for (auto* phi : info.carriedPhis)
+            if (Value* lv = getLatchIncoming(phi)) latchValToPhi[lv] = phi;
+        if (Value* lv = getLatchIncoming(info.ivPhi)) latchValToPhi[lv] = info.ivPhi;
+
+        std::vector<PhiInst*> exitPhis;
+        for (auto* inst : exit->getInstructions()) {
+            auto* ep = dyn_cast<PhiInst>(inst);
+            if (!ep) break;
+            exitPhis.push_back(ep);
+        }
+        for (auto* ep : exitPhis) {
+            for (int i = 0; i < (int)ep->getNumOperands(); i += 2) {
+                auto* bb = dyn_cast<BasicBlock>(ep->getOperand(i + 1));
+                if (bb != latch) continue;
+                // Remap predecessor block to last latch clone.
+                ep->setOperand(i + 1, prevLatch);
+                // Remap value if it's a latch-defined carried value.
+                Value* v = ep->getOperand(i);
+                auto it = latchValToPhi.find(v);
+                if (it != latchValToPhi.end())
+                    ep->setOperand(i, curVal[it->second]);
+            }
+            // After replacing preheader's branch, pre no longer flows to exit.
+            ep->removeIncomingByBlock(pre);
+        }
+    }
+
+    // Replace remaining uses of header phis with final curVal.
+    for (auto* phi : info.carriedPhis)
+        phi->replaceAllUsesWith(curVal[phi]);
+    info.ivPhi->replaceAllUsesWith(curVal[info.ivPhi]);
+
+    // delete
+    auto& blist = region->getBlocks();
+    for (auto* inst : head->getInstructions())
+        inst->dropAllOperands();
+    for (auto* bb : bodyOrder)
+        for (auto* inst : bb->getInstructions())
+            inst->dropAllOperands();
+
+    while (!head->getInstructions().empty())
+        head->getInstructions().front()->eraseInst();
+    blist.remove(head);
+    delete head;
+    for (auto* bb : bodyOrder) {
+        while (!bb->getInstructions().empty())
+            bb->getInstructions().front()->eraseInst();
+        blist.remove(bb);
+        delete bb;
     }
 
     return true;
@@ -389,8 +708,14 @@ bool LoopUnroll::runFunc(Function* f) {
 
             for (auto* inner : innermost) {
                 UnrollInfo info;
-                if (!matchLoop(inner, inner->pre, scev, info, Threshold)) continue;
-                if (!unrollLoop(inner, inner->pre, info, f->getBody())) continue;
+                ValueTracking vt(f);
+                if (!matchLoop(inner, inner->pre, scev, vt, info, Threshold)) continue;
+                bool ok = false;
+                if (info.multiBlock)
+                    ok = unrollMultiBlockLoop(inner, inner->pre, info, f->getBody());
+                else
+                    ok = unrollLoop(inner, inner->pre, info, f->getBody());
+                if (!ok) continue;
                 changed = anyChanged = true;
                 break; // Restart after changing the CFG.
             }
