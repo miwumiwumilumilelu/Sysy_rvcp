@@ -8,6 +8,8 @@
 
 namespace sysy {
 
+struct PMExpr;
+
 class Pattern {
 public:
     using Binding = std::map<std::string, Value*>;
@@ -20,17 +22,11 @@ public:
     bool extractInt(const std::string& name, int& value) const;
 
 private:
-    struct Expr;
-
     std::string Text;
-    size_t Loc = 0;
-    std::unique_ptr<Expr> Root;
+    std::unique_ptr<PMExpr> Root;
     Binding Bindings;
 
-    std::string nextToken();
-    std::unique_ptr<Expr> parse();
-    bool matchExpr(const Expr* expr, Value* value);
-    bool matchList(const Expr* expr, Value* value);
+    bool matchExpr(const PMExpr* expr, Value* value);
 };
 
 class Match {
@@ -45,25 +41,19 @@ public:
     bool rewrite(Instruction* inst);
 
 private:
-    struct Expr;
-
     std::string Text;
-    size_t Loc = 0;
-    std::unique_ptr<Expr> From;
-    std::unique_ptr<Expr> To;
-    std::unique_ptr<Expr> Condition;
+    std::unique_ptr<PMExpr> From;
+    std::unique_ptr<PMExpr> To;
+    std::unique_ptr<PMExpr> Condition;
     Pattern::Binding Bindings;
 
-    std::string nextToken();
-    std::unique_ptr<Expr> parse();
     bool parseRewrite();
 
-    bool matchExpr(const Expr* expr, Value* value);
-    bool matchList(const Expr* expr, Value* value);
-    Value* buildExpr(const Expr* expr, Instruction* before);
-    Value* evalConstExpr(const Expr* expr);
-    bool evalConstInt(const Expr* expr, int& value);
-    bool evalConstFloat(const Expr* expr, float& value);
+    bool matchExpr(const PMExpr* expr, Value* value);
+    Value* buildExpr(const PMExpr* expr, Instruction* before);
+    Value* evalConstExpr(const PMExpr* expr);
+    bool evalConstInt(const PMExpr* expr, int& value);
+    bool evalConstFloat(const PMExpr* expr, float& value);
 };
 
 }

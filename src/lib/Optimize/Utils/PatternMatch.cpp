@@ -8,29 +8,72 @@
 
 namespace sysy {
 
-// x + 0 -> x
-// Parse ( rewrite ( add x 0 ) x )
-// -> S-expression AST :
-// 
-// list
-//   atom rewrite
-//   list
-//     atom add
-//     atom x
-//     atom 0
-//   atom x
-
-struct Pattern::Expr {
+struct PMExpr {
     bool atom = true;
     std::string value;
-    std::vector<std::unique_ptr<Expr>> elements;
+    std::vector<std::unique_ptr<PMExpr>> elements;
 };
 
-Pattern::Pattern(const std::string& text) : Text(text) {
-    Root = parse();
-}
+class Parser {
+public:
+    explicit Parser(const std::string& text) : Text(text) {}
 
-Pattern::~Pattern() = default;
+    // (rewrite (add x 0) x) -> PMExpr tree
+    // 
+    // list
+    //   atom rewrite
+    //   list
+    //     atom add
+    //     atom x
+    //     atom 0
+    //   atom x
+    std::unique_ptr<PMExpr> parse() {
+        auto tok = next();
+        auto expr = std::make_unique<PMExpr>();
+        if (tok == "(") {
+            expr->atom = false;
+            while (true) {
+                size_t save = Loc;
+                auto peek = next();
+                if (peek.empty() || peek == ")")
+                    break;
+                Loc = save;
+                expr->elements.push_back(parse());
+            }
+            return expr;
+        }
+
+        expr->atom = true;
+        expr->value = tok;
+        return expr;
+    }
+
+private:
+    const std::string& Text;
+    size_t Loc = 0;
+
+    // (add x 0) -> "(", "add", "x", "0", ")"
+    std::string next() {
+        while (Loc < Text.size() && std::isspace(static_cast<unsigned char>(Text[Loc])))
+            ++Loc;
+        if (Loc >= Text.size())
+            return "";
+        if (Text[Loc] == '(' || Text[Loc] == ')')
+            return std::string(1, Text[Loc++]);
+
+        size_t start = Loc;
+        while (Loc < Text.size() &&
+               !std::isspace(static_cast<unsigned char>(Text[Loc])) &&
+               Text[Loc] != '(' && Text[Loc] != ')')
+            ++Loc;
+        return Text.substr(start, Loc - start);
+    }
+};
+
+static std::unique_ptr<PMExpr> parseExpr(const std::string& text) {
+    Parser parser(text);
+    return parser.parse();
+}
 
 static bool parseIntLiteral(const std::string& text, int& value) {
     if (text.empty())
@@ -66,42 +109,210 @@ static bool sameConstFloat(Value* lhs, Value* rhs) {
     return lc && rc && lc->getValue() == rc->getValue();
 }
 
-std::string Pattern::nextToken() {
-    while (Loc < Text.size() && std::isspace(static_cast<unsigned char>(Text[Loc])))
-        ++Loc;
-    if (Loc >= Text.size())
-        return "";
-    if (Text[Loc] == '(' || Text[Loc] == ')')
-        return std::string(1, Text[Loc++]);
-
-    size_t start = Loc;
-    while (Loc < Text.size() &&
-           !std::isspace(static_cast<unsigned char>(Text[Loc])) &&
-           Text[Loc] != '(' && Text[Loc] != ')')
-        ++Loc;
-    return Text.substr(start, Loc - start);
+static bool sameValue(Value* lhs, Value* rhs) {
+    return lhs == rhs || sameConstInt(lhs, rhs) || sameConstFloat(lhs, rhs);
 }
 
-std::unique_ptr<Pattern::Expr> Pattern::parse() {
-    auto tok = nextToken();
-    auto expr = std::make_unique<Expr>();
-    if (tok == "(") {
-        expr->atom = false;
-        while (true) {
-            size_t save = Loc;
-            auto peek = nextToken();
-            if (peek.empty() || peek == ")")
-                break;
-            Loc = save;
-            expr->elements.push_back(parse());
-        }
-        return expr;
+static bool isBinaryOp(Instruction* inst, Instruction::OpID op) {
+    return inst && inst->getOpID() == op && inst->getNumOperands() == 2;
+}
+
+// 'c -> ConstantInt, x -> any value
+static bool matchAtom(const PMExpr* expr, Value* value, Pattern::Binding& bindings) {
+    const std::string& atom = expr->value;
+    if (atom.empty())
+        return false;
+
+    int literal = 0;
+    if (parseIntLiteral(atom, literal)) {
+        auto* c = dyn_cast<ConstantInt>(value);
+        return c && c->getValue() == literal;
     }
 
-    expr->atom = true;
-    expr->value = tok;
-    return expr;
+    if (atom == "true") {
+        auto* c = dyn_cast<ConstantInt>(value);
+        return c && c->getValue() == 1;
+    }
+    if (atom == "false") {
+        auto* c = dyn_cast<ConstantInt>(value);
+        return c && c->getValue() == 0;
+    }
+
+    if (atom[0] == '\'') {
+        auto* c = dyn_cast<ConstantInt>(value);
+        if (!c)
+            return false;
+        auto it = bindings.find(atom);
+        if (it != bindings.end())
+            return sameConstInt(it->second, value);
+        bindings[atom] = value;
+        return true;
+    }
+
+    if (atom[0] == '*') {
+        auto* c = dyn_cast<ConstantFloat>(value);
+        if (!c)
+            return false;
+        float literal = 0.0f;
+        if (parseFloatLiteral(atom, literal) && c->getValue() != literal)
+            return false;
+        auto it = bindings.find(atom);
+        if (it != bindings.end())
+            return sameConstFloat(it->second, value);
+        bindings[atom] = value;
+        return true;
+    }
+
+    auto it = bindings.find(atom);
+    if (it != bindings.end())
+        return sameValue(it->second, value);
+    bindings[atom] = value;
+    return true;
 }
+
+// (add x 0), (select c x y), (and (ashr x 'k) 1)
+template <typename MatchExpr>
+static bool matchList(const PMExpr* expr, Value* value, Pattern::Binding& bindings, MatchExpr&& matchExpr) {
+    if (expr->elements.empty() || !expr->elements[0]->atom)
+        return false;
+
+    const std::string& op = expr->elements[0]->value;
+    auto* inst = dyn_cast<Instruction>(value);
+
+    auto orderedBin = [&](Instruction::OpID id) {
+        if (!isBinaryOp(inst, id) || expr->elements.size() != 3)
+            return false;
+        auto saved = bindings;
+        if (matchExpr(expr->elements[1].get(), inst->getOperand(0)) &&
+            matchExpr(expr->elements[2].get(), inst->getOperand(1)))
+            return true;
+        bindings = std::move(saved);
+        return false;
+    };
+
+    auto commutativeBin = [&](Instruction::OpID id) {
+        if (!isBinaryOp(inst, id) || expr->elements.size() != 3)
+            return false;
+        auto saved = bindings;
+        if (matchExpr(expr->elements[1].get(), inst->getOperand(0)) &&
+            matchExpr(expr->elements[2].get(), inst->getOperand(1)))
+            return true;
+        bindings = saved;
+        if (matchExpr(expr->elements[1].get(), inst->getOperand(1)) &&
+            matchExpr(expr->elements[2].get(), inst->getOperand(0)))
+            return true;
+        bindings = std::move(saved);
+        return false;
+    };
+
+    if (op == "add") return commutativeBin(Instruction::Add);
+    if (op == "sub") return orderedBin(Instruction::Sub);
+    if (op == "mul") return commutativeBin(Instruction::Mul);
+    if (op == "div") return orderedBin(Instruction::Div);
+    if (op == "mod") return orderedBin(Instruction::Mod);
+    if (op == "shl") return orderedBin(Instruction::Shl);
+    if (op == "ashr") return orderedBin(Instruction::Ashr);
+    if (op == "and") return commutativeBin(Instruction::And);
+    if (op == "or") return commutativeBin(Instruction::Or);
+    if (op == "xor") return commutativeBin(Instruction::Xor);
+    if (op == "fadd") return commutativeBin(Instruction::FAdd);
+    if (op == "fsub") return orderedBin(Instruction::FSub);
+    if (op == "fmul") return commutativeBin(Instruction::FMul);
+    if (op == "fdiv") return orderedBin(Instruction::FDiv);
+
+    if (op == "load") {
+        auto* ld = dyn_cast<LoadInst>(value);
+        return ld && expr->elements.size() == 2 &&
+               matchExpr(expr->elements[1].get(), ld->getOperand(0));
+    }
+
+    if (op == "store") {
+        auto* st = dyn_cast<StoreInst>(value);
+        return st && expr->elements.size() == 3 &&
+               matchExpr(expr->elements[1].get(), st->getOperand(0)) &&
+               matchExpr(expr->elements[2].get(), st->getOperand(1));
+    }
+
+    if (op == "gep") {
+        if (!inst || inst->getOpID() != Instruction::GetElementPtr ||
+            expr->elements.size() != static_cast<size_t>(inst->getNumOperands() + 1))
+            return false;
+        auto saved = bindings;
+        for (int i = 0; i < inst->getNumOperands(); ++i) {
+            if (!matchExpr(expr->elements[i + 1].get(), inst->getOperand(i))) {
+                bindings = std::move(saved);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    auto orderedCmp = [&](ICmpInst::CmpOp pred) {
+        auto* cmp = dyn_cast<ICmpInst>(value);
+        if (!cmp || cmp->getPredicate() != pred || expr->elements.size() != 3)
+            return false;
+        auto saved = bindings;
+        if (matchExpr(expr->elements[1].get(), cmp->getOperand(0)) &&
+            matchExpr(expr->elements[2].get(), cmp->getOperand(1)))
+            return true;
+        bindings = std::move(saved);
+        return false;
+    };
+
+    auto commutativeCmp = [&](ICmpInst::CmpOp pred) {
+        auto* cmp = dyn_cast<ICmpInst>(value);
+        if (!cmp || cmp->getPredicate() != pred || expr->elements.size() != 3)
+            return false;
+        auto saved = bindings;
+        if (matchExpr(expr->elements[1].get(), cmp->getOperand(0)) &&
+            matchExpr(expr->elements[2].get(), cmp->getOperand(1)))
+            return true;
+        bindings = saved;
+        if (matchExpr(expr->elements[1].get(), cmp->getOperand(1)) &&
+            matchExpr(expr->elements[2].get(), cmp->getOperand(0)))
+            return true;
+        bindings = std::move(saved);
+        return false;
+    };
+
+    if (op == "eq") return commutativeCmp(ICmpInst::EQ);
+    if (op == "ne") return commutativeCmp(ICmpInst::NE);
+    if (op == "sgt" || op == "gt") return orderedCmp(ICmpInst::SGT);
+    if (op == "sge" || op == "ge") return orderedCmp(ICmpInst::SGE);
+    if (op == "slt" || op == "lt") return orderedCmp(ICmpInst::SLT);
+    if (op == "sle" || op == "le") return orderedCmp(ICmpInst::SLE);
+
+    if (op == "sitofp") {
+        return inst && inst->getOpID() == Instruction::SIToFP &&
+               expr->elements.size() == 2 &&
+               matchExpr(expr->elements[1].get(), inst->getOperand(0));
+    }
+    if (op == "fptosi") {
+        return inst && inst->getOpID() == Instruction::FPToSI &&
+               expr->elements.size() == 2 &&
+               matchExpr(expr->elements[1].get(), inst->getOperand(0));
+    }
+
+    if (op == "select") {
+        auto* sel = dyn_cast<SelectInst>(value);
+        if (!sel || expr->elements.size() != 4) return false;
+        auto saved = bindings;
+        if (matchExpr(expr->elements[1].get(), sel->getCond()) &&
+            matchExpr(expr->elements[2].get(), sel->getTrueVal()) &&
+            matchExpr(expr->elements[3].get(), sel->getFalseVal()))
+            return true;
+        bindings = std::move(saved);
+        return false;
+    }
+
+    return false;
+}
+
+Pattern::Pattern(const std::string& text) : Text(text) {
+    Root = parseExpr(Text);
+}
+
+Pattern::~Pattern() = default;
 
 bool Pattern::match(Value* value, const Binding& external) {
     Bindings = external;
@@ -122,187 +333,16 @@ bool Pattern::extractInt(const std::string& name, int& value) const {
     return true;
 }
 
-bool Pattern::matchExpr(const Expr* expr, Value* value) {
+// (and x 'm) -> bind x and 'm
+bool Pattern::matchExpr(const PMExpr* expr, Value* value) {
     if (!expr)
         return false;
-    if (!expr->atom)
-        return matchList(expr, value);
-
-    const std::string& atom = expr->value;
-    if (atom.empty())
-        return false;
-
-    int literal = 0;
-    if (parseIntLiteral(atom, literal)) {
-        auto* c = dyn_cast<ConstantInt>(value);
-        return c && c->getValue() == literal;
-    }
-
-    if (atom[0] == '\'') {
-        auto* c = dyn_cast<ConstantInt>(value);
-        if (!c)
-            return false;
-        auto it = Bindings.find(atom);
-        if (it != Bindings.end())
-            return sameConstInt(it->second, value);
-        Bindings[atom] = value;
-        return true;
-    }
-
-    if (atom[0] == '*') {
-        auto* c = dyn_cast<ConstantFloat>(value);
-        if (!c)
-            return false;
-        float literal = 0.0f;
-        if (parseFloatLiteral(atom, literal) && c->getValue() != literal)
-            return false;
-        auto it = Bindings.find(atom);
-        if (it != Bindings.end())
-            return sameConstFloat(it->second, value);
-        Bindings[atom] = value;
-        return true;
-    }
-
-    auto it = Bindings.find(atom);
-    if (it != Bindings.end())
-        return it->second == value;
-    Bindings[atom] = value;
-    return true;
+    if (expr->atom)
+        return matchAtom(expr, value, Bindings);
+    return matchList(expr, value, Bindings, [&](const PMExpr* e, Value* v) {
+        return matchExpr(e, v);
+    });
 }
-
-static bool isBinaryOp(Instruction* inst, Instruction::OpID op) {
-    return inst && inst->getOpID() == op && inst->getNumOperands() == 2;
-}
-
-bool Pattern::matchList(const Expr* expr, Value* value) {
-    if (expr->elements.empty() || !expr->elements[0]->atom)
-        return false;
-
-    const std::string& op = expr->elements[0]->value;
-    auto* inst = dyn_cast<Instruction>(value);
-
-    auto matchOrderedBin = [&](Instruction::OpID id) {
-        if (!isBinaryOp(inst, id) || expr->elements.size() != 3)
-            return false;
-        auto saved = Bindings;
-        if (matchExpr(expr->elements[1].get(), inst->getOperand(0)) &&
-            matchExpr(expr->elements[2].get(), inst->getOperand(1)))
-            return true;
-        Bindings = std::move(saved);
-        return false;
-    };
-
-    auto matchCommutativeBin = [&](Instruction::OpID id) {
-        if (!isBinaryOp(inst, id) || expr->elements.size() != 3)
-            return false;
-        auto saved = Bindings;
-        if (matchExpr(expr->elements[1].get(), inst->getOperand(0)) &&
-            matchExpr(expr->elements[2].get(), inst->getOperand(1)))
-            return true;
-        Bindings = saved;
-        if (matchExpr(expr->elements[1].get(), inst->getOperand(1)) &&
-            matchExpr(expr->elements[2].get(), inst->getOperand(0)))
-            return true;
-        Bindings = std::move(saved);
-        return false;
-    };
-
-    if (op == "add") return matchCommutativeBin(Instruction::Add);
-    if (op == "sub") return matchOrderedBin(Instruction::Sub);
-    if (op == "mul") return matchCommutativeBin(Instruction::Mul);
-    if (op == "div") return matchOrderedBin(Instruction::Div);
-    if (op == "mod") return matchOrderedBin(Instruction::Mod);
-    if (op == "shl") return matchOrderedBin(Instruction::Shl);
-    if (op == "ashr") return matchOrderedBin(Instruction::Ashr);
-    if (op == "and") return matchCommutativeBin(Instruction::And);
-    if (op == "or") return matchCommutativeBin(Instruction::Or);
-    if (op == "xor") return matchCommutativeBin(Instruction::Xor);
-    if (op == "fadd") return matchCommutativeBin(Instruction::FAdd);
-    if (op == "fsub") return matchOrderedBin(Instruction::FSub);
-    if (op == "fmul") return matchCommutativeBin(Instruction::FMul);
-    if (op == "fdiv") return matchOrderedBin(Instruction::FDiv);
-
-    if (op == "load") {
-        auto* ld = dyn_cast<LoadInst>(value);
-        return ld && expr->elements.size() == 2 &&
-               matchExpr(expr->elements[1].get(), ld->getOperand(0));
-    }
-
-    if (op == "store") {
-        auto* st = dyn_cast<StoreInst>(value);
-        return st && expr->elements.size() == 3 &&
-               matchExpr(expr->elements[1].get(), st->getOperand(0)) &&
-               matchExpr(expr->elements[2].get(), st->getOperand(1));
-    }
-
-    if (op == "gep") {
-        if (!inst || inst->getOpID() != Instruction::GetElementPtr ||
-            expr->elements.size() != static_cast<size_t>(inst->getNumOperands() + 1))
-            return false;
-        auto saved = Bindings;
-        for (int i = 0; i < inst->getNumOperands(); ++i) {
-            if (!matchExpr(expr->elements[i + 1].get(), inst->getOperand(i))) {
-                Bindings = std::move(saved);
-                return false;
-            }
-        }
-        return true;
-    }
-
-    auto matchOrderedCmp = [&](ICmpInst::CmpOp pred) {
-        auto* cmp = dyn_cast<ICmpInst>(value);
-        if (!cmp || cmp->getPredicate() != pred || expr->elements.size() != 3)
-            return false;
-        auto saved = Bindings;
-        if (matchExpr(expr->elements[1].get(), cmp->getOperand(0)) &&
-            matchExpr(expr->elements[2].get(), cmp->getOperand(1)))
-            return true;
-        Bindings = std::move(saved);
-        return false;
-    };
-
-    auto matchCommutativeCmp = [&](ICmpInst::CmpOp pred) {
-        auto* cmp = dyn_cast<ICmpInst>(value);
-        if (!cmp || cmp->getPredicate() != pred || expr->elements.size() != 3)
-            return false;
-        auto saved = Bindings;
-        if (matchExpr(expr->elements[1].get(), cmp->getOperand(0)) &&
-            matchExpr(expr->elements[2].get(), cmp->getOperand(1)))
-            return true;
-        Bindings = saved;
-        if (matchExpr(expr->elements[1].get(), cmp->getOperand(1)) &&
-            matchExpr(expr->elements[2].get(), cmp->getOperand(0)))
-            return true;
-        Bindings = std::move(saved);
-        return false;
-    };
-
-    if (op == "eq") return matchCommutativeCmp(ICmpInst::EQ);
-    if (op == "ne") return matchCommutativeCmp(ICmpInst::NE);
-    if (op == "sgt" || op == "gt") return matchOrderedCmp(ICmpInst::SGT);
-    if (op == "sge" || op == "ge") return matchOrderedCmp(ICmpInst::SGE);
-    if (op == "slt" || op == "lt") return matchOrderedCmp(ICmpInst::SLT);
-    if (op == "sle" || op == "le") return matchOrderedCmp(ICmpInst::SLE);
-
-    if (op == "sitofp") {
-        return inst && inst->getOpID() == Instruction::SIToFP &&
-               expr->elements.size() == 2 &&
-               matchExpr(expr->elements[1].get(), inst->getOperand(0));
-    }
-    if (op == "fptosi") {
-        return inst && inst->getOpID() == Instruction::FPToSI &&
-               expr->elements.size() == 2 &&
-               matchExpr(expr->elements[1].get(), inst->getOperand(0));
-    }
-
-    return false;
-}
-
-struct Match::Expr {
-    bool atom = true;
-    std::string value;
-    std::vector<std::unique_ptr<Expr>> elements;
-};
 
 Match::Match(const std::string& text) : Text(text) {
     parseRewrite();
@@ -314,45 +354,9 @@ Match& Match::operator=(Match&& other) noexcept = default;
 
 static bool evalIntOp(const std::string& op, int lhs, int rhs, int& out);
 
-std::string Match::nextToken() {
-    while (Loc < Text.size() && std::isspace(static_cast<unsigned char>(Text[Loc])))
-        ++Loc;
-    if (Loc >= Text.size())
-        return "";
-    if (Text[Loc] == '(' || Text[Loc] == ')')
-        return std::string(1, Text[Loc++]);
-
-    size_t start = Loc;
-    while (Loc < Text.size() &&
-           !std::isspace(static_cast<unsigned char>(Text[Loc])) &&
-           Text[Loc] != '(' && Text[Loc] != ')')
-        ++Loc;
-    return Text.substr(start, Loc - start);
-}
-
-std::unique_ptr<Match::Expr> Match::parse() {
-    auto tok = nextToken();
-    auto expr = std::make_unique<Expr>();
-    if (tok == "(") {
-        expr->atom = false;
-        while (true) {
-            size_t save = Loc;
-            auto peek = nextToken();
-            if (peek.empty() || peek == ")")
-                break;
-            Loc = save;
-            expr->elements.push_back(parse());
-        }
-        return expr;
-    }
-
-    expr->atom = true;
-    expr->value = tok;
-    return expr;
-}
-
+// (rewrite A B), (rewrite-if C A B)
 bool Match::parseRewrite() {
-    auto root = parse();
+    auto root = parseExpr(Text);
     if (!root || root->atom)
         return false;
     if (root->elements.size() == 3 &&
@@ -371,7 +375,8 @@ bool Match::parseRewrite() {
     return false;
 }
 
-bool Match::evalConstInt(const Expr* expr, int& value) {
+// (!shl 1 'k) -> 1 << k
+bool Match::evalConstInt(const PMExpr* expr, int& value) {
     if (!expr)
         return false;
     if (expr->atom) {
@@ -413,7 +418,8 @@ bool Match::evalConstInt(const Expr* expr, int& value) {
     return evalIntOp(op, lhs, rhs, value);
 }
 
-bool Match::evalConstFloat(const Expr* expr, float& value) {
+// (?add *1.0 *2.0) -> *3.0
+bool Match::evalConstFloat(const PMExpr* expr, float& value) {
     if (!expr)
         return false;
     if (expr->atom) {
@@ -445,134 +451,29 @@ bool Match::evalConstFloat(const Expr* expr, float& value) {
     return false;
 }
 
-bool Match::matchExpr(const Expr* expr, Value* value) {
+// (!shl 1 'k) matches ConstantInt(1 << k)
+bool Match::matchExpr(const PMExpr* expr, Value* value) {
     if (!expr)
         return false;
-    if (!expr->atom)
-        return matchList(expr, value);
-
-    const std::string& atom = expr->value;
-    if (atom.empty())
-        return false;
-
-    int literal = 0;
-    if (parseIntLiteral(atom, literal)) {
-        auto* c = dyn_cast<ConstantInt>(value);
-        return c && c->getValue() == literal;
+    if (!expr->atom) {
+        if (!expr->elements.empty() && expr->elements[0]->atom) {
+            const std::string& op = expr->elements[0]->value;
+            if (!op.empty() && (op[0] == '!' || op[0] == '?')) {
+                if (op[0] == '!') {
+                    int folded = 0;
+                    auto* ci = dyn_cast<ConstantInt>(value);
+                    return ci && evalConstInt(expr, folded) && ci->getValue() == folded;
+                }
+                float folded = 0.0f;
+                auto* cf = dyn_cast<ConstantFloat>(value);
+                return cf && evalConstFloat(expr, folded) && cf->getValue() == folded;
+            }
+        }
+        return matchList(expr, value, Bindings, [&](const PMExpr* e, Value* v) {
+            return matchExpr(e, v);
+        });
     }
-
-    if (atom[0] == '\'') {
-        auto* c = dyn_cast<ConstantInt>(value);
-        if (!c)
-            return false;
-        auto it = Bindings.find(atom);
-        if (it != Bindings.end())
-            return sameConstInt(it->second, value);
-        Bindings[atom] = value;
-        return true;
-    }
-
-    if (atom[0] == '*') {
-        auto* c = dyn_cast<ConstantFloat>(value);
-        if (!c)
-            return false;
-        float literal = 0.0f;
-        if (parseFloatLiteral(atom, literal) && c->getValue() != literal)
-            return false;
-        auto it = Bindings.find(atom);
-        if (it != Bindings.end())
-            return sameConstFloat(it->second, value);
-        Bindings[atom] = value;
-        return true;
-    }
-
-    auto it = Bindings.find(atom);
-    if (it != Bindings.end())
-        return it->second == value;
-    Bindings[atom] = value;
-    return true;
-}
-
-bool Match::matchList(const Expr* expr, Value* value) {
-    if (expr->elements.empty() || !expr->elements[0]->atom)
-        return false;
-
-    const std::string& op = expr->elements[0]->value;
-    auto* inst = dyn_cast<Instruction>(value);
-
-    auto matchOrderedBin = [&](Instruction::OpID id) {
-        if (!isBinaryOp(inst, id) || expr->elements.size() != 3)
-            return false;
-        auto saved = Bindings;
-        if (matchExpr(expr->elements[1].get(), inst->getOperand(0)) &&
-            matchExpr(expr->elements[2].get(), inst->getOperand(1)))
-            return true;
-        Bindings = std::move(saved);
-        return false;
-    };
-
-    auto matchCommutativeBin = [&](Instruction::OpID id) {
-        if (!isBinaryOp(inst, id) || expr->elements.size() != 3)
-            return false;
-        auto saved = Bindings;
-        if (matchExpr(expr->elements[1].get(), inst->getOperand(0)) &&
-            matchExpr(expr->elements[2].get(), inst->getOperand(1)))
-            return true;
-        Bindings = saved;
-        if (matchExpr(expr->elements[1].get(), inst->getOperand(1)) &&
-            matchExpr(expr->elements[2].get(), inst->getOperand(0)))
-            return true;
-        Bindings = std::move(saved);
-        return false;
-    };
-
-    if (op == "add") return matchCommutativeBin(Instruction::Add);
-    if (op == "sub") return matchOrderedBin(Instruction::Sub);
-    if (op == "mul") return matchCommutativeBin(Instruction::Mul);
-    if (op == "div") return matchOrderedBin(Instruction::Div);
-    if (op == "mod") return matchOrderedBin(Instruction::Mod);
-    if (op == "shl") return matchOrderedBin(Instruction::Shl);
-    if (op == "ashr") return matchOrderedBin(Instruction::Ashr);
-    if (op == "and") return matchCommutativeBin(Instruction::And);
-    if (op == "or") return matchCommutativeBin(Instruction::Or);
-    if (op == "xor") return matchCommutativeBin(Instruction::Xor);
-
-    auto matchOrderedCmp = [&](ICmpInst::CmpOp pred) {
-        auto* cmp = dyn_cast<ICmpInst>(value);
-        if (!cmp || cmp->getPredicate() != pred || expr->elements.size() != 3)
-            return false;
-        auto saved = Bindings;
-        if (matchExpr(expr->elements[1].get(), cmp->getOperand(0)) &&
-            matchExpr(expr->elements[2].get(), cmp->getOperand(1)))
-            return true;
-        Bindings = std::move(saved);
-        return false;
-    };
-
-    auto matchCommutativeCmp = [&](ICmpInst::CmpOp pred) {
-        auto* cmp = dyn_cast<ICmpInst>(value);
-        if (!cmp || cmp->getPredicate() != pred || expr->elements.size() != 3)
-            return false;
-        auto saved = Bindings;
-        if (matchExpr(expr->elements[1].get(), cmp->getOperand(0)) &&
-            matchExpr(expr->elements[2].get(), cmp->getOperand(1)))
-            return true;
-        Bindings = saved;
-        if (matchExpr(expr->elements[1].get(), cmp->getOperand(1)) &&
-            matchExpr(expr->elements[2].get(), cmp->getOperand(0)))
-            return true;
-        Bindings = std::move(saved);
-        return false;
-    };
-
-    if (op == "eq") return matchCommutativeCmp(ICmpInst::EQ);
-    if (op == "ne") return matchCommutativeCmp(ICmpInst::NE);
-    if (op == "sgt" || op == "gt") return matchOrderedCmp(ICmpInst::SGT);
-    if (op == "sge" || op == "ge") return matchOrderedCmp(ICmpInst::SGE);
-    if (op == "slt" || op == "lt") return matchOrderedCmp(ICmpInst::SLT);
-    if (op == "sle" || op == "le") return matchOrderedCmp(ICmpInst::SLE);
-
-    return false;
+    return matchAtom(expr, value, Bindings);
 }
 
 static bool opFromName(const std::string& name, Instruction::OpID& op) {
@@ -603,6 +504,7 @@ static bool cmpFromName(const std::string& name, ICmpInst::CmpOp& pred) {
     return false;
 }
 
+// !add, !sub, !pow2, ...
 static bool evalIntOp(const std::string& op, int lhs, int rhs, int& out) {
     if (op == "!add") { out = lhs + rhs; return true; }
     if (op == "!sub") { out = lhs - rhs; return true; }
@@ -625,7 +527,8 @@ static bool evalIntOp(const std::string& op, int lhs, int rhs, int& out) {
     return false;
 }
 
-Value* Match::evalConstExpr(const Expr* expr) {
+// (!or 'a 'b) -> ConstantInt(a | b)
+Value* Match::evalConstExpr(const PMExpr* expr) {
     if (!expr)
         return nullptr;
     if (expr->atom) {
@@ -662,7 +565,8 @@ Value* Match::evalConstExpr(const Expr* expr) {
     return new ConstantInt(value);
 }
 
-Value* Match::buildExpr(const Expr* expr, Instruction* before) {
+// (add x y) -> new BinaryInst(Add, x, y)
+Value* Match::buildExpr(const PMExpr* expr, Instruction* before) {
     if (!expr)
         return nullptr;
     if (expr->atom) {
@@ -672,6 +576,8 @@ Value* Match::buildExpr(const Expr* expr, Instruction* before) {
         float fliteral = 0.0f;
         if (parseFloatLiteral(expr->value, fliteral))
             return new ConstantFloat(fliteral);
+        if (expr->value == "true")  return new ConstantInt(1);
+        if (expr->value == "false") return new ConstantInt(0);
         auto it = Bindings.find(expr->value);
         return it == Bindings.end() ? nullptr : it->second;
     }
@@ -682,6 +588,22 @@ Value* Match::buildExpr(const Expr* expr, Instruction* before) {
     const std::string& opName = expr->elements[0]->value;
     if (!opName.empty() && (opName[0] == '!' || opName[0] == '?'))
         return evalConstExpr(expr);
+
+    auto& insts = before->getParent()->getInstructions();
+    auto pos = std::find(insts.begin(), insts.end(), before);
+
+    if (opName == "select") {
+        if (expr->elements.size() != 4) return nullptr;
+        Value* cond    = buildExpr(expr->elements[1].get(), before);
+        Value* trueVal = buildExpr(expr->elements[2].get(), before);
+        Value* falseVal = buildExpr(expr->elements[3].get(), before);
+        if (!cond || !trueVal || !falseVal) return nullptr;
+        auto* sel = new SelectInst(cond, trueVal, falseVal, nullptr);
+        sel->setParent(before->getParent());
+        insts.insert(pos, sel);
+        return sel;
+    }
+
     if (expr->elements.size() != 3)
         return nullptr;
 
@@ -689,9 +611,6 @@ Value* Match::buildExpr(const Expr* expr, Instruction* before) {
     Value* rhs = buildExpr(expr->elements[2].get(), before);
     if (!lhs || !rhs)
         return nullptr;
-
-    auto& insts = before->getParent()->getInstructions();
-    auto pos = std::find(insts.begin(), insts.end(), before);
 
     Instruction::OpID op;
     if (opFromName(opName, op)) {
@@ -712,6 +631,7 @@ Value* Match::buildExpr(const Expr* expr, Instruction* before) {
     return nullptr;
 }
 
+// (rewrite (add x 0) x)
 bool Match::rewrite(Instruction* inst) {
     if (!From || !To || !inst || !inst->getParent())
         return false;
