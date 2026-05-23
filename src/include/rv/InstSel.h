@@ -83,6 +83,7 @@ private:
     void selectContinue(ContinueInst* inst, InstSelContext& ctx);
 
     void selectPhi(PhiInst* inst, InstSelContext& ctx);
+    void selectSelect(SelectInst* inst, InstSelContext& ctx);
 };
 
 } // namespace rv
