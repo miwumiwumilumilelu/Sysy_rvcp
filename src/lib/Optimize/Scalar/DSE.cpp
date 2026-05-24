@@ -14,6 +14,17 @@ static AllocaInst* baseAllocaOf(Value* ptr) {
     return dyn_cast<AllocaInst>(ptr);
 }
 
+static AllocaInst* fixedAllocaOf(Value* ptr) {
+    while (auto* gep = dyn_cast<GetElementPtrInst>(ptr)) {
+        for (int i = 1; i < gep->getNumOperands(); ++i) {
+            if (!isa<ConstantInt>(gep->getOperand(i)))
+                return nullptr;
+        }
+        ptr = gep->getOperand(0);
+    }
+    return dyn_cast<AllocaInst>(ptr);
+}
+
 bool DSE::run() {
     bool anyChanged = false;
     for (auto func : TheModule->getFunctions()) {
@@ -136,7 +147,7 @@ bool DSE::runStoreLiveness(Function* func) {
         for (auto* inst : bb->getInstructions()) {
             auto* st = dyn_cast<StoreInst>(inst);
             if (!st || usedStores.count(st)) continue;
-            auto* alloca = baseAllocaOf(st->getOperand(1));
+            auto* alloca = fixedAllocaOf(st->getOperand(1));
             if (!alloca || escaped.count(alloca)) continue;
             if (!alloca->getParent() || alloca->getParent()->getParentFunc() != func) continue;
             toErase.push_back(st);
