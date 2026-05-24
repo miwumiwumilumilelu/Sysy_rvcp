@@ -174,6 +174,17 @@ bool InstSimplify::simplify(BasicBlock* bb) {
     for (auto inst : worklist) {
         if (!inst->getParent()) continue;
 
+        // icmp x, y -> true/false when Range proves the relation.
+        if (auto* cmp = dyn_cast<ICmpInst>(inst)) {
+            bool out = false;
+            if (vt && vt->knownBool(cmp, out)) {
+                cmp->replaceAllUsesWith(new ConstantInt(out ? 1 : 0));
+                cmp->eraseInst();
+                changed = true;
+                continue;
+            }
+        }
+
         auto applyRegularMatches = [&](Instruction* inst) {
             for (auto& match : regularMatches) {
                 if (match.rewrite(inst))
