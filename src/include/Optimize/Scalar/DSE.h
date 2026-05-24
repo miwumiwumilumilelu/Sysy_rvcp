@@ -16,12 +16,12 @@ private:
     Module* TheModule;
 
     bool runOnFunction(Function* func);
-
-    std::set<Value*> computeAliasSet(AllocaInst* alloca);
-    bool isDeadAliasSet(const std::set<Value*>& aliasSet);
-
-    void collectDeadStores(const std::set<Value*>& aliasSet,
-                           std::set<Instruction*>& dead);
+    bool runStoreLiveness(Function* func);
+    bool runLocalPeepholes(Function* func);
+    std::set<Value*> computeDerivedPointers(Value* base);
+    bool collectDeadStoresToUnreadGlobal(GlobalVariable* glob,
+                                         std::set<Instruction*>& dead);
+    bool runUnreadGlobalStores();
 };
 
 }
