@@ -87,11 +87,13 @@ void AsmPrinter::run(const std::vector<std::unique_ptr<MCFunction>>& funcs,
 
 void AsmPrinter::emitText(const std::vector<std::unique_ptr<MCFunction>>& funcs,
                            std::ostream& os) {
-    os << "\n\n\n.text\n";
-    for (auto& mcFunc : funcs) {
+    os << ".text\n";
+    for (size_t i = 0; i < funcs.size(); ++i) {
+        auto& mcFunc = funcs[i];
+        if (i > 0) os << "\n\n";
         os << ".align 2\n"; // align to 4 bytes
-        os << ".globl " << mcFunc->name << "\n";
-        os << ".type  " << mcFunc->name << ", @function\n";
+        if (mcFunc->name == "main")
+            os << ".globl main\n";
         os << mcFunc->name << ":\n";
         for (auto& mcBB : mcFunc->blocks) {
             os << mcBB->name << ":\n";
@@ -99,7 +101,6 @@ void AsmPrinter::emitText(const std::vector<std::unique_ptr<MCFunction>>& funcs,
                 op->print(os);
             });
         }
-        os << ".size " << mcFunc->name << ", .-" << mcFunc->name << "\n";
     }
 }
 
@@ -114,15 +115,13 @@ void AsmPrinter::emitGlobals(Module* module, std::ostream& os) {
     }
 
     if (!dataSeg.empty()) {
-        os << "\n\n\n.data\n";
+        os << "\n\n.data\n";
         for (auto* gv : dataSeg) {
             // GlobalVariable::getType() returns PointerType(elementType); unwrap it.
             Type* ty = gv->getType();
             if (ty->isPointer()) ty = cast<PointerType>(ty)->getPointeeType();
             Type* leaf = leafType(ty);
             os << ".align 2\n";
-            os << ".globl " << gv->getName() << "\n";
-            os << ".type  " << gv->getName() << ", @object\n";
             os << gv->getName() << ":\n";
 
             if (leaf->isInt()) {
@@ -144,22 +143,18 @@ void AsmPrinter::emitGlobals(Module* module, std::ostream& os) {
                 }
                 os << "\n";
             }
-            os << ".size " << gv->getName() << ", .-" << gv->getName() << "\n";
         }
     }
 
     if (!bssSeg.empty()) {
-        os << "\n\n\n.bss\n";
+        os << "\n\n.bss\n";
         for (auto* gv : bssSeg) {
             Type* bssTy = gv->getType();
             if (bssTy->isPointer()) bssTy = cast<PointerType>(bssTy)->getPointeeType();
             int bytes = totalLeafCount(bssTy) * 4;
             os << ".align 2\n";
-            os << ".globl " << gv->getName() << "\n";
-            os << ".type  " << gv->getName() << ", @object\n";
             os << gv->getName() << ":\n";
             os << "    .space " << bytes << "\n";
-            os << ".size " << gv->getName() << ", .-" << gv->getName() << "\n";
         }
     }
 }

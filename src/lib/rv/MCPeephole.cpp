@@ -78,6 +78,121 @@ void MCPeepholePass::runOnBlock(MCBlock* block) {
         block->erase(op);
 }
 
+namespace {
+
+struct StackSlot {
+    Reg base;
+    int offset;
+    bool fp;
+    int bytes;
+
+    bool operator==(const StackSlot& o) const {
+        return base == o.base && offset == o.offset && fp == o.fp && bytes == o.bytes;
+    }
+};
+
+struct StackSlotHash {
+    size_t operator()(const StackSlot& s) const {
+        size_t h = static_cast<size_t>(s.offset);
+        h ^= static_cast<size_t>(s.bytes + 0x9e3779b9 + (h << 6) + (h >> 2));
+        h ^= static_cast<size_t>(static_cast<int>(s.base) + 0x9e3779b9 + (h << 6) + (h >> 2));
+        h ^= static_cast<size_t>(s.fp ? 0x85ebca6b : 0xc2b2ae35);
+        return h;
+    }
+};
+
+static bool memoryInfo(RvOp* op, StackSlot& slot, Reg& valueReg, bool& isStore) {
+    int bytes = 0;
+    bool fp = false;
+    switch (op->opcode) {
+        case RvOp::LwOp: case RvOp::SwOp: bytes = 4; break;
+        case RvOp::LdOp: case RvOp::SdOp: bytes = 8; break;
+        case RvOp::FLwOp: case RvOp::FSwOp: bytes = 4; fp = true; break;
+        default: return false;
+    }
+
+    auto* mem = static_cast<RVInstM*>(op);
+    if (!mem->reg.isPReg() || !mem->base.isPReg())
+        return false;
+
+    slot = {mem->base.getPReg(), mem->offset, fp, bytes};
+    valueReg = mem->reg.getPReg();
+    isStore = mem->isStore;
+    return true;
+}
+
+static void forgetReg(std::unordered_map<StackSlot, Reg, StackSlotHash>& lastStore, Reg reg) {
+    for (auto it = lastStore.begin(); it != lastStore.end();) {
+        if (it->second == reg) it = lastStore.erase(it);
+        else ++it;
+    }
+}
+
+static bool isControlOrCall(RvOp* op) {
+    switch (op->opcode) {
+        case RvOp::CallOp: case RvOp::RetOp:
+        case RvOp::JOp: case RvOp::JrOp: case RvOp::JALOp: case RvOp::JALROp:
+        case RvOp::BeqOp: case RvOp::BneOp:
+        case RvOp::BltOp: case RvOp::BleOp: case RvOp::BgtOp: case RvOp::BgeOp:
+        case RvOp::BeqzOp: case RvOp::BnezOp:
+        case RvOp::BlezOp: case RvOp::BgezOp: case RvOp::BltzOp: case RvOp::BgtzOp:
+            return true;
+        default:
+            return false;
+    }
+}
+
+} // namespace
+
+static void forwardStackStores(MCBlock* block) {
+    std::unordered_map<StackSlot, Reg, StackSlotHash> lastStore;
+    std::vector<RvOp*> ops;
+    for (RvOp* op = block->head; op; op = op->next)
+        ops.push_back(op);
+
+    for (RvOp* op : ops) {
+        if (!op->parent)
+            continue;
+
+        StackSlot slot;
+        Reg memReg = Reg::zero;
+        bool isStore = false;
+        if (memoryInfo(op, slot, memReg, isStore)) {
+            if (!isStore) {
+                auto it = lastStore.find(slot);
+                if (it != lastStore.end()) {
+                    RvOp* repl = slot.fp
+                        ? static_cast<RvOp*>(new FMvSOp(MCOperand(memReg), MCOperand(it->second)))
+                        : static_cast<RvOp*>(new MvOp(MCOperand(memReg), MCOperand(it->second)));
+                    block->replace(op, repl);
+                    delete op;
+                    op = repl;
+                }
+            } else if (slot.base == Reg::sp) {
+                lastStore[slot] = memReg;
+            } else {
+                lastStore.clear();
+            }
+        } else if (isControlOrCall(op)) {
+            lastStore.clear();
+        } else {
+            switch (op->opcode) {
+                case RvOp::SwOp: case RvOp::ShOp: case RvOp::SbOp:
+                case RvOp::SdOp: case RvOp::FSwOp:
+                    lastStore.clear();
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        if (auto* def = op->getDef()) {
+            if (def->isPReg())
+                forgetReg(lastStore, def->getPReg());
+        }
+    }
+}
+
 static void redirectBranchTarget(RvOp* op, const std::string& from, const std::string& to) {
     switch (op->opcode) {
         case RvOp::JOp:
@@ -177,8 +292,10 @@ static bool eliminateFallthroughs(MCFunction* func) {
 }
 
 void MCPeepholePass::run(MCFunction* func) {
-    for (auto& b : func->blocks)
+    for (auto& b : func->blocks) {
+        forwardStackStores(b.get());
         runOnBlock(b.get());
+    }
     // Defend chained trampolines.
     while (eliminateTrivialBlocks(func)) {}
     eliminateFallthroughs(func);
