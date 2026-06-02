@@ -1,6 +1,5 @@
 #include "Optimize/High/WhileToFor.h"
 #include "IR/IRRewriter.h"
-#include "Optimize/Analysis/EffectAnalysis.h"
 #include "IR/Instruction.h"
 #include <algorithm>
 #include <functional>
@@ -16,7 +15,8 @@ static bool legalICmp(Instruction* inst) {
     if (!ic) return false;
     auto p = ic->getPredicate();
     return p == ICmpInst::SLT || p == ICmpInst::SLE ||
-            p == ICmpInst::SGT || p == ICmpInst::SGE;
+           p == ICmpInst::SGT || p == ICmpInst::SGE ||
+           p == ICmpInst::NE;
 }
 
 // break only affect the inner while in nested WhileInst.
@@ -117,6 +117,57 @@ static bool hasUnsafeNestedStore(BasicBlock* bodyBB, Value* addr, const std::set
             if (hasUnsafeStore(fi2->getBodyRegion(), addr, allowed)) return true;
         }
     }
+    return false;
+}
+
+static Value* stripGEP(Value* v) {
+    while (auto* gep = dyn_cast<GetElementPtrInst>(v))
+        v = gep->getOperand(0);
+    return v;
+}
+
+static bool derivedFrom(Value* v, Value* base) {
+    if (v == base) return true;
+    if (auto* gep = dyn_cast<GetElementPtrInst>(v))
+        return derivedFrom(gep->getOperand(0), base);
+    return false;
+}
+
+static bool callMayWriteAddr(CallInst* call, Value* addr) {
+    Value* base = stripGEP(addr);
+    if (!isa<AllocaInst>(base))
+        return true;
+    for (int i = 1; i < call->getNumOperands(); ++i)
+        if (call->getOperand(i)->getType()->isPointer() &&
+            derivedFrom(call->getOperand(i), base))
+            return true;
+    return false;
+}
+
+static bool instMayWriteAddr(Instruction* inst, Value* addr);
+
+static bool regionMayWriteAddr(Region* region, Value* addr) {
+    if (!region) return false;
+    for (auto* bb : region->getBlocks())
+        for (auto* inst : bb->getInstructions())
+            if (instMayWriteAddr(inst, addr))
+                return true;
+    return false;
+}
+
+static bool instMayWriteAddr(Instruction* inst, Value* addr) {
+    if (auto* st = dyn_cast<StoreInst>(inst))
+        return stripGEP(st->getOperand(1)) == stripGEP(addr);
+    if (auto* call = dyn_cast<CallInst>(inst))
+        return callMayWriteAddr(call, addr);
+    if (auto* ii = dyn_cast<IfInst>(inst))
+        return regionMayWriteAddr(ii->getThenRegion(), addr) ||
+               (ii->getElseRegion() && regionMayWriteAddr(ii->getElseRegion(), addr));
+    if (auto* wi = dyn_cast<WhileInst>(inst))
+        return regionMayWriteAddr(wi->getCondRegion(), addr) ||
+               regionMayWriteAddr(wi->getBodyRegion(), addr);
+    if (auto* fi = dyn_cast<ForInst>(inst))
+        return regionMayWriteAddr(fi->getBodyRegion(), addr);
     return false;
 }
 
@@ -241,16 +292,19 @@ static bool detect(WhileInst* wi, BasicBlock* parentBB, CanonicalInfo& out) {
             }
         }
 
-        // Step direction must match pred: SLT/SLE → step>0, SGT/SGE → step<0.
+        // Step direction must match pred: SLT/SLE → step>0, SGT/SGE → step<0, NE → any nonzero.
         bool increasing = (p == ICmpInst::SLT || p == ICmpInst::SLE);
+        bool needsDecr  = (p == ICmpInst::SGT || p == ICmpInst::SGE);
         if (increasing && step <= 0) continue;
-        if (!increasing && step >= 0) continue;
+        if (needsDecr  && step >= 0) continue;
+        // NE: any non-zero step is accepted; trip count computation will validate.
 
         // bound must not be stored inside body.
         auto* otherSide = loopCmp->getOperand(1 - ivSide);
         if (auto* ldBound = dyn_cast<LoadInst>(otherSide)) {
-            if (mayWrite(wi->getCondRegion(), ldBound->getOperand(0)) ||
-                mayWrite(wi->getBodyRegion(), ldBound->getOperand(0)))
+            Value* boundAddr = ldBound->getOperand(0);
+            if (regionMayWriteAddr(wi->getCondRegion(), boundAddr) ||
+                regionMayWriteAddr(wi->getBodyRegion(), boundAddr))
                 continue;
         }
 
@@ -270,7 +324,7 @@ static bool detect(WhileInst* wi, BasicBlock* parentBB, CanonicalInfo& out) {
                     barrier = true; break;
                 }
                 if (isa<CallInst>(cur)) {
-                    if (!increasing || mayWrite(cur, addr)) {
+                    if (!increasing || callMayWriteAddr(cast<CallInst>(cur), addr)) {
                         barrier = true; break;
                     }
                     continue;
