@@ -14,6 +14,8 @@
 
 using namespace sysy;
 
+static constexpr int MaxMemLoopUnrollTrip = 8;
+
 static bool isSafe(Instruction* inst) {
     switch (inst->getOpID()) {
     case Instruction::Add: case Instruction::Sub:
@@ -276,6 +278,15 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev, ValueTracking& vt, U
     }
 
     if (tripCount < 0 || tripCount > threshold) return false;
+
+    if (tripCount > MaxMemLoopUnrollTrip) {
+        for (auto* bb : L->blocks) {
+            for (auto* inst : bb->getInstructions()) {
+                if (isa<LoadInst>(inst) || isa<StoreInst>(inst))
+                    return false;
+            }
+        }
+    }
 
     // For latch-tested shape: compute body block order and check sizes.
     std::vector<BasicBlock*> bodyOrder;

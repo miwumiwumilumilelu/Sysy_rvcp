@@ -438,13 +438,6 @@ bool LoopRotate::runOnLoop(Loop* L, Function* f) {
             }
         }
     }
-
-    // if (f->getName() == "heap_sort") {
-    //     std::cerr << "==== after one LoopRotate on heap_sort ====\n";
-    //     std::cerr << f->toString() << "\n";
-    // }
-
-
     return true;
 }
 
