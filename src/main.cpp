@@ -11,6 +11,10 @@
 #include "Optimize/CFG/FlattenCFG.h"
 #include "Optimize/High/HighMem2Reg.h"
 #include "Optimize/High/HighLICM.h"
+#include "Optimize/High/WhileToFor.h"
+#include "Optimize/High/HighDCE.h"
+#include "Optimize/High/LowerFor.h"
+#include "Optimize/High/LoopUnswitch.h"
 #include "Optimize/Analysis/Dominators.h"
 #include "Optimize/Scalar/Mem2Reg.h"
 #include "Optimize/Scalar/ConstantFold.h"
@@ -45,19 +49,26 @@
 using namespace sysy;
 using namespace sysy::rv;
 
-static bool runCleanup(Module* m) {
+static bool runCleanup(Module* m, std::function<bool(const std::string&)> dump = nullptr) {
     bool anyChanged = false;
     bool c = true;
+    int iter = 0;
     while (c) {
         c = false;
-        c |= ConstantFold(m).run();
-        c |= CSE(m).run();
-        c |= GVN(m).run();
-        c |= GVNHoist(m).run();
-        c |= InstSimplify(m).run();
-        c |= SimplifyCFG(m).run();
-        c |= DSE(m).run();
-        c |= DCE(m).run();
+        ++iter;
+        auto d = [&](const std::string& stage) -> bool {
+            if (!dump) return false;
+            return dump("sc" + std::to_string(iter) + "-" + stage);
+        };
+        c |= ConstantFold(m).run(); if (d("cf")) return anyChanged;
+        c |= CSE(m).run();          if (d("cse")) return anyChanged;
+        c |= GVN(m).run();          if (d("gvn")) return anyChanged;
+        c |= GVNHoist(m).run();     if (d("gvnh")) return anyChanged;
+        c |= InstSimplify(m).run();       if (d("is")) return anyChanged;
+        c |= StrengthReduce(m).run();     if (d("sr")) return anyChanged;
+        c |= SimplifyCFG(m).run();        if (d("scfg")) return anyChanged;
+        c |= DSE(m).run();          if (d("dse")) return anyChanged;
+        c |= DCE(m).run();          if (d("dce")) return anyChanged;
         anyChanged |= c;
     }
     return anyChanged;
@@ -79,6 +90,12 @@ int main(int argc, char **argv) {
                 std::cerr << "Error: -o expects a filename\n";
                 return 1;
             }
+        } else if (arg.rfind("-o", 0) == 0 && arg.size() > 2) {
+            outputFile = arg.substr(2);
+        } else if (arg == "-S") {
+            // Assembly output is the default backend mode.
+        } else if (arg.rfind("-O", 0) == 0) {
+            // no-op
         } else if (arg == "--dump-mid-ir") {
             dumpHIR = true;
         } else if (arg == "--dump-cfg-ir") {
@@ -86,9 +103,9 @@ int main(int argc, char **argv) {
         } else if (arg.rfind("--dump-", 0) == 0 && arg.size() > 10 &&
                    arg.substr(arg.size() - 3) == "-ir") {
             dumpAfterPass = arg.substr(7, arg.size() - 10);
-        } else if (arg[0] == '-') {
-            std::cerr << "Unknown option: " << arg << "\n";
-            return 1;
+        } else if (!arg.empty() && arg[0] == '-') {
+            // Ignore driver/compiler flags that are irrelevant to this compiler.
+            continue;
         } else {
             inputFile = arg;
         }
@@ -145,6 +162,24 @@ int main(int argc, char **argv) {
 
 // ======== Structured High IR ========
 
+    LoopUnswitch(module.get()).runInvariant();
+    if (ok("high-li-unswitch")) return 0;
+
+    WhileToFor(module.get()).run();
+    if (ok("high-for")) return 0;
+
+    LoopUnswitch(module.get()).run();
+    if (ok("high-iv-unswitch") ||
+        ok("high-li-unswitch-2") ||
+        ok("high-mod-unswitch"))
+        return 0;
+
+    HighDCE(module.get()).run();
+    if (ok("high-dce")) return 0;
+
+    LowerFor(module.get()).run();
+    if (ok("high-lower-for")) return 0;
+
     HighMem2Reg highMem2Reg(module.get());
     highMem2Reg.run();
     if (ok("high-mem2reg")) return 0;
@@ -167,13 +202,17 @@ int main(int argc, char **argv) {
 
 // ======== Scalar Cleanup ========
 
-    runCleanup(module.get());
+    runCleanup(module.get(), ok);
     if (ok("scalar-cleanup")) return 0;
 
 // ======== Tail Call Elimination ========
 
     TCE(module.get()).run();
     if (ok("tce")) return 0;
+
+    if (SSAInline::runArrayNonNegVersioning(module.get()))
+        runCleanup(module.get());
+    if (ok("array-nonneg-version")) return 0;
 
 // ======== Inline ========
 
@@ -224,9 +263,7 @@ int main(int argc, char **argv) {
 
 // ======== Unroll ========
 
-    if (LoopUnroll(module.get()).run()) {
-        runCleanup(module.get());
-    }
+    if (LoopUnroll(module.get()).run()) runCleanup(module.get());
     if (ok("loop-unroll")) return 0;
 
     if (DeadLoopElim(module.get()).run()) {
@@ -235,7 +272,7 @@ int main(int argc, char **argv) {
     }
     if (ok("deadloop-elim-pre-licm")) return 0;
 
-// ======== LoopGVN ========
+// ======== LoopStrengthReduce ========
 //    if (LoopGVN(module.get()).run()) {
 //        runCleanup(module.get());
 //        if (DeadLoopElim(module.get()).run()) {
@@ -243,7 +280,7 @@ int main(int argc, char **argv) {
 //            DCE(module.get()).run();
 //        }
 //    }
-//     if (ok("loop-gvn")) return 0;
+    if (ok("loop-gvn")) return 0;
 
     LoopStrengthReduce(module.get()).run();
     if (ok("loop-strength-reduce")) return 0;
