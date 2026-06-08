@@ -1,5 +1,5 @@
 #include "Optimize/Scalar/StrengthReduce.h"
-#include "Optimize/Analysis/Range.h"
+#include "Optimize/Analysis/ValueTracking.h"
 #include "IR/Module.h"
 #include "IR/Instruction.h"
 #include "IR/Value.h"
@@ -13,78 +13,15 @@ static int log2v(int v) {
     return -1;
 }
 
-// Seed every instruction as non-negative, then prune those that cannot be justified.  
-// Handles cyclic phi nodes correctly.
-void StrengthReduce::computeNonNeg() {
-    for (auto* f : M->getFunctions()) {
-        if (f->getBody()->getBlocks().empty()) continue;
-
-        auto& nn = nonNegMap[f];
-        nn.clear();
-
-        for (auto* bb : f->getBody()->getBlocks())
-            for (auto* inst : bb->getInstructions())
-                nn.insert(inst);
-
-        auto isNonnegVal = [&](Value* v) -> bool {
-            if (auto* ci = dyn_cast<ConstantInt>(v)) return ci->getValue() >= 0;
-            return nn.count(v) > 0;
-        };
-
-        auto isJustified = [&](Value* v) -> bool {
-            if (auto* bin = dyn_cast<BinaryInst>(v)) {
-                Value* l = bin->getOperand(0);
-                Value* r = bin->getOperand(1);
-                switch (bin->getOpID()) {
-                    case Instruction::Ashr:
-                        return isNonnegVal(l); // sign bit propagates
-                    case Instruction::And:
-                        return isNonnegVal(l) || isNonnegVal(r); // clears sign bit
-                    case Instruction::Add:
-                    case Instruction::Mul:
-                        return isNonnegVal(l) && isNonnegVal(r);
-                    case Instruction::Div:
-                    case Instruction::Mod:
-                        return isNonnegVal(l);
-                    default:
-                        return false;
-                }
-            }
-            if (auto* phi = dyn_cast<PhiInst>(v)) {
-                int n = phi->getNumOperands();
-                if (n == 0) return false;
-                for (int i = 0; i < n; i += 2)
-                    if (!isNonnegVal(phi->getOperand(i))) return false;
-                return true;
-            }
-            return false;
-        };
-
-        bool pruneChanged = true;
-        while (pruneChanged) {
-            pruneChanged = false;
-            std::vector<Value*> toRemove;
-            for (auto* v : nn)
-                if (!isJustified(v)) toRemove.push_back(v);
-            for (auto* v : toRemove) {
-                nn.erase(v);
-                pruneChanged = true;
-            }
-        }
-    }
-}
-
-bool StrengthReduce::rewriteFunc(Function* f, const NonNegSet& nonneg) {
+bool StrengthReduce::rewriteFunc(Function* f, ValueTracking& vt) {
     bool changed = false;
 
-    RangeAnalysis ra(f);
-
     auto isNonNeg = [&](Value* v) -> bool {
-        return nonneg.count(v) > 0 || ra.isNonNeg(v);
+        return vt.isNonNeg(v);
     };
 
     auto isZero = [&](Value* v) -> bool {
-        IRange r = ra.get(v);
+        IRange r = vt.range(v);
         return r.low == 0 && r.high == 0;
     };
 
@@ -145,7 +82,7 @@ bool StrengthReduce::rewriteFunc(Function* f, const NonNegSet& nonneg) {
             instList.insert(it, newInst);
         }
         rw.old_inst->replaceAllUsesWith(rw.new_val);
-        instList.erase(it);
+        rw.old_inst->eraseInst();
         changed = true;
     }
 
@@ -153,11 +90,11 @@ bool StrengthReduce::rewriteFunc(Function* f, const NonNegSet& nonneg) {
 }
 
 bool StrengthReduce::run() {
-    computeNonNeg();
     bool any = false;
     for (auto* f : M->getFunctions()) {
         if (f->getBody()->getBlocks().empty()) continue;
-        any |= rewriteFunc(f, nonNegMap[f]);
+        ValueTracking vt(f);
+        any |= rewriteFunc(f, vt);
     }
     return any;
 }
