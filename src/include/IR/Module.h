@@ -63,16 +63,6 @@ public:
     const std::vector<Argument*>& getArgs() const { return Args; }
     void addArgument(Argument *arg) { Args.push_back(arg); }
 
-    void setNoInline(bool enabled = true) { NoInline = enabled; }
-    bool isNoInline() const { return NoInline; }
-
-    void addNonNegFact(Value* base, Value* len) {
-        NonNegFact.push_back({base, len});
-    }
-    const std::vector<std::pair<Value*, Value*>>& getNonNegFact() const {
-        return NonNegFact;
-    }
-
     std::string toString() const override;
 
     static bool classof(const Value* v) {
@@ -82,11 +72,6 @@ public:
 private:
     std::unique_ptr<Region> Body;
     std::vector<Argument*> Args;
-    // To perform more aggressive opt, 
-    // the original func needs to be inlined into two branch versions,
-    // one of which is a fast path.
-    bool NoInline = false;
-    std::vector<std::pair<Value*, Value*>> NonNegFact;
 };
 
 class Module {

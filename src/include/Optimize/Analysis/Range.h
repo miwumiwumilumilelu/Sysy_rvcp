@@ -43,7 +43,6 @@ private:
 
     bool narrowConditional(PhiInst* phi, bool& changed);
     bool inferNonNegGlobalArrayLoad(class LoadInst* load) const;
-    bool inferNonNegAssumedArrayLoad(class LoadInst* load);
     bool calculateRange(Instruction* inst, int nowiden);
     void doSplit();
     void undoSplit();

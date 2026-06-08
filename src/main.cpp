@@ -209,11 +209,6 @@ int main(int argc, char **argv) {
 
 // ======== Inline ========
 
-    // Disabled for now: Array non-negative versioning is still too shape-specific.
-    // if (SSAInline::runFastPath(module.get()))
-    //     runCleanup(module.get());
-    // if (ok("nonneg-version")) return 0;
-
     while (SSAInline(module.get()).run()) {
         runCleanup(module.get());
     }

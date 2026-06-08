@@ -85,31 +85,6 @@ static GlobalVariable* getGlobalBase(Value* ptr) {
     return dyn_cast<GlobalVariable>(ptr);
 }
 
-static bool isCanonicalIVUnderLen(Value* idx, Value* len,
-                                  BasicBlock* useBB, Dominators& dom) {
-    auto* phi = dyn_cast<PhiInst>(idx);
-    if (!phi || !len || !useBB) return false;
-
-    // RangeAnalysis::doSplit may wrap the IV in a one-incoming edge phi.
-    if (phi->getNumOperands() == 2)
-        return isCanonicalIVUnderLen(phi->getOperand(0), len, useBB, dom);
-
-    BasicBlock* head = phi->getParent();
-    if (!head || head->getInstructions().empty()) return false;
-    auto* hbr = dyn_cast<BranchInst>(head->getInstructions().back());
-    if (!hbr || hbr->getNumOperands() != 3) return false;
-
-    auto* cmp = dyn_cast<ICmpInst>(hbr->getOperand(0));
-    if (!cmp || cmp->getPredicate() != ICmpInst::SLT) return false;
-    if (cmp->getOperand(0) != phi || cmp->getOperand(1) != len) return false;
-
-    auto* exitBB = dyn_cast<BasicBlock>(hbr->getOperand(2));
-    if (!dom.dominates(head, useBB)) return false;
-    if (exitBB && dom.dominates(exitBB, useBB)) return false;
-
-    return true;
-}
-
 static bool hasNonNegativeInit(GlobalVariable* gv) {
     Constant* init = gv->getInit();
     if (!init)
@@ -356,22 +331,6 @@ bool RangeAnalysis::inferNonNegGlobalArrayLoad(LoadInst* load) const {
     return true;
 }
 
-bool RangeAnalysis::inferNonNegAssumedArrayLoad(LoadInst* load) {
-    auto* gep = dyn_cast<GetElementPtrInst>(load->getOperand(0));
-    if (!gep) return false;
-
-    Value* base = gep->getOperand(0);
-    Value* idx = gep->getOperand(1);
-    if (!hasRange(idx) || getRange(idx).low < 0)
-        return false;
-    for (auto [factBase, factLen] : F->getNonNegFact()) {
-        if (base != factBase) continue;
-        if (isCanonicalIVUnderLen(idx, factLen, load->getParent(), dom))
-            return true;
-    }
-    return false;
-}
-
 bool RangeAnalysis::calculateRange(Instruction* inst, int nowiden) {
     // Only track integer-typed instructions.
     if (!inst->getType()->isInt()) return false;
@@ -491,8 +450,7 @@ bool RangeAnalysis::calculateRange(Instruction* inst, int nowiden) {
     }
 
     if (auto* load = dyn_cast<LoadInst>(inst)) {
-        if (inferNonNegGlobalArrayLoad(load) ||
-            inferNonNegAssumedArrayLoad(load)) {
+        if (inferNonNegGlobalArrayLoad(load)) {
             IRange r{0, INT_MAX};
             if (hasRange(load)) {
                 IRange cur = getRange(load);
