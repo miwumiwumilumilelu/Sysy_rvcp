@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <climits>
 #include <cstdlib>
+#include <set>
 
 using namespace sysy;
 
@@ -76,6 +77,126 @@ static void replaceInUser(User* user, Value* oldVal, Value* newVal) {
     for (int i = 0; i < user->getNumOperands(); ++i)
         if (user->getOperand(i) == oldVal)
             user->setOperand(i, newVal);
+}
+
+static GlobalVariable* getGlobalBase(Value* ptr) {
+    while (auto* gep = dyn_cast<GetElementPtrInst>(ptr))
+        ptr = gep->getOperand(0);
+    return dyn_cast<GlobalVariable>(ptr);
+}
+
+static bool isCanonicalIVUnderLen(Value* idx, Value* len,
+                                  BasicBlock* useBB, Dominators& dom) {
+    auto* phi = dyn_cast<PhiInst>(idx);
+    if (!phi || !len || !useBB) return false;
+
+    // RangeAnalysis::doSplit may wrap the IV in a one-incoming edge phi.
+    if (phi->getNumOperands() == 2)
+        return isCanonicalIVUnderLen(phi->getOperand(0), len, useBB, dom);
+
+    BasicBlock* head = phi->getParent();
+    if (!head || head->getInstructions().empty()) return false;
+    auto* hbr = dyn_cast<BranchInst>(head->getInstructions().back());
+    if (!hbr || hbr->getNumOperands() != 3) return false;
+
+    auto* cmp = dyn_cast<ICmpInst>(hbr->getOperand(0));
+    if (!cmp || cmp->getPredicate() != ICmpInst::SLT) return false;
+    if (cmp->getOperand(0) != phi || cmp->getOperand(1) != len) return false;
+
+    auto* exitBB = dyn_cast<BasicBlock>(hbr->getOperand(2));
+    if (!dom.dominates(head, useBB)) return false;
+    if (exitBB && dom.dominates(exitBB, useBB)) return false;
+
+    return true;
+}
+
+static bool hasNonNegativeInit(GlobalVariable* gv) {
+    Constant* init = gv->getInit();
+    if (!init)
+        return true; // globals are zero-initialized
+    if (auto* ci = dyn_cast<ConstantInt>(init))
+        return ci->getValue() >= 0;
+    if (auto* ca = dyn_cast<ConstantArray>(init)) {
+        for (auto* elem : ca->getConsts()) {
+            auto* ci = dyn_cast<ConstantInt>(elem);
+            if (!ci || ci->getValue() < 0)
+                return false;
+        }
+        return true;
+    }
+    if (isa<ConstantZero>(init))
+        return true;
+    return false;
+}
+
+static bool globalPtrEscapes(Value* ptr, GlobalVariable* base, std::set<Value*>& seen) {
+    if (!seen.insert(ptr).second)
+        return false;
+
+    for (auto* user : ptr->getUsers()) {
+        if (auto* gep = dyn_cast<GetElementPtrInst>(user)) {
+            if (globalPtrEscapes(gep, base, seen))
+                return true;
+            continue;
+        }
+
+        if (auto* load = dyn_cast<LoadInst>(user)) {
+            if (load->getOperand(0) == ptr)
+                continue;
+        }
+
+        if (auto* store = dyn_cast<StoreInst>(user)) {
+            if (store->getOperand(1) == ptr) {
+                if (getGlobalBase(ptr) == base)
+                    continue;
+            }
+            return true;
+        }
+
+        return true;
+    }
+    return false;
+}
+
+static bool collectGlobalStores(Value* ptr, GlobalVariable* base,
+                                std::set<Value*>& seen,
+                                std::vector<StoreInst*>& stores) {
+    if (!seen.insert(ptr).second)
+        return true;
+
+    for (auto* user : ptr->getUsers()) {
+        if (auto* gep = dyn_cast<GetElementPtrInst>(user)) {
+            if (!collectGlobalStores(gep, base, seen, stores))
+                return false;
+            continue;
+        }
+
+        if (auto* load = dyn_cast<LoadInst>(user)) {
+            if (load->getOperand(0) == ptr)
+                continue;
+        }
+
+        if (auto* store = dyn_cast<StoreInst>(user)) {
+            if (store->getOperand(1) == ptr && getGlobalBase(ptr) == base) {
+                stores.push_back(store);
+                continue;
+            }
+        }
+
+        return false;
+    }
+    return true;
+}
+
+static bool hasProperTerminators(Function* f) {
+    if (!f || f->getBody()->getBlocks().empty()) return false;
+    for (auto* bb : f->getBody()->getBlocks()) {
+        if (bb->getInstructions().empty()) return false;
+        if (!isa<BranchInst>(bb->getInstructions().back()) &&
+            !isa<ReturnInst>(bb->getInstructions().back()))
+            return false;
+    }
+    return true;
 }
 
 bool RangeAnalysis::hasRange(Value* v) const {
@@ -199,6 +320,58 @@ bool RangeAnalysis::narrowConditional(PhiInst* phi, bool& changed) {
     return true;
 }
 
+bool RangeAnalysis::inferNonNegGlobalArrayLoad(LoadInst* load) const {
+    auto* base = getGlobalBase(load->getOperand(0));
+    if (!base || !hasNonNegativeInit(base))
+        return false;
+
+    std::set<Value*> seen;
+    if (globalPtrEscapes(base, base, seen))
+        return false;
+
+    std::vector<StoreInst*> stores;
+    seen.clear();
+    if (!collectGlobalStores(base, base, seen, stores))
+        return false;
+
+    for (auto* store : stores) {
+        Function* storeFunc = store->getParent()->getParentFunc();
+        Value* stored = store->getOperand(0);
+        if (storeFunc == F) {
+            if (!hasRange(stored) || getRange(stored).low < 0)
+                return false;
+            continue;
+        }
+
+        static thread_local std::set<Function*> visiting;
+        if (!hasProperTerminators(storeFunc) || visiting.count(storeFunc))
+            return false;
+        visiting.insert(storeFunc);
+        RangeAnalysis storeRA(storeFunc);
+        visiting.erase(storeFunc);
+        if (!storeRA.has(stored) || storeRA.get(stored).low < 0)
+            return false;
+    }
+
+    return true;
+}
+
+bool RangeAnalysis::inferNonNegAssumedArrayLoad(LoadInst* load) {
+    auto* gep = dyn_cast<GetElementPtrInst>(load->getOperand(0));
+    if (!gep) return false;
+
+    Value* base = gep->getOperand(0);
+    Value* idx = gep->getOperand(1);
+    if (!hasRange(idx) || getRange(idx).low < 0)
+        return false;
+    for (auto [factBase, factLen] : F->getNonNegFact()) {
+        if (base != factBase) continue;
+        if (isCanonicalIVUnderLen(idx, factLen, load->getParent(), dom))
+            return true;
+    }
+    return false;
+}
+
 bool RangeAnalysis::calculateRange(Instruction* inst, int nowiden) {
     // Only track integer-typed instructions.
     if (!inst->getType()->isInt()) return false;
@@ -290,6 +463,12 @@ bool RangeAnalysis::calculateRange(Instruction* inst, int nowiden) {
                 }
                 break;
             }
+            case Instruction::Or:
+            case Instruction::Xor:
+                // If both operands have sign bit known clear, the result is also non-negative.
+                if (a1 >= 0 && a2 >= 0)
+                    r = { 0, INT_MAX };
+                break;
             default:
                 break;
         }
@@ -311,6 +490,41 @@ bool RangeAnalysis::calculateRange(Instruction* inst, int nowiden) {
         return true;
     }
 
+    if (auto* load = dyn_cast<LoadInst>(inst)) {
+        if (inferNonNegGlobalArrayLoad(load) ||
+            inferNonNegAssumedArrayLoad(load)) {
+            IRange r{0, INT_MAX};
+            if (hasRange(load)) {
+                IRange cur = getRange(load);
+                IRange joined = rangeJoin(cur, r, false);
+                if (joined == cur) return false;
+                ranges[load] = joined;
+                return true;
+            }
+            ranges[load] = r;
+            return true;
+        }
+    }
+
+    if (auto* sel = dyn_cast<SelectInst>(inst)) {
+        Value* tv = sel->getTrueVal();
+        Value* fv = sel->getFalseVal();
+        if (!hasRange(tv) || !hasRange(fv)) {
+            if (!hasRange(sel)) { ranges[sel] = IRange::unknown(); return true; }
+            return false;
+        }
+        IRange r = rangeJoin(getRange(tv), getRange(fv), false);
+        if (hasRange(sel)) {
+            IRange cur = getRange(sel);
+            IRange joined = rangeJoin(cur, r, false);
+            if (joined == cur) return false;
+            ranges[sel] = joined;
+            return true;
+        }
+        ranges[sel] = r;
+        return true;
+    }
+
     if (!hasRange(inst)) {
         ranges[inst] = IRange::unknown();
         return true;
@@ -319,6 +533,25 @@ bool RangeAnalysis::calculateRange(Instruction* inst, int nowiden) {
 }
 
 void RangeAnalysis::doSplit() {
+    auto onlyPred = [&](BasicBlock* succ, BasicBlock* pred) -> bool {
+        int count = 0;
+        for (auto* bb : F->getBody()->getBlocks()) {
+            auto& insts = bb->getInstructions();
+            if (insts.empty()) continue;
+            auto* br = dyn_cast<BranchInst>(insts.back());
+            if (!br) continue;
+            int start = br->getNumOperands() == 3 ? 1 : 0;
+            for (int i = start; i < br->getNumOperands(); ++i) {
+                if (br->getOperand(i) == succ) {
+                    ++count;
+                    if (bb != pred)
+                        return false;
+                }
+            }
+        }
+        return count == 1;
+    };
+
     auto hasSplitPhi = [](BasicBlock* bb, Value* x, BasicBlock* fromBB) -> bool {
         for (auto* inst : bb->getInstructions()) {
             auto* phi = dyn_cast<PhiInst>(inst);
@@ -358,20 +591,24 @@ void RangeAnalysis::doSplit() {
         // bb must dominate both successors (excludes loop latches).
         if (!dom.dominates(bb, bb1) || !dom.dominates(bb, bb2)) continue;
 
-        // Don't insert duplicate split-phis.
-        if (hasSplitPhi(bb1, x, bb) && hasSplitPhi(bb2, x, bb)) continue;
+        bool split1 = onlyPred(bb1, bb) && !hasSplitPhi(bb1, x, bb);
+        bool split2 = onlyPred(bb2, bb) && !hasSplitPhi(bb2, x, bb);
+        if (!split1 && !split2) continue;
 
-        // Insert x1 = phi [x from bb] at the front of bb1.
-        auto* x1 = new PhiInst(x->getType(), bb1);
-        x1->addIncoming(x, bb);
-        bb1->getInstructions().push_front(x1);
-        splitPhis_.push_back(x1);
-
-        // Insert x2 = phi [x from bb] at the front of bb2.
-        auto* x2 = new PhiInst(x->getType(), bb2);
-        x2->addIncoming(x, bb);
-        bb2->getInstructions().push_front(x2);
-        splitPhis_.push_back(x2);
+        PhiInst* x1 = nullptr;
+        PhiInst* x2 = nullptr;
+        if (split1) {
+            x1 = new PhiInst(x->getType(), bb1);
+            x1->addIncoming(x, bb);
+            bb1->getInstructions().push_front(x1);
+            splitPhis_.push_back(x1);
+        }
+        if (split2) {
+            x2 = new PhiInst(x->getType(), bb2);
+            x2->addIncoming(x, bb);
+            bb2->getInstructions().push_front(x2);
+            splitPhis_.push_back(x2);
+        }
 
         // Rename uses of x in each successor's dominated subtree.
         // Take a snapshot because setOperand modifies the UseList.
@@ -381,9 +618,9 @@ void RangeAnalysis::doSplit() {
             auto* useInst = dyn_cast<Instruction>(user);
             if (!useInst) continue;
             BasicBlock* useBB = useInst->getParent();
-            if (dom.dominates(bb1, useBB))
+            if (x1 && dom.dominates(bb1, useBB))
                 replaceInUser(user, x, x1);
-            if (dom.dominates(bb2, useBB))
+            if (x2 && dom.dominates(bb2, useBB))
                 replaceInUser(user, x, x2);
         }
     }

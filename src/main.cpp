@@ -299,13 +299,13 @@ int main(int argc, char **argv) {
                 ++licmIter;
                 licmChanged = true;
                 if (okIter("licm", licmIter, "only")) return 0;
-                if (ok("licm-only")) return 0;
+                if (ok("onlylicm")) return 0;
 
                 bool c = true;
                 while (c) {
                     c = false;
                     c |= ConstantFold(module.get()).run();
-                    if (okIter("licm", licmIter, "cf")) return 0;
+                    if (okIter("licm", licmIter, "constantfold")) return 0;
                     c |= CSE(module.get()).run();
                     if (okIter("licm", licmIter, "cse")) return 0;
                     c |= GVN(module.get()).run();
