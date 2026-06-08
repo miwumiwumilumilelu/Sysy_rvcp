@@ -163,36 +163,33 @@ int main(int argc, char **argv) {
 // ======== Structured High IR ========
 
     LoopUnswitch(module.get()).runInvariant();
-    if (ok("high-li-unswitch")) return 0;
+    if (ok("liunswitch")) return 0;
 
     WhileToFor(module.get()).run();
-    if (ok("high-for")) return 0;
+    if (ok("whiletofor")) return 0;
 
     LoopUnswitch(module.get()).run();
-    if (ok("high-iv-unswitch") ||
-        ok("high-li-unswitch-2") ||
-        ok("high-mod-unswitch"))
-        return 0;
+    if (ok("unswitch")) return 0;
 
     HighDCE(module.get()).run();
-    if (ok("high-dce")) return 0;
+    if (ok("hdce")) return 0;
 
     LowerFor(module.get()).run();
-    if (ok("high-lower-for")) return 0;
+    if (ok("lowerfor")) return 0;
 
     HighMem2Reg highMem2Reg(module.get());
     highMem2Reg.run();
-    if (ok("high-mem2reg")) return 0;
+    if (ok("hmem2reg")) return 0;
 
     HighLICM highLICM(module.get());
     highLICM.run();
-    if (ok("high-licm")) return 0;
+    if (ok("hlicm")) return 0;
 
 // ======== Flattened CFG ========
 
     FlattenCFG flatten(module.get());
     flatten.run();
-    if (ok("flatten-cfg")) return 0;
+    if (ok("flatten")) return 0;
 
 // ======== Mem2Reg ========
 
@@ -203,18 +200,19 @@ int main(int argc, char **argv) {
 // ======== Scalar Cleanup ========
 
     runCleanup(module.get(), ok);
-    if (ok("scalar-cleanup")) return 0;
+    if (ok("scalarclean")) return 0;
 
 // ======== Tail Call Elimination ========
 
     TCE(module.get()).run();
     if (ok("tce")) return 0;
 
-    if (SSAInline::runArrayNonNegVersioning(module.get()))
-        runCleanup(module.get());
-    if (ok("array-nonneg-version")) return 0;
-
 // ======== Inline ========
+
+    // Disabled for now: Array non-negative versioning is still too shape-specific.
+    // if (SSAInline::runFastPath(module.get()))
+    //     runCleanup(module.get());
+    // if (ok("nonneg-version")) return 0;
 
     while (SSAInline(module.get()).run()) {
         runCleanup(module.get());
@@ -229,14 +227,14 @@ int main(int argc, char **argv) {
     //         runCleanup(module.get());
     //     }
     // }
-    // if (ok("const-spec")) return 0;
+    // if (ok("constspec")) return 0;
 
 // ======== Post-ConstSpec Inline ========
 
-    while (SSAInline(module.get()).run()) {
-        runCleanup(module.get());
-    }
-    if (ok("post-spec-inline")) return 0;
+    // while (SSAInline(module.get()).run()) {
+    //     runCleanup(module.get());
+    // }
+    // if (ok("postinline")) return 0;
 
 // ======== Dead Function Elimination ========
 
@@ -248,15 +246,15 @@ int main(int argc, char **argv) {
     if (StrengthReduce(module.get()).run()) {
         runCleanup(module.get());
     }
-    if (ok("strength-reduce")) return 0;
+    if (ok("sr")) return 0;
 
 // ======== Loop Canonicalization ========
 
     LoopSimplify(module.get()).run();
-    if (ok("loop-simplify")) return 0;
+    if (ok("loopsimplify")) return 0;
 
     LoopRotate(module.get()).run();
-    if (ok("loop-rotate")) return 0;
+    if (ok("looprotate")) return 0;
 
     LCSSA(module.get()).run();
     if (ok("lcssa")) return 0;
@@ -264,13 +262,13 @@ int main(int argc, char **argv) {
 // ======== Unroll ========
 
     if (LoopUnroll(module.get()).run()) runCleanup(module.get());
-    if (ok("loop-unroll")) return 0;
+    if (ok("loopunroll")) return 0;
 
     if (DeadLoopElim(module.get()).run()) {
         SimplifyCFG(module.get()).run();
         DCE(module.get()).run();
     }
-    if (ok("deadloop-elim-pre-licm")) return 0;
+    if (ok("predle")) return 0;
 
 // ======== LoopStrengthReduce ========
 //    if (LoopGVN(module.get()).run()) {
@@ -280,10 +278,10 @@ int main(int argc, char **argv) {
 //            DCE(module.get()).run();
 //        }
 //    }
-    if (ok("loop-gvn")) return 0;
+//    if (ok("loopgvn")) return 0;
 
     LoopStrengthReduce(module.get()).run();
-    if (ok("loop-strength-reduce")) return 0;
+    if (ok("lsr")) return 0;
 
 // ======== LoopExitFold + LICM + LoopMemPromote + SubloopHoist (fixpoint) ========
 
@@ -326,7 +324,7 @@ int main(int argc, char **argv) {
             }
         } while (anyChanged);
         if (!licmChanged && okIter("licm", 1, "only")) return 0;
-        if (!licmChanged && ok("licm-only")) return 0;
+        if (!licmChanged && ok("onlylicm")) return 0;
     }
     if (ok("licm")) return 0;
 
@@ -334,7 +332,7 @@ int main(int argc, char **argv) {
         SimplifyCFG(module.get()).run();
         DCE(module.get()).run();
     }
-    if (ok("deadloop-elim-post-licm")) return 0;
+    if (ok("postdle")) return 0;
 
     if (dumpLIR) {
         std::cout << module->print();

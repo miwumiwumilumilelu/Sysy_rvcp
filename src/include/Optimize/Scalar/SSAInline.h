@@ -11,7 +11,8 @@ class SSAInline {
 
 public:
     static bool isRecursive(Function* f);
-    static int  countInsts(Function* f);
+    static int countInsts(Function* f);
+    static bool runFastPath(Module* m);
     explicit SSAInline(Module* m, int threshold = 200) : M(m), threshold(threshold) {}
     bool run();
 

@@ -70,10 +70,6 @@ def build():
         print("❌ 错误: src 目录下未找到任何 .cpp 文件！")
         sys.exit(1)
 
-    runtime_c = src_dir / "lib" / "sylib.c"
-    if runtime_c.exists():
-        print("⚠️  不编译 src/lib/sylib.c：它是测试时链接目标程序用的运行库")
-
     print(f"📂 发现 {len(source_files)} 个源文件")
 
     cmd = (

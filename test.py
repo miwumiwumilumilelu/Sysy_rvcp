@@ -32,26 +32,32 @@ TEST_DIR_GROUPS = {
 
 IR_PASSES = [
     "frontend",
-    "high-mem2reg",
-    "high-licm",
-    "flatten-cfg",
+    "liunswitch",
+    "whiletofor",
+    "unswitch",
+    "highdce",
+    "lowerfor",
+    "hmem2reg",
+    "hlicm",
+    "flatten",
     "mem2reg",
-    "scalar-cleanup",
+    "scalarclean",
     "tce",
     "inline",
-    "post-spec-inline",
+    # "constspec", 
+    # "postinline",
     "dfe",
-    "strength-reduce",
-    "loop-simplify",
-    "loop-rotate",
+    "sr",
+    "loopsimplify",
+    "looprotate",
     "lcssa",
-    "loop-unroll",
-    "deadloop-elim-pre-licm",
-    "loop-gvn",
-    "loop-strength-reduce",
-    "licm-only",
+    "loopunroll",
+    "predle",
+    # "loopgvn",
+    "lsr",
+    "onlylicm",
     "licm",
-    "deadloop-elim-post-licm",
+    "postdle,
 ]
 
 ITER_LICM_PASS_RE = re.compile(
@@ -430,7 +436,7 @@ def run_test(
     )
 
     if ok:
-        print(f"✅ PASS ({elapsed:.3f}s)")
+        print(f"✅ PASS ({elapsed:.8f}s)")
         return True, "", elapsed
 
     if reason.startswith("输出不一致"):
