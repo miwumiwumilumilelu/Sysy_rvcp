@@ -35,7 +35,7 @@ IR_PASSES = [
     "liunswitch",
     "whiletofor",
     "unswitch",
-    "highdce",
+    "hdce",
     "lowerfor",
     "hmem2reg",
     "hlicm",
@@ -57,7 +57,7 @@ IR_PASSES = [
     "lsr",
     "onlylicm",
     "licm",
-    "postdle,
+    "postdle",
 ]
 
 ITER_LICM_PASS_RE = re.compile(
