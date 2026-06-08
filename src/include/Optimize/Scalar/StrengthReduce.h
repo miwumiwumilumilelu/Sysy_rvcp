@@ -2,10 +2,10 @@
 #define STRENGTHREDUCE_H
 
 #include "IR/Module.h"
-#include <map>
-#include <set>
 
 namespace sysy {
+
+class ValueTracking;
 
 // Mul(x, 2^k) -> Shl(x, k)
 //
@@ -15,12 +15,8 @@ namespace sysy {
 class StrengthReduce {
 private:
     Module* M;
-    using NonNegSet = std::set<Value*>;
 
-    std::map<Function*, NonNegSet> nonNegMap;
-
-    void computeNonNeg();
-    bool rewriteFunc(Function* f, const NonNegSet& nonneg);
+    bool rewriteFunc(Function* f, ValueTracking& vt);
 
 public:
     StrengthReduce(Module* m) : M(m) {}
