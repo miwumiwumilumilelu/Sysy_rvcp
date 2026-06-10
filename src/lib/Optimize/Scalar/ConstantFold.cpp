@@ -6,21 +6,13 @@ using namespace sysy;
 
 bool ConstantFold::run() {
     bool anyChanged = false;
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (auto func : TheModule->getFunctions()) {
-            for (auto bb : func->getBody()->getBlocks()) {
-                std::vector<Instruction*> worklist;
-                for (auto inst : bb->getInstructions()) {
-                    worklist.push_back(inst);
-                }
-
-                for (auto inst : worklist) {
-                    if (foldInstruction(inst, bb)) {
-                        changed = true;
-                        anyChanged = true;
-                    }
+    for (auto func : TheModule->getFunctions()) {
+        for (auto bb : func->getBody()->getBlocks()) {
+            auto& insts = bb->getInstructions();
+            for (auto it = insts.begin(); it != insts.end();) {
+                auto* inst = *it++;
+                if (foldInstruction(inst, bb)) {
+                    anyChanged = true;
                 }
             }
         }

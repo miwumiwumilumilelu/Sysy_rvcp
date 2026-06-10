@@ -9,15 +9,11 @@ using namespace sysy;
 
 bool InstSimplify::run() {
     bool anyChanged = false;
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (auto func : TheModule->getFunctions()) {
-            for (auto bb : func->getBody()->getBlocks()) {
-                if (simplify(bb)) { 
-                    changed = true;
-                    anyChanged = true; 
-                }
+    for (auto func : TheModule->getFunctions()) {
+        ValueTracking vt(func);
+        for (auto bb : func->getBody()->getBlocks()) {
+            if (simplify(bb, vt)) {
+                anyChanged = true;
             }
         }
     }
@@ -158,16 +154,12 @@ static bool matchAndConst(Value* v, MaskedValue& out) {
     return false;
 }
 
-bool InstSimplify::simplify(BasicBlock* bb) {
+bool InstSimplify::simplify(BasicBlock* bb, ValueTracking& vt) {
     bool changed = false;
-    auto* func = bb->getParentFunc();
-    std::unique_ptr<ValueTracking> vt;
-    if (func)
-        vt = std::make_unique<ValueTracking>(func);
     auto isNonNeg = [&](Value* v) -> bool {
         if (auto* ci = dyn_cast<ConstantInt>(v))
             return ci->getValue() >= 0;
-        return vt && vt->isNonNeg(v);
+        return vt.isNonNeg(v);
     };
 
     std::vector<Instruction*> worklist(bb->getInstructions().begin(), bb->getInstructions().end());
@@ -177,7 +169,7 @@ bool InstSimplify::simplify(BasicBlock* bb) {
         // icmp x, y -> true/false when Range proves the relation.
         if (auto* cmp = dyn_cast<ICmpInst>(inst)) {
             bool out = false;
-            if (vt && vt->knownBool(cmp, out)) {
+            if (vt.knownBool(cmp, out)) {
                 cmp->replaceAllUsesWith(new ConstantInt(out ? 1 : 0));
                 cmp->eraseInst();
                 changed = true;
@@ -321,7 +313,7 @@ bool InstSimplify::simplify(BasicBlock* bb) {
                 if (m == 0) return true;
                 if (!v || depth > 16) return false;
 
-                KBits bits = vt ? vt->knownBits(v) : KBits{};
+                KBits bits = vt.knownBits(v);
                 if ((m & ~bits.zeros) == 0)
                     return true;
 
@@ -473,8 +465,8 @@ bool InstSimplify::simplify(BasicBlock* bb) {
         if (!inst->getParent()) continue;
         auto* bin = dyn_cast<BinaryInst>(inst);
         if (!bin || bin->getOpID() != Instruction::Add) continue;
-        KBits LA = vt ? vt->knownBits(bin->getOperand(0)) : KBits{};
-        KBits RA = vt ? vt->knownBits(bin->getOperand(1)) : KBits{};
+        KBits LA = vt.knownBits(bin->getOperand(0));
+        KBits RA = vt.knownBits(bin->getOperand(1));
         if (!LA.disjointWith(RA)) continue;
         auto& il = bb->getInstructions();
         auto pos = std::find(il.begin(), il.end(), bin);

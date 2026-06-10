@@ -6,6 +6,8 @@
 
 namespace sysy {
 
+class ValueTracking;
+
 class InstSimplify {
 public:
     InstSimplify(Module* m) : TheModule(m) {}
@@ -13,7 +15,7 @@ public:
 
 private:
     Module* TheModule;
-    bool simplify(BasicBlock* bb);
+    bool simplify(BasicBlock* bb, ValueTracking& vt);
 };
 
 }

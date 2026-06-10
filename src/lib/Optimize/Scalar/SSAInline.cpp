@@ -120,7 +120,8 @@ bool SSAInline::isInlineable(CallInst* call, bool callSiteInLoop) const {
     if (!f) return false;
     if (f->getBody()->getBlocks().empty()) return false;
     if (isRecursive(f)) return false;
-    if (callSiteInLoop && hasLoop(f) && writesGlobal(f)) return false;
+    if (hasLoop(f) && writesGlobal(f)) return false;
+    if (callSiteInLoop && writesGlobal(f)) return false;
     if (countInsts(f) > threshold) return false;
     return true;
 }
@@ -296,25 +297,20 @@ void SSAInline::AllocaHoist(Function* func) {
 
 bool SSAInline::run() {
     bool anyChanged = false;
-    bool changed;
-    do {
-        changed = false;
-        for (auto func : M->getFunctions()) {
-            std::vector<CallInst*> toInline;
-            auto loopBlocks = naturalLoopBlocks(func);
-            for (auto bb : func->getBody()->getBlocks())
-                for (auto inst : bb->getInstructions())
-                    if (auto call = dyn_cast<CallInst>(inst))
-                        if (isInlineable(call, loopBlocks.count(bb)))
-                            toInline.push_back(call);
+    for (auto func : M->getFunctions()) {
+        std::vector<CallInst*> toInline;
+        auto loopBlocks = naturalLoopBlocks(func);
+        for (auto bb : func->getBody()->getBlocks())
+            for (auto inst : bb->getInstructions())
+                if (auto call = dyn_cast<CallInst>(inst))
+                    if (isInlineable(call, loopBlocks.count(bb)))
+                        toInline.push_back(call);
 
-            for (auto call : toInline) {
-                doInline(call);
-                changed = true;
-            }
+        for (auto call : toInline) {
+            doInline(call);
+            anyChanged = true;
         }
-        anyChanged |= changed;
-    } while (changed);
+    }
 
     for (auto func : M->getFunctions())
         AllocaHoist(func);
