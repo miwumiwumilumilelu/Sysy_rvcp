@@ -1,9 +1,9 @@
 #ifndef CFGINLINE_H
 #define CFGINLINE_H
 
-#include "Optimize/Analysis/Dominators.h"
-#include "IR/Instruction.h"
-#include "IR/Module.h"
+#include "../Analysis/Dominators.h"
+#include "../../IR/Instruction.h"
+#include "../../IR/Module.h"
 #include <map>
 
 namespace sysy {

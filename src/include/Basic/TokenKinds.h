@@ -6,7 +6,7 @@ namespace tok {
 
 enum TokenKind : unsigned short {
 #define TOK(X) X,
-#include "Basic/TokenKinds.def"
+#include "TokenKinds.def"
   NUM_TOKENS
 };
 

@@ -1,7 +1,7 @@
 #ifndef TOKEN_H
 #define TOKEN_H
 
-#include "Basic/TokenKinds.h"
+#include "TokenKinds.h"
 #include <string>
 #include <string_view>
 

@@ -1,10 +1,10 @@
 #ifndef LOOPDELETIONUTILS_H
 #define LOOPDELETIONUTILS_H
 
-#include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/LoopInfo.h"
-#include "Optimize/Analysis/SCEV.h"
-#include "IR/Instruction.h"
+#include "../../Analysis/Dominators.h"
+#include "../../Analysis/LoopInfo.h"
+#include "../../Analysis/SCEV.h"
+#include "../../../IR/Instruction.h"
 #include <memory>
 #include <set>
 #include <unordered_map>

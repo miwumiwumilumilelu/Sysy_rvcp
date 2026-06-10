@@ -1,5 +1,5 @@
-#include "Optimize/CFG/SimplifyCFG.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/CFG/SimplifyCFG.h"
+#include "../../../include/IR/Instruction.h"
 #include <queue>
 #include <set>
 #include <algorithm>

@@ -1,8 +1,8 @@
 #ifndef HIGHINLINE_H
 #define HIGHINLINE_H
 
-#include "IR/Instruction.h"
-#include "IR/Module.h"
+#include "../../IR/Instruction.h"
+#include "../../IR/Module.h"
 #include <map>
 #include <vector>
 

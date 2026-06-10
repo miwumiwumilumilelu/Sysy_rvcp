@@ -1,8 +1,8 @@
 #ifndef FLATTENCFG_H
 #define FLATTENCFG_H
 
-#include "IR/Module.h"
-#include "IR/IRBuilder.h"
+#include "../../IR/Module.h"
+#include "../../IR/IRBuilder.h"
 
 namespace sysy {
 

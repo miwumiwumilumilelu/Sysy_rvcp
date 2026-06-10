@@ -1,8 +1,8 @@
-#include "Optimize/Loop/LICM.h"
-#include "Optimize/Loop/LoopUtils/LoopAliasUtils.h"
-#include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/PureFunc.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Loop/LICM.h"
+#include "../../../include/Optimize/Loop/LoopUtils/LoopAliasUtils.h"
+#include "../../../include/Optimize/Analysis/Dominators.h"
+#include "../../../include/Optimize/Analysis/PureFunc.h"
+#include "../../../include/IR/Instruction.h"
 #include <algorithm>
 #include <functional>
 #include <map>

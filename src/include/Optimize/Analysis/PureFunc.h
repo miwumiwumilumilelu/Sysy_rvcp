@@ -1,8 +1,8 @@
 #ifndef PUREFUNC_H
 #define PUREFUNC_H
 
-#include "IR/Module.h"
-#include "IR/Instruction.h"
+#include "../../IR/Module.h"
+#include "../../IR/Instruction.h"
 #include <unordered_map>
 
 namespace sysy {

@@ -1,5 +1,5 @@
-#include "Optimize/Scalar/IRClone.h"
-#include "IR/Module.h"
+#include "../../../include/Optimize/Scalar/IRClone.h"
+#include "../../../include/IR/Module.h"
 #include <cassert>
 #include <vector>
 

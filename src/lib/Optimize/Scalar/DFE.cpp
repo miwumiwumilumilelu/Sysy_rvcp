@@ -1,5 +1,5 @@
-#include "Optimize/Scalar/DFE.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Scalar/DFE.h"
+#include "../../../include/IR/Instruction.h"
 #include <set>
 #include <vector>
 

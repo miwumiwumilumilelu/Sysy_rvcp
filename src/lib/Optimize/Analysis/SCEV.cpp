@@ -1,6 +1,7 @@
-#include "Optimize/Analysis/SCEV.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Analysis/SCEV.h"
+#include "../../../include/IR/Instruction.h"
 #include <algorithm>
+#include <functional>
 
 using namespace sysy;
 

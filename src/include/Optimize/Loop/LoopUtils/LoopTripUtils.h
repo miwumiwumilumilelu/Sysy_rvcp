@@ -1,8 +1,8 @@
 #ifndef LOOPTRIPUTILS_H
 #define LOOPTRIPUTILS_H
 
-#include "Optimize/Analysis/LoopInfo.h"
-#include "Optimize/Analysis/SCEV.h"
+#include "../../Analysis/LoopInfo.h"
+#include "../../Analysis/SCEV.h"
 
 namespace sysy {
 

@@ -1,9 +1,9 @@
 #ifndef LoopStrengthReduce_H
 #define LoopStrengthReduce_H
 
-#include "IR/Module.h"
-#include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/SCEV.h"
+#include "../../IR/Module.h"
+#include "../Analysis/Dominators.h"
+#include "../Analysis/SCEV.h"
 
 namespace sysy {
 

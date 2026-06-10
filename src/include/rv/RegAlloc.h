@@ -1,9 +1,9 @@
 #ifndef REGALLOC_H
 #define REGALLOC_H
 
-#include "rv/MCFunction.h"
-#include "rv/RvOp.h"
-#include "rv/RvReg.h"
+#include "MCFunction.h"
+#include "RvOp.h"
+#include "RvReg.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>

@@ -1,6 +1,6 @@
-#include "Optimize/High/HighInline.h"
-#include "Optimize/Scalar/IRClone.h"
-#include "Optimize/Scalar/SSAInline.h"
+#include "../../../include/Optimize/High/HighInline.h"
+#include "../../../include/Optimize/Scalar/IRClone.h"
+#include "../../../include/Optimize/Scalar/SSAInline.h"
 #include <algorithm>
 #include <assert.h>
 #include <vector>

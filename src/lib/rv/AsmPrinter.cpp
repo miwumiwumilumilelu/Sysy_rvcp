@@ -1,7 +1,7 @@
-#include "rv/AsmPrinter.h"
-#include "rv/RvOp.h"
-#include "IR/Value.h"
-#include "IR/Type.h"
+#include "../../include/rv/AsmPrinter.h"
+#include "../../include/rv/RvOp.h"
+#include "../../include/IR/Value.h"
+#include "../../include/IR/Type.h"
 #include <vector>
 #include <cstdint>
 #include <cstring>

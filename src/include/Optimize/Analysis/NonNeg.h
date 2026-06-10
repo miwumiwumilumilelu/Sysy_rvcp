@@ -1,7 +1,7 @@
 #ifndef NONNEG_H
 #define NONNEG_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 #include <set>
 
 namespace sysy {

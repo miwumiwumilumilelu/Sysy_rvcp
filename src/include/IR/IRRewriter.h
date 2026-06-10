@@ -1,7 +1,7 @@
 #ifndef IRREWRITER_H
 #define IRREWRITER_H
 
-#include "IR/IRBuilder.h"
+#include "IRBuilder.h"
 #include <functional>
 #include <list>
 #include <map>

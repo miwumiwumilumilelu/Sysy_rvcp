@@ -1,12 +1,13 @@
-#include "Optimize/Loop/DeadLoopElim.h"
-#include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/LoopInfo.h"
-#include "Optimize/Analysis/PureFunc.h"
-#include "Optimize/Analysis/SCEV.h"
-#include "Optimize/Loop/LoopUtils/LoopDeletionUtils.h"
-#include "Optimize/Loop/LoopUtils/LoopTripUtils.h"
+#include "../../../include/Optimize/Loop/DeadLoopElim.h"
+#include "../../../include/Optimize/Analysis/Dominators.h"
+#include "../../../include/Optimize/Analysis/LoopInfo.h"
+#include "../../../include/Optimize/Analysis/PureFunc.h"
+#include "../../../include/Optimize/Analysis/SCEV.h"
+#include "../../../include/Optimize/Loop/LoopUtils/LoopDeletionUtils.h"
+#include "../../../include/Optimize/Loop/LoopUtils/LoopTripUtils.h"
 #include <map>
 #include <set>
+#include <functional>
 
 using namespace sysy;
 

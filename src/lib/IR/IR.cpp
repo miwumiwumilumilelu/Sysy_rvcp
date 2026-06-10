@@ -1,7 +1,7 @@
-#include "IR/Module.h"
-#include "IR/Instruction.h"
-#include "IR/Region.h"
-#include "IR/Type.h"
+#include "../../include/IR/Module.h"
+#include "../../include/IR/Instruction.h"
+#include "../../include/IR/Region.h"
+#include "../../include/IR/Type.h"
 #include <iostream>
 #include <map>
 #include <sstream>

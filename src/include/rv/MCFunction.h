@@ -1,7 +1,7 @@
 #ifndef MCFUNCTION_H
 #define MCFUNCTION_H
 
-#include "rv/MCBlock.h"
+#include "MCBlock.h"
 #include <string>
 #include <vector>
 #include <memory>

@@ -1,5 +1,5 @@
-#include "Optimize/High/HighMem2Reg.h"
-#include "IR/Type.h"
+#include "../../../include/Optimize/High/HighMem2Reg.h"
+#include "../../../include/IR/Type.h"
 #include <algorithm>
 
 using namespace sysy;

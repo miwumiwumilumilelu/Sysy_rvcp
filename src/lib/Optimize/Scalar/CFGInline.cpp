@@ -1,6 +1,6 @@
-#include "Optimize/Scalar/CFGInline.h"
-#include "Optimize/Scalar/IRClone.h"
-#include "Optimize/Scalar/SSAInline.h"
+#include "../../../include/Optimize/Scalar/CFGInline.h"
+#include "../../../include/Optimize/Scalar/IRClone.h"
+#include "../../../include/Optimize/Scalar/SSAInline.h"
 #include <algorithm>
 #include <assert.h>
 #include <vector>

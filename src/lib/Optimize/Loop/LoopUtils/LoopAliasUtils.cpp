@@ -1,5 +1,5 @@
-#include "Optimize/Loop/LoopUtils/LoopAliasUtils.h"
-#include "IR/Instruction.h"
+#include "../../../../include/Optimize/Loop/LoopUtils/LoopAliasUtils.h"
+#include "../../../../include/IR/Instruction.h"
 #include <set>
 
 using namespace sysy;

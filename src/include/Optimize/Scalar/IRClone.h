@@ -1,7 +1,7 @@
 #ifndef IRCLONE_H
 #define IRCLONE_H
 
-#include "IR/Instruction.h"
+#include "../../IR/Instruction.h"
 #include <map>
 #include <unordered_map>
 

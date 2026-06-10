@@ -1,7 +1,7 @@
-#include "Optimize/Scalar/ConstSpec.h"
-#include "Optimize/Scalar/IRClone.h"
-#include "Optimize/Analysis/PureFunc.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Scalar/ConstSpec.h"
+#include "../../../include/Optimize/Scalar/IRClone.h"
+#include "../../../include/Optimize/Analysis/PureFunc.h"
+#include "../../../include/IR/Instruction.h"
 #include <algorithm>
 #include <cstdint>
 #include <set>

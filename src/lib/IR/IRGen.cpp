@@ -1,8 +1,9 @@
-#include "IR/IRGen.h"
-#include "IR/Type.h"
-#include "IR/Module.h"
+#include "../../include/IR/IRGen.h"
+#include "../../include/IR/Type.h"
+#include "../../include/IR/Module.h"
 #include <iostream>
 #include <cassert>
+#include <functional>
 
 using namespace sysy;
 

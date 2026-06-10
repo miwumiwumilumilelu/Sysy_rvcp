@@ -1,7 +1,7 @@
 #ifndef ALIASANALYSIS_H
 #define ALIASANALYSIS_H
 
-#include "IR/Value.h"
+#include "../../IR/Value.h"
 
 namespace sysy {
 

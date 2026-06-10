@@ -1,7 +1,7 @@
 #ifndef HIGHDCE_H
 #define HIGHDCE_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 
 namespace sysy {
 

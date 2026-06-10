@@ -1,11 +1,11 @@
 #ifndef IRBUILDER_H
 #define IRBUILDER_H
 
-#include "IR/Instruction.h"
-#include "IR/Module.h"
-#include "IR/Value.h"
-#include "IR/Type.h"
-#include "IR/Region.h" 
+#include "Instruction.h"
+#include "Module.h"
+#include "Value.h"
+#include "Type.h"
+#include "Region.h" 
 #include <list>
 #include <string>
 #include <utility>

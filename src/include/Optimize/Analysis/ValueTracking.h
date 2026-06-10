@@ -1,9 +1,9 @@
 #ifndef VALUETRACKING_H
 #define VALUETRACKING_H
 
-#include "Optimize/Analysis/KnownBits.h"
-#include "Optimize/Analysis/NonNeg.h"
-#include "Optimize/Analysis/Range.h"
+#include "KnownBits.h"
+#include "NonNeg.h"
+#include "Range.h"
 
 namespace sysy {
 

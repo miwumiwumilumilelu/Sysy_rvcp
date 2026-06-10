@@ -1,4 +1,4 @@
-#include "Optimize/High/HighLICM.h"
+#include "../../../include/Optimize/High/HighLICM.h"
 #include <algorithm>
 
 using namespace sysy;

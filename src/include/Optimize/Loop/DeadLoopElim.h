@@ -1,7 +1,7 @@
 #ifndef DEADLOOPELIM_H
 #define DEADLOOPELIM_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 
 namespace sysy {
 

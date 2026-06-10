@@ -1,8 +1,8 @@
 #ifndef INSTRUCTION_H
 #define INSTRUCTION_H
 
-#include "IR/Value.h"
-#include "IR/Region.h"
+#include "Value.h"
+#include "Region.h"
 #include <map>
 
 namespace sysy {

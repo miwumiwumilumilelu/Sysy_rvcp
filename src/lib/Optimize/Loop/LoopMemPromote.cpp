@@ -1,7 +1,7 @@
-#include "Optimize/Loop/LoopMemPromote.h"
-#include "Optimize/Loop/LoopUtils/LoopAliasUtils.h"
-#include "Optimize/Analysis/PureFunc.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Loop/LoopMemPromote.h"
+#include "../../../include/Optimize/Loop/LoopUtils/LoopAliasUtils.h"
+#include "../../../include/Optimize/Analysis/PureFunc.h"
+#include "../../../include/IR/Instruction.h"
 #include <functional>
 #include <map>
 #include <set>

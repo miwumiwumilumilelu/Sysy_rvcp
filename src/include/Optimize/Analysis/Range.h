@@ -1,8 +1,8 @@
 #ifndef RANGE_H
 #define RANGE_H
 
-#include "IR/Module.h"
-#include "Optimize/Analysis/Dominators.h"
+#include "../../IR/Module.h"
+#include "Dominators.h"
 #include <climits>
 #include <map>
 #include <vector>

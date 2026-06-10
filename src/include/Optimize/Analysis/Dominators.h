@@ -1,8 +1,8 @@
 #ifndef DOMINATORS_H
 #define DOMINATORS_H
 
-#include "IR/Module.h"
-#include "IR/Value.h"
+#include "../../IR/Module.h"
+#include "../../IR/Value.h"
 #include <map>
 #include <set>
 #include <vector>

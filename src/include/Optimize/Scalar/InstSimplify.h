@@ -1,8 +1,8 @@
 #ifndef INSTSIMPLIFY_H
 #define INSTSIMPLIFY_H
 
-#include "IR/Module.h"
-#include "IR/Instruction.h"
+#include "../../IR/Module.h"
+#include "../../IR/Instruction.h"
 
 namespace sysy {
 

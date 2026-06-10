@@ -1,7 +1,7 @@
 #ifndef LEXER_H
 #define LEXER_H
 
-#include "Basic/Token.h"
+#include "../Basic/Token.h"
 #include <string_view>
 
 namespace sysy {

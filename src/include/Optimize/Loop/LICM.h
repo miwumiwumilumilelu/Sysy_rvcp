@@ -1,9 +1,9 @@
 #ifndef LICM_H
 #define LICM_H
 
-#include "IR/Module.h"
-#include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/SCEV.h"
+#include "../../IR/Module.h"
+#include "../Analysis/Dominators.h"
+#include "../Analysis/SCEV.h"
 #include <unordered_map>
 
 namespace sysy {

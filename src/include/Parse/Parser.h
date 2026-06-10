@@ -1,8 +1,8 @@
 #ifndef PARSER_H
 #define PARSER_H
 
-#include "Lex/Lexer.h"
-#include "AST/ASTNode.h"
+#include "../Lex/Lexer.h"
+#include "../AST/ASTNode.h"
 
 namespace sysy {
 

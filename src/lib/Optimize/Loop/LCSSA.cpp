@@ -1,5 +1,5 @@
-#include "Optimize/Loop/LCSSA.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Loop/LCSSA.h"
+#include "../../../include/IR/Instruction.h"
 #include <algorithm>
 #include <map>
 #include <vector>

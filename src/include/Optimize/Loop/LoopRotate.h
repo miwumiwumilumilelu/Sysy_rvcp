@@ -1,8 +1,8 @@
 #ifndef LOOPROTATE_H
 #define LOOPROTATE_H
 
-#include "IR/Module.h"
-#include "Optimize/Analysis/LoopInfo.h"
+#include "../../IR/Module.h"
+#include "../Analysis/LoopInfo.h"
 
 namespace sysy {
 

@@ -1,4 +1,4 @@
-#include "Parse/Parser.h"
+#include "../../include/Parse/Parser.h"
 #include <iostream>
 
 using namespace sysy;

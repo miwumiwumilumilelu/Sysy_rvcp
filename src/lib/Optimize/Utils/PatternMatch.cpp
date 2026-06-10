@@ -1,5 +1,5 @@
-#include "Optimize/Utils/PatternMatch.h"
-#include "IR/Module.h"
+#include "../../../include/Optimize/Utils/PatternMatch.h"
+#include "../../../include/IR/Module.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>

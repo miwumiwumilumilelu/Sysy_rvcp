@@ -1,6 +1,6 @@
-#include "Optimize/Scalar/Mem2Reg.h"
-#include "IR/Instruction.h"
-#include "IR/Type.h"
+#include "../../../include/Optimize/Scalar/Mem2Reg.h"
+#include "../../../include/IR/Instruction.h"
+#include "../../../include/IR/Type.h"
 #include <iostream>
 #include <algorithm>
 #include <map>

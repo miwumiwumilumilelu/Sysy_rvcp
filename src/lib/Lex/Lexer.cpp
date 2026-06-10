@@ -1,4 +1,4 @@
-#include "Lex/Lexer.h"
+#include "../../include/Lex/Lexer.h"
 #include <cctype>
 #include <map>
 #include <iostream>
@@ -108,7 +108,7 @@ Token Lexer::nextToken() {
 
         tok::TokenKind Kind = tok::identifier;
         #define KEYWORD(X) if (Text == #X) Kind = tok::kw_##X; else
-        #include "Basic/TokenKinds.def"
+        #include "../../include/Basic/TokenKinds.def"
         { Kind = tok::identifier; }
         
         Result.setKind(Kind);
@@ -131,14 +131,14 @@ Token Lexer::nextToken() {
             consume(); consume(); \
             Result.setKind(tok::X); Result.setText(DoubleChar); return Result; \
         }
-    #include "Basic/TokenKinds.def"
+    #include "../../include/Basic/TokenKinds.def"
 
     #define PUNCTUATOR(X, Y) \
             if (std::string_view(Y).size() == 1 && SingleChar == Y) { \
                 consume(); \
                 Result.setKind(tok::X); Result.setText(SingleChar); return Result; \
             }
-    #include "Basic/TokenKinds.def"
+    #include "../../include/Basic/TokenKinds.def"
 
     std::cerr << "Lexical Error at (Line: " << Result.getLine() 
             << ", Col: " << Result.getColumn() << "): Unknown character '" 

@@ -1,8 +1,8 @@
 #ifndef EXPRKEY_H
 #define EXPRKEY_H
 
-#include "IR/Module.h"
-#include "IR/Instruction.h"
+#include "../../IR/Module.h"
+#include "../../IR/Instruction.h"
 #include <cstdint>
 #include <tuple>
 #include <vector>

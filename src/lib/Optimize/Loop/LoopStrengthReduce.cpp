@@ -1,7 +1,7 @@
-#include "Optimize/Loop/LoopStrengthReduce.h"
-#include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Loop/LoopUtils/LoopTripUtils.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Loop/LoopStrengthReduce.h"
+#include "../../../include/Optimize/Analysis/Dominators.h"
+#include "../../../include/Optimize/Loop/LoopUtils/LoopTripUtils.h"
+#include "../../../include/IR/Instruction.h"
 #include <functional>
 #include <vector>
 

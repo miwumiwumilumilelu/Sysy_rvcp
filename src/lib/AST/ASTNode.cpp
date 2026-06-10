@@ -1,5 +1,5 @@
-#include "AST/ASTNode.h"
-#include "AST/ASTVisitor.h"
+#include "../../include/AST/ASTNode.h"
+#include "../../include/AST/ASTVisitor.h"
 using namespace sysy;
 
 void NumberAST::accept(ASTVisitor &v) { v.visit(*this); }

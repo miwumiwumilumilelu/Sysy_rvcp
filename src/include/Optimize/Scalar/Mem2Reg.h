@@ -1,8 +1,8 @@
 #ifndef MEM2REG_H
 #define MEM2REG_H
 
-#include "IR/Module.h"
-#include "Optimize/Analysis/Dominators.h"
+#include "../../IR/Module.h"
+#include "../Analysis/Dominators.h"
 #include <map>
 #include <vector>
 #include <set>

@@ -1,7 +1,7 @@
 #ifndef GVN_H
 #define GVN_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 #include <unordered_map>
 
 namespace sysy {

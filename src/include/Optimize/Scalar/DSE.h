@@ -1,8 +1,8 @@
 #ifndef DSE_H
 #define DSE_H
 
-#include "IR/Module.h"
-#include "IR/Instruction.h"
+#include "../../IR/Module.h"
+#include "../../IR/Instruction.h"
 #include <set>
 #include <vector>
 

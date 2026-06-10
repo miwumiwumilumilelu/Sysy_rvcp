@@ -1,5 +1,5 @@
-#include "Optimize/High/HighDCE.h"
-#include "IR/IRRewriter.h"
+#include "../../../include/Optimize/High/HighDCE.h"
+#include "../../../include/IR/IRRewriter.h"
 #include <climits>
 #include <cstdint>
 #include <cstring>

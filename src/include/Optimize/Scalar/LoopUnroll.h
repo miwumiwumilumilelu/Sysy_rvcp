@@ -1,7 +1,7 @@
 #ifndef LOOPUNROLL_H
 #define LOOPUNROLL_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 
 namespace sysy {
 

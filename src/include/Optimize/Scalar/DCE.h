@@ -1,7 +1,7 @@
 #ifndef DCE_H
 #define DCE_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 
 namespace sysy {
 

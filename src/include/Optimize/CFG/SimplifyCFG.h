@@ -1,7 +1,7 @@
 #ifndef SIMPLIFYCFG_H
 #define SIMPLIFYCFG_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 #include <map>
 #include <vector>
 

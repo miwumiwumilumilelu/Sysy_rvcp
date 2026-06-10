@@ -1,4 +1,4 @@
-#include "Semant/Semant.h"
+#include "../../include/Semant/Semant.h"
 
 using namespace sysy;
 

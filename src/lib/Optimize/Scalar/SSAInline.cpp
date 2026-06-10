@@ -1,6 +1,6 @@
-#include "Optimize/Scalar/SSAInline.h"
-#include "Optimize/Scalar/IRClone.h"
-#include "Optimize/Analysis/Dominators.h"
+#include "../../../include/Optimize/Scalar/SSAInline.h"
+#include "../../../include/Optimize/Scalar/IRClone.h"
+#include "../../../include/Optimize/Analysis/Dominators.h"
 #include <algorithm>
 #include <assert.h>
 #include <map>

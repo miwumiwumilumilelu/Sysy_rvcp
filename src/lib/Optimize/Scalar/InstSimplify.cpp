@@ -1,6 +1,6 @@
-#include "Optimize/Scalar/InstSimplify.h"
-#include "Optimize/Analysis/ValueTracking.h"
-#include "Optimize/Utils/PatternMatch.h"
+#include "../../../include/Optimize/Scalar/InstSimplify.h"
+#include "../../../include/Optimize/Analysis/ValueTracking.h"
+#include "../../../include/Optimize/Utils/PatternMatch.h"
 #include <algorithm>
 #include <functional>
 #include <memory>

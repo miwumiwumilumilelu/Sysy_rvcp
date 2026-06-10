@@ -1,4 +1,4 @@
-#include "Optimize/Loop/LoopUtils/LoopTripUtils.h"
+#include "../../../../include/Optimize/Loop/LoopUtils/LoopTripUtils.h"
 #include <set>
 
 using namespace sysy;

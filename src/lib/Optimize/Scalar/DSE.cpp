@@ -1,6 +1,6 @@
-#include "Optimize/Scalar/DSE.h"
-#include "Optimize/Analysis/AliasAnalysis.h"
-#include "Optimize/Analysis/Dominators.h"
+#include "../../../include/Optimize/Scalar/DSE.h"
+#include "../../../include/Optimize/Analysis/AliasAnalysis.h"
+#include "../../../include/Optimize/Analysis/Dominators.h"
 #include <deque>
 #include <map>
 

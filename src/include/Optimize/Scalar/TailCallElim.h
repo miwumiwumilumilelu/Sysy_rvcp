@@ -1,7 +1,7 @@
 #ifndef TAILCALLELIM_H
 #define TAILCALLELIM_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 
 namespace sysy {
 

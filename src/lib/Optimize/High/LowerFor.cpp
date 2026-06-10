@@ -1,5 +1,5 @@
-#include "Optimize/High/LowerFor.h"
-#include "IR/IRRewriter.h"
+#include "../../../include/Optimize/High/LowerFor.h"
+#include "../../../include/IR/IRRewriter.h"
 #include <algorithm>
 #include <vector>
 

@@ -1,6 +1,6 @@
-#include "Optimize/Analysis/NonNeg.h"
-#include "Optimize/Analysis/Range.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Analysis/NonNeg.h"
+#include "../../../include/Optimize/Analysis/Range.h"
+#include "../../../include/IR/Instruction.h"
 
 using namespace sysy;
 

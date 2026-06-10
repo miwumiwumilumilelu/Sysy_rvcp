@@ -1,9 +1,9 @@
 #ifndef IRGEN_H
 #define IRGEN_H
 
-#include "AST/ASTVisitor.h"
-#include "IR/Module.h"
-#include "IR/IRBuilder.h"
+#include "../AST/ASTVisitor.h"
+#include "Module.h"
+#include "IRBuilder.h"
 #include <map>
 #include <vector>
 #include <string>

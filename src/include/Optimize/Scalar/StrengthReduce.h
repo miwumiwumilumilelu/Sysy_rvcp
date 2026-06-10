@@ -1,7 +1,7 @@
 #ifndef STRENGTHREDUCE_H
 #define STRENGTHREDUCE_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 
 namespace sysy {
 

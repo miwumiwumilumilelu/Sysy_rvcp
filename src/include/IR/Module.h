@@ -1,9 +1,9 @@
 #ifndef MODULE_H
 #define MODULE_H
 
-#include "IR/Value.h"
-#include "IR/Instruction.h"
-#include "IR/Region.h"
+#include "Value.h"
+#include "Instruction.h"
+#include "Region.h"
 #include <list>
 #include <vector>
 #include <sstream>

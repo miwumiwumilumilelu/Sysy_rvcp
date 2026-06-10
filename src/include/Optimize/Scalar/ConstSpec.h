@@ -1,7 +1,7 @@
 #ifndef CONSTSPEC_H
 #define CONSTSPEC_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 #include <map>
 #include <set>
 #include <vector>

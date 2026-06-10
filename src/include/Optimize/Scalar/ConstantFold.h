@@ -1,9 +1,9 @@
 #ifndef CONSTANTFOLD_H
 #define CONSTANTFOLD_H
 
-#include "IR/Module.h"
-#include "IR/Instruction.h"
-#include "IR/Value.h"
+#include "../../IR/Module.h"
+#include "../../IR/Instruction.h"
+#include "../../IR/Value.h"
 
 namespace sysy {
 

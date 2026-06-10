@@ -1,13 +1,13 @@
 #ifndef INSTSEL_H
 #define INSTSEL_H
 
-#include "IR/Instruction.h"
-#include "IR/Module.h"
-#include "IR/Value.h"
-#include "IR/Type.h"
-#include "IR/Region.h"
-#include "rv/MCFunction.h"
-#include "rv/RvOp.h"
+#include "../IR/Instruction.h"
+#include "../IR/Module.h"
+#include "../IR/Value.h"
+#include "../IR/Type.h"
+#include "../IR/Region.h"
+#include "MCFunction.h"
+#include "RvOp.h"
 #include <map>
 #include <unordered_map>
 #include <vector>

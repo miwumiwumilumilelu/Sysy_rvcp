@@ -1,8 +1,8 @@
 #ifndef HIGHLICM_H
 #define HIGHLICM_H
 
-#include "IR/Module.h"
-#include "IR/Instruction.h"
+#include "../../IR/Module.h"
+#include "../../IR/Instruction.h"
 #include <map>
 #include <set>
 

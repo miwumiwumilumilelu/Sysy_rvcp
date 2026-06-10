@@ -1,8 +1,8 @@
-#include "Optimize/Analysis/AliasAnalysis.h"
-#include "Optimize/Analysis/SCEV.h"
-#include "IR/Instruction.h"
-#include "IR/Module.h"
-#include "IR/Value.h"
+#include "../../../include/Optimize/Analysis/AliasAnalysis.h"
+#include "../../../include/Optimize/Analysis/SCEV.h"
+#include "../../../include/IR/Instruction.h"
+#include "../../../include/IR/Module.h"
+#include "../../../include/IR/Value.h"
 
 using namespace sysy;
 

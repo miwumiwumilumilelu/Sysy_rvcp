@@ -1,4 +1,4 @@
-#include "rv/RvReg.h"
+#include "../../include/rv/RvReg.h"
 
 namespace sysy {
 namespace rv {

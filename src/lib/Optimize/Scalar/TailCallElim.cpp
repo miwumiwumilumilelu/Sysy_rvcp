@@ -1,6 +1,6 @@
-#include "Optimize/Scalar/TailCallElim.h"
-#include "IR/Instruction.h"
-#include "IR/Region.h"
+#include "../../../include/Optimize/Scalar/TailCallElim.h"
+#include "../../../include/IR/Instruction.h"
+#include "../../../include/IR/Region.h"
 #include <vector>
 
 using namespace sysy;

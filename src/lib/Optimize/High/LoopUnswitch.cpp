@@ -1,8 +1,8 @@
-#include "Optimize/High/LoopUnswitch.h"
-#include "Optimize/High/HighDCE.h"
-#include "Optimize/Utils/PatternMatch.h"
-#include "IR/IRRewriter.h"
-#include "IR/IRBuilder.h"
+#include "../../../include/Optimize/High/LoopUnswitch.h"
+#include "../../../include/Optimize/High/HighDCE.h"
+#include "../../../include/Optimize/Utils/PatternMatch.h"
+#include "../../../include/IR/IRRewriter.h"
+#include "../../../include/IR/IRBuilder.h"
 #include <algorithm>
 #include <climits>
 #include <cstdlib>

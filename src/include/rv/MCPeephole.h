@@ -1,9 +1,9 @@
 #ifndef MCPEEPHOLE_H
 #define MCPEEPHOLE_H
 
-#include "rv/MCFunction.h"
-#include "rv/MCBlock.h"
-#include "rv/RvOp.h"
+#include "MCFunction.h"
+#include "MCBlock.h"
+#include "RvOp.h"
 
 namespace sysy {
 namespace rv {

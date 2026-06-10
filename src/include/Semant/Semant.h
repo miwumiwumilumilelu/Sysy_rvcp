@@ -1,7 +1,7 @@
 #ifndef SEMANT_H
 #define SEMANT_H
 
-#include "AST/ASTVisitor.h"
+#include "../AST/ASTVisitor.h"
 #include <vector>
 #include <map>
 #include <iostream>

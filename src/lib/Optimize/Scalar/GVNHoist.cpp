@@ -1,8 +1,8 @@
-#include "Optimize/Scalar/GVNHoist.h"
-#include "Optimize/Scalar/ExprKey.h"
-#include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/PureFunc.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Scalar/GVNHoist.h"
+#include "../../../include/Optimize/Scalar/ExprKey.h"
+#include "../../../include/Optimize/Analysis/Dominators.h"
+#include "../../../include/Optimize/Analysis/PureFunc.h"
+#include "../../../include/IR/Instruction.h"
 #include <functional>
 #include <map>
 #include <set>

@@ -1,6 +1,6 @@
-#include "Optimize/Loop/LoopSimplify.h"
-#include "Optimize/Analysis/Dominators.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Loop/LoopSimplify.h"
+#include "../../../include/Optimize/Analysis/Dominators.h"
+#include "../../../include/IR/Instruction.h"
 #include <algorithm>
 #include <cassert>
 #include <functional>

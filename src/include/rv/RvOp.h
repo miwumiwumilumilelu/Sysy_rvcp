@@ -14,7 +14,7 @@ def ADD : RVInstR<
 >;
 */
 
-#include "rv/RvReg.h"
+#include "RvReg.h"
 #include <variant>
 #include <vector>
 #include <string>

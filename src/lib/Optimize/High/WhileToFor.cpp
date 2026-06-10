@@ -1,6 +1,6 @@
-#include "Optimize/High/WhileToFor.h"
-#include "IR/IRRewriter.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/High/WhileToFor.h"
+#include "../../../include/IR/IRRewriter.h"
+#include "../../../include/IR/Instruction.h"
 #include <algorithm>
 #include <functional>
 #include <set>

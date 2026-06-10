@@ -1,7 +1,7 @@
 #ifndef LOOPALIASUTILS_H
 #define LOOPALIASUTILS_H
 
-#include "IR/Value.h"
+#include "../../../IR/Value.h"
 #include <set>
 
 namespace sysy {

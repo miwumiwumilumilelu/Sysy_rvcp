@@ -1,9 +1,9 @@
 #ifndef LOOPSIMPLIFY_H
 #define LOOPSIMPLIFY_H
 
-#include "IR/Module.h"
-#include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/LoopInfo.h"
+#include "../../IR/Module.h"
+#include "../Analysis/Dominators.h"
+#include "../Analysis/LoopInfo.h"
 
 namespace sysy {
 

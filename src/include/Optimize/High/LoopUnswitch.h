@@ -1,7 +1,7 @@
 #ifndef LOOPUNSWITCH_H
 #define LOOPUNSWITCH_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 #include <functional>
 #include <list>
 #include <map>

@@ -1,6 +1,6 @@
-#include "Optimize/Scalar/CSE.h"
-#include "Optimize/Scalar/ExprKey.h"
-#include "Optimize/Analysis/PureFunc.h"
+#include "../../../include/Optimize/Scalar/CSE.h"
+#include "../../../include/Optimize/Scalar/ExprKey.h"
+#include "../../../include/Optimize/Analysis/PureFunc.h"
 
 using namespace sysy;
 

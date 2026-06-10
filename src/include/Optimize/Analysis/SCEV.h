@@ -1,8 +1,8 @@
 #ifndef SCEV_H
 #define SCEV_H
 
-#include "IR/Module.h"
-#include "Optimize/Analysis/LoopInfo.h"
+#include "../../IR/Module.h"
+#include "LoopInfo.h"
 #include <map>
 #include <vector>
 

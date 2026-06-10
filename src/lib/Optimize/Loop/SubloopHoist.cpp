@@ -1,7 +1,7 @@
-#include "Optimize/Loop/SubloopHoist.h"
-#include "Optimize/Loop/LoopUtils/LoopAliasUtils.h"
-#include "Optimize/Analysis/PureFunc.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Loop/SubloopHoist.h"
+#include "../../../include/Optimize/Loop/LoopUtils/LoopAliasUtils.h"
+#include "../../../include/Optimize/Analysis/PureFunc.h"
+#include "../../../include/IR/Instruction.h"
 #include <algorithm>
 #include <set>
 #include <string>

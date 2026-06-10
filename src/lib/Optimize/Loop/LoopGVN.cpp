@@ -1,10 +1,10 @@
-#include "Optimize/Loop/LoopGVN.h"
-#include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/LoopInfo.h"
-#include "Optimize/Analysis/SCEV.h"
-#include "Optimize/Loop/LoopUtils/LoopAliasUtils.h"
-#include "Optimize/Loop/LoopUtils/LoopTripUtils.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Loop/LoopGVN.h"
+#include "../../../include/Optimize/Analysis/Dominators.h"
+#include "../../../include/Optimize/Analysis/LoopInfo.h"
+#include "../../../include/Optimize/Analysis/SCEV.h"
+#include "../../../include/Optimize/Loop/LoopUtils/LoopAliasUtils.h"
+#include "../../../include/Optimize/Loop/LoopUtils/LoopTripUtils.h"
+#include "../../../include/IR/Instruction.h"
 #include <algorithm>
 #include <functional>
 #include <map>

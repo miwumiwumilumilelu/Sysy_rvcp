@@ -1,7 +1,7 @@
 #ifndef KNOWNBITS_H
 #define KNOWNBITS_H
 
-#include "IR/Module.h"
+#include "../../IR/Module.h"
 #include <map>
 
 namespace sysy {

@@ -1,8 +1,8 @@
-#include "Optimize/Scalar/StrengthReduce.h"
-#include "Optimize/Analysis/ValueTracking.h"
-#include "IR/Module.h"
-#include "IR/Instruction.h"
-#include "IR/Value.h"
+#include "../../../include/Optimize/Scalar/StrengthReduce.h"
+#include "../../../include/Optimize/Analysis/ValueTracking.h"
+#include "../../../include/IR/Module.h"
+#include "../../../include/IR/Instruction.h"
+#include "../../../include/IR/Value.h"
 #include <algorithm>
 
 using namespace sysy;

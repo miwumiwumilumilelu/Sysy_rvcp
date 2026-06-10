@@ -1,7 +1,7 @@
 #ifndef PATTERNMATCH_H
 #define PATTERNMATCH_H
 
-#include "IR/Instruction.h"
+#include "../../IR/Instruction.h"
 #include <map>
 #include <memory>
 #include <string>

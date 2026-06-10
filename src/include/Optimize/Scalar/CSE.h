@@ -1,8 +1,8 @@
 #ifndef CSE_H
 #define CSE_H
 
-#include "IR/Module.h"
-#include "IR/Instruction.h"
+#include "../../IR/Module.h"
+#include "../../IR/Instruction.h"
 #include <map>
 #include <tuple>
 #include <unordered_map>

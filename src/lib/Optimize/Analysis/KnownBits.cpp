@@ -1,6 +1,6 @@
-#include "Optimize/Analysis/KnownBits.h"
-#include "Optimize/Analysis/NonNeg.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/Analysis/KnownBits.h"
+#include "../../../include/Optimize/Analysis/NonNeg.h"
+#include "../../../include/IR/Instruction.h"
 
 using namespace sysy;
 

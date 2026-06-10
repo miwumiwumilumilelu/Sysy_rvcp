@@ -1,4 +1,4 @@
-#include "Optimize/Loop/LoopUtils/LoopDeletionUtils.h"
+#include "../../../../include/Optimize/Loop/LoopUtils/LoopDeletionUtils.h"
 #include <cstdint>
 
 using namespace sysy;

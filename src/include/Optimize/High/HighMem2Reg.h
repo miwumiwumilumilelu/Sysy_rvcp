@@ -6,8 +6,8 @@
  while the IR is still in nested IfInst/WhileInst form, before FlattenCFG.
 */
 
-#include "IR/Module.h"
-#include "IR/Instruction.h"
+#include "../../IR/Module.h"
+#include "../../IR/Instruction.h"
 #include <set>
 #include <map>
 #include <vector>

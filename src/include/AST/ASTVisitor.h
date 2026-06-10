@@ -1,7 +1,7 @@
 #ifndef ASTVISITOR_H
 #define ASTVISITOR_H
 
-#include "AST/ASTNode.h"
+#include "ASTNode.h"
 
 namespace sysy {
 class ASTVisitor {

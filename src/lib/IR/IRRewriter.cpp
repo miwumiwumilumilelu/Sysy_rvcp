@@ -1,5 +1,5 @@
-#include "IR/IRRewriter.h"
-#include "IR/Module.h"
+#include "../../include/IR/IRRewriter.h"
+#include "../../include/IR/Module.h"
 #include <algorithm>
 
 namespace sysy {

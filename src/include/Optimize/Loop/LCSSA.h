@@ -1,9 +1,9 @@
 #ifndef LCSSA_H
 #define LCSSA_H
 
-#include "IR/Module.h"
-#include "Optimize/Analysis/Dominators.h"
-#include "Optimize/Analysis/LoopInfo.h"
+#include "../../IR/Module.h"
+#include "../Analysis/Dominators.h"
+#include "../Analysis/LoopInfo.h"
 #include <map>
 #include <set>
 

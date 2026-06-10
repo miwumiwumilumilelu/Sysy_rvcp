@@ -1,6 +1,6 @@
-#include "Optimize/Analysis/Range.h"
-#include "IR/Instruction.h"
-#include "IR/Module.h"
+#include "../../../include/Optimize/Analysis/Range.h"
+#include "../../../include/IR/Instruction.h"
+#include "../../../include/IR/Module.h"
 #include <algorithm>
 #include <climits>
 #include <cstdlib>

@@ -1,8 +1,8 @@
 #ifndef ASMPRINTER_H
 #define ASMPRINTER_H
 
-#include "rv/MCFunction.h"
-#include "IR/Module.h"
+#include "MCFunction.h"
+#include "../IR/Module.h"
 #include <ostream>
 #include <vector>
 #include <memory>

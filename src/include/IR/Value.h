@@ -1,7 +1,7 @@
 #ifndef VALUE_H
 #define VALUE_H
 
-#include "IR/Type.h"
+#include "Type.h"
 #include <string>
 #include <vector>
 #include <iostream>

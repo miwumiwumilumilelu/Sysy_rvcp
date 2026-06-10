@@ -1,6 +1,6 @@
-#include "Optimize/CFG/FlattenCFG.h"
-#include "IR/IRBuilder.h"
-#include "IR/Instruction.h"
+#include "../../../include/Optimize/CFG/FlattenCFG.h"
+#include "../../../include/IR/IRBuilder.h"
+#include "../../../include/IR/Instruction.h"
 #include <iostream>
 #include <algorithm>
 #include <vector>
