@@ -27,43 +27,34 @@ static void killChangedAliases(std::map<Value*, Value*>& tab, Value* sptr,
     }
 }
 
-using PtrSet = std::set<Value*>;
+// ptr -> the value known to be in that location.
+using LoadMap = std::map<Value*, Value*>;
 
-static PtrSet blockTransfer(BasicBlock* bb, PtrSet avail,
+// Tracking only address is not enough:
+// one path may store to the address and reload it, 
+// so the address is still available at the mergeBB but holds a different value.
+static LoadMap blockTransfer(BasicBlock* bb, LoadMap m,
                             const AliasAnalysis& aa,
                             std::unordered_map<Function*, bool>& purityCache) {
-    PtrSet killedHere;
     for (auto inst : bb->getInstructions()) {
         if (auto* st = dyn_cast<StoreInst>(inst)) {
             Value* p = st->getOperand(1);
-            for (auto it = avail.begin(); it != avail.end(); )
-                it = aa.mayAlias(*it, p) ? avail.erase(it) : ++it;
-            killedHere.insert(p);
+            for (auto it = m.begin(); it != m.end(); )
+                it = aa.mayAlias(it->first, p) ? m.erase(it) : ++it;
         } else if (auto* ld = dyn_cast<LoadInst>(inst)) {
-            // Only mark const gv loads available.
-            if (auto gvld = dyn_cast<GlobalVariable>(ld->getOperand(0))) {
-                if (!gvld->isConst()) {
-                    continue;
-                }
-            }
             Value* p = ld->getOperand(0);
-            // Only mark available if p has not been stored to in this block.
-            bool fresh = true;
-            for (auto* k : killedHere)
-                if (aa.mayAlias(k, p)) { fresh = false; break; }
-            if (fresh)
-                avail.insert(p);
+            // Record fristly encounter the Value.
+            if (!m.count(p)) m[p] = ld;
         } else if (auto* call = dyn_cast<CallInst>(inst)) {
-            if (!isPureFunc(call->getFunction(), purityCache)) {
-                avail.clear();
-                killedHere.clear();
-            }
+            if (!isPureFunc(call->getFunction(), purityCache))
+                // impure call may modify any memory
+                m.clear(); 
         }
     }
-    return avail;
+    return m;
 }
 
-static std::map<BasicBlock*, PtrSet> computeAvailIn(Function* f, Dominators& dt,
+static std::map<BasicBlock*, LoadMap> computeAvailIn(Function* f, Dominators& dt,
                                     const AliasAnalysis& aa,
                                     std::unordered_map<Function*, bool>& purityCache) {
     // Build RPO via post-order DFS.
@@ -82,24 +73,27 @@ static std::map<BasicBlock*, PtrSet> computeAvailIn(Function* f, Dominators& dt,
         std::reverse(rpo.begin(), rpo.end());
     }
 
-    std::map<BasicBlock*, PtrSet> availIn, availOut;
+    std::map<BasicBlock*, LoadMap> availIn, availOut;
     bool changed = true;
     while (changed) {
         changed = false;
         for (auto* bb : rpo) {
             const auto& preds = dt.getPredecessors(bb);
-            PtrSet newIn;
+            LoadMap newIn;
             bool first = true;
-            // Compute newIn by intersecting all preds' availOut.
             for (auto* pred : preds) {
                 auto it = availOut.find(pred);
                 // If pred is unreachable, skip it.
                 if (it == availOut.end()) continue;
                 if (first) { newIn = it->second; first = false; }
+                // Find the (ptr -> value) that is jointly identified by preds.
                 else {
-                    PtrSet tmp;
-                    for (auto* p : newIn)
-                        if (it->second.count(p)) tmp.insert(p);
+                    LoadMap tmp;
+                    for (auto& kv : newIn) {
+                        auto j = it->second.find(kv.first);
+                        if (j != it->second.end() && j->second == kv.second)
+                            tmp.insert(kv);
+                    }
                     newIn = std::move(tmp);
                 }
             }
@@ -153,8 +147,10 @@ bool GVN::runFunc(Function* f) {
         auto savedLoadTab = loadTab;
         {
             auto& avail = loadAvail[bb];
-            for (auto it = loadTab.begin(); it != loadTab.end(); )
-                it = avail.count(it->first) ? ++it : loadTab.erase(it);
+            for (auto it = loadTab.begin(); it != loadTab.end(); ) {
+                auto j = avail.find(it->first);
+                it = (j != avail.end() && j->second == it->second) ? ++it : loadTab.erase(it);
+            }
         }
 
         for (auto inst : bb->getInstructions()) {
