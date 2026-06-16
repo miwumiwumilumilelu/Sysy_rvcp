@@ -41,6 +41,14 @@ bool LoopMemPromote::promoteLoop(Loop* L, Dominators& dt) {
     if (!preBlock || !L->latch || !L->head) return false;
     if (!L->hasPreheaderAndSingleLatch()) return false;
 
+    // Only promote loops whose in-loop exit edges all leave from the latch.
+    for (auto* exitBB : L->exits) {
+        for (auto* pred : dt.getPredecessors(exitBB)) {
+            if (!L->has(pred)) continue;
+            if (pred != L->latch) return false;
+        }
+    }
+
     for (auto bb : L->blocks)
         for (auto inst : bb->getInstructions())
             if (auto* c = dyn_cast<CallInst>(inst))
