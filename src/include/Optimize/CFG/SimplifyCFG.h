@@ -11,6 +11,7 @@ class SimplifyCFG {
 public:
     SimplifyCFG(Module* m) : TheModule(m) {}
     bool run();
+    bool foldTrivialPhis();
 
 private:
     Module* TheModule;
@@ -25,6 +26,8 @@ private:
     bool mergeBasicBlocks(Region* region);
     // Eliminate empty blocks.
     bool eliminateEmptyBlocks(Region* region);
+    // Eliminate trivial phi, such as single coming.
+    bool foldTrivialPhis(Region* region);
 
     std::map<BasicBlock*, std::vector<BasicBlock*>> computePredecessors(Region* region);
 };

@@ -329,6 +329,13 @@ int main(int argc, char **argv) {
     }
     if (ok("postdle")) return 0;
 
+    // All LCSSA-dependent loop passes are done.
+    if (SimplifyCFG(module.get()).foldTrivialPhis()) {
+        GVN(module.get()).run();
+        DCE(module.get()).run();
+    }
+    if (ok("foldphi")) return 0;
+
     if (dumpLIR) {
         std::cout << module->print();
         return 0;

@@ -528,6 +528,39 @@ bool SimplifyCFG::eliminateEmptyBlocks(Region* region) {
     return false;
 }
 
+// A phi with a single incoming edge `p = phi[x, pred]` is always equal to x
+// (its block has exactly one predecessor, so x dominates the block). Replace it with x. 
+// These are typically LCSSA loop-exit phis at single-exit blocks; 
+// folding them breaks LCSSA, so this must run only after all LCSSA-dependent loop passes.
+bool SimplifyCFG::foldTrivialPhis() {
+    bool changed = false;
+    for (auto func : TheModule->getFunctions()) {
+        if (func->getBody()->getBlocks().empty()) continue;
+        changed |= foldTrivialPhis(func->getBody());
+    }
+    return changed;
+}
+
+bool SimplifyCFG::foldTrivialPhis(Region* region) {
+    bool changed = false;
+    for (auto bb : region->getBlocks()) {
+        std::vector<PhiInst*> phis;
+        for (auto inst : bb->getInstructions()) {
+            if (auto* p = dyn_cast<PhiInst>(inst)) phis.push_back(p);
+            else break; 
+        }
+        for (auto* p : phis) {
+            if (p->getNumOperands() != 2) continue;
+            Value* v = p->getOperand(0);
+            if (v == p) continue;
+            p->replaceAllUsesWith(v);
+            p->eraseInst();
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 bool SimplifyCFG::removeGhostPhiEdges(Region* region) {
     bool changed = false;
     auto preds = computePredecessors(region);
