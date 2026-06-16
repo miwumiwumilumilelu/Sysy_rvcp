@@ -42,6 +42,7 @@ IR_PASSES = [
     "flatten",
     "mem2reg",
     "scalarclean",
+    "memoize",
     "tce",
     "inline",
     # "constspec", 

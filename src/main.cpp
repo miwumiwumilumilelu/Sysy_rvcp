@@ -28,6 +28,7 @@
 #include "include/Optimize/Scalar/DFE.h"
 #include "include/Optimize/Scalar/StrengthReduce.h"
 #include "include/Optimize/Scalar/TailCallElim.h"
+#include "include/Optimize/Scalar/Memoize.h"
 #include "include/Optimize/Scalar/SSAInline.h"
 #include "include/Optimize/Scalar/ConstSpec.h"
 #include "include/Optimize/Scalar/LoopUnroll.h"
@@ -202,6 +203,11 @@ int main(int argc, char **argv) {
     runCleanup(module.get(), ok);
     if (ok("scalarclean")) return 0;
 
+// ======== Memoization ========
+
+    Memoize(module.get()).run();
+    if (ok("memoize")) return 0;
+
 // ======== Tail Call Elimination ========
 
     TCE(module.get()).run();
@@ -334,7 +340,6 @@ int main(int argc, char **argv) {
         GVN(module.get()).run();
         DCE(module.get()).run();
     }
-    if (ok("foldphi")) return 0;
 
     if (dumpLIR) {
         std::cout << module->print();
