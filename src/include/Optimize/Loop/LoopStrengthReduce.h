@@ -16,7 +16,7 @@ public:
 private:
     Module* M;
     bool runFunc(Function* f);
-    bool runOnLoop(Loop* L, SCEV& scev);
+    bool runOnLoop(Loop* L, SCEV& scev, Dominators& dt);
 };
 
 }
