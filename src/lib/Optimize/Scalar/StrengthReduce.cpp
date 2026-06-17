@@ -64,11 +64,11 @@ bool StrengthReduce::rewriteFunc(Function* f, ValueTracking& vt) {
                                             new ConstantInt(k), nullptr);
                 } else {
                     // signed-correct: x / 2^k = (x + ((x>>31) & (2^k-1))) >> k
-                    auto* t = new BinaryInst(Instruction::Ashr, lhs, new ConstantInt(31), nullptr);
-                    auto* bias = new BinaryInst(Instruction::And, t, new ConstantInt(v - 1), nullptr);
-                    auto* add = new BinaryInst(Instruction::Add, lhs, bias, nullptr);
-                    newVal = new BinaryInst(Instruction::Ashr, add, new ConstantInt(k), nullptr);
-                    extra = {t, bias, add};
+                    // auto* t = new BinaryInst(Instruction::Ashr, lhs, new ConstantInt(31), nullptr);
+                    // auto* bias = new BinaryInst(Instruction::And, t, new ConstantInt(v - 1), nullptr);
+                    // auto* add = new BinaryInst(Instruction::Add, lhs, bias, nullptr);
+                    // newVal = new BinaryInst(Instruction::Ashr, add, new ConstantInt(k), nullptr);
+                    // extra = {t, bias, add};
                 }
             } else {
                 if (isNonNeg(lhs)) {
@@ -82,16 +82,17 @@ bool StrengthReduce::rewriteFunc(Function* f, ValueTracking& vt) {
                     // q    = add >> k
                     // qshl = q << k
                     // r    = x - qshl
-                    auto* t = new BinaryInst(Instruction::Ashr, lhs, new ConstantInt(31), nullptr);
-                    auto* bias = new BinaryInst(Instruction::And, t, new ConstantInt(v - 1), nullptr);
-                    auto* add = new BinaryInst(Instruction::Add, lhs, bias, nullptr);
-                    auto* q = new BinaryInst(Instruction::Ashr, add, new ConstantInt(k), nullptr);
-                    auto* qshl = new BinaryInst(Instruction::Shl, q, new ConstantInt(k), nullptr);
-                    newVal = new BinaryInst(Instruction::Sub, lhs, qshl, nullptr);
-                    extra = {t, bias, add, q, qshl};
+                    // auto* t = new BinaryInst(Instruction::Ashr, lhs, new ConstantInt(31), nullptr);
+                    // auto* bias = new BinaryInst(Instruction::And, t, new ConstantInt(v - 1), nullptr);
+                    // auto* add = new BinaryInst(Instruction::Add, lhs, bias, nullptr);
+                    // auto* q = new BinaryInst(Instruction::Ashr, add, new ConstantInt(k), nullptr);
+                    // auto* qshl = new BinaryInst(Instruction::Shl, q, new ConstantInt(k), nullptr);
+                    // newVal = new BinaryInst(Instruction::Sub, lhs, qshl, nullptr);
+                    // extra = {t, bias, add, q, qshl};
                 }
             }
 
+            if (!newVal) continue; // !isNonNeg Div/Mod: signed fallback disabled, lowered in backend InstSel
             if (auto* newInst = dyn_cast<Instruction>(newVal))
                 newInst->setParent(bb);
             rewrites.push_back({bin, std::move(extra), newVal});
