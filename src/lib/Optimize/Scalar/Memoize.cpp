@@ -21,7 +21,7 @@ GlobalVariable* Memoize::traceToGlobal(Value* v) {
     return nullptr;
 }
 
-bool Memoize::isCandidate(Function* f, int& iB) {
+bool Memoize::isCandidate2D(Function* f, int& iB) {
     if (f->getBody()->getBlocks().empty()) return false;
 
     // Exactly two i32 params, i32 return.
@@ -58,6 +58,7 @@ bool Memoize::isCandidate(Function* f, int& iB) {
         }
     }
 
+    // Check if it is a recursive function.
     if (calls == 0) return false;
     if (arrayBound == 0) return false;
 
@@ -77,12 +78,12 @@ bool Memoize::isCandidate(Function* f, int& iB) {
     return true;
 }
 
-bool Memoize::transform(Function* f, int iB) {
-    const int wB = limit;
-    // 0, 1, ..., wB
-    // f[i][w]
-    const int stride = wB + 1;
-    const int size = (iB + 1) * stride;
+bool Memoize::transform2D(Function* f, int iB) {
+    // One common bound B for both dimensions.
+    // f[i][w] and a deliberately swapped f[w][i] both work.
+    const int B = (iB > limit ? iB : limit);
+    const int stride = B + 1;
+    const int size = stride * stride;
 
     Type* i32 = Type::getIntTy();
     Function* body = f;
@@ -125,15 +126,15 @@ bool Memoize::transform(Function* f, int iB) {
     };
 
     // entry:
-    //      inb = 1<=i<=iB && 1<=w<=wB;
+    //      inb = 1<=i<=B && 1<=w<=B;
     //      br inb, check, slow;
     auto* c0 = new ICmpInst(ICmpInst::SGE, argI, C(1), entry);
     c0->setName(nm());
-    auto* c1 = new ICmpInst(ICmpInst::SLE, argI, C(iB), entry);
+    auto* c1 = new ICmpInst(ICmpInst::SLE, argI, C(B), entry);
     c1->setName(nm());
     auto* c2 = new ICmpInst(ICmpInst::SGE, argW, C(1), entry); 
     c2->setName(nm());
-    auto* c3 = new ICmpInst(ICmpInst::SLE, argW, C(wB), entry); 
+    auto* c3 = new ICmpInst(ICmpInst::SLE, argW, C(B), entry);
     c3->setName(nm());
     auto* a0 = new BinaryInst(Instruction::And, c0, c1, entry); 
     a0->setName(nm());
@@ -199,13 +200,177 @@ bool Memoize::transform(Function* f, int iB) {
     return true;
 }
 
+bool Memoize::isCandidate1D(Function* f, int& iB) {
+    if (f->getBody()->getBlocks().empty()) return false;
+
+    // Exactly one i32 param, i32 return.
+    // Design for 1D Memoize.
+    auto& args = f->getArgs();
+    if (args.size() != 1) return false;
+    if (!args[0]->getType()->isInt()) return false;
+    if (!f->getType()->isInt()) return false;
+
+    int calls = 0;
+    int arrayBound = 0;
+    for (auto* bb : f->getBody()->getBlocks()) {
+        for (auto* inst : bb->getInstructions()) {
+            // f must not write any memory (purity/ cache validity).
+            if (isa<StoreInst>(inst)) return false;
+            // f only call itself.
+            if (auto* call = dyn_cast<CallInst>(inst)) {
+                if (call->getFunction() != f) return false;
+                calls++;
+            }
+            // Find the bound of i from the global arrays it indexes.
+            if (auto* ld = dyn_cast<LoadInst>(inst)) {
+                if (auto* g = traceToGlobal(ld->getOperand(0))) {
+                    if (auto* pt = dyn_cast<PointerType>(g->getType())) {
+                        if (auto* at = dyn_cast<ArrayType>(pt->getPointeeType())) {
+                            int n = at->getNumElements();
+                            if (n > arrayBound) arrayBound = n;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Need branching recursion (>=2 self-call sites) for overlapping subproblems;
+    // a single recursive call is linear and gains nothing from memoization.
+    if (calls < 2) return false;
+
+    // f can only be entered once in main.
+    int ext = 0;
+    for (auto* g : M->getFunctions()) {
+        if (g == f) continue;
+        for (auto* bb : g->getBody()->getBlocks())
+            for (auto* inst : bb->getInstructions())
+                if (auto* call = dyn_cast<CallInst>(inst))
+                    if (call->getFunction() == f)
+                        ext++;
+    }
+    if (ext != 1) return false;
+
+    // i bounded by the arrays it indexes, or the fixed bound if it indexes none
+    iB = arrayBound ? arrayBound : limit;
+    return true;
+}
+
+bool Memoize::transform1D(Function* f, int iB) {
+    // f[i]
+    const int size = iB + 1;
+
+    Type* i32 = Type::getIntTy();
+    Function* body = f;
+    std::string origName = body->getName();
+    body->setName(origName + "_memoFunc");
+
+    Function* wrapper = new Function(origName, body->getType());
+    auto* argI = new Argument(i32, "i", wrapper, 0);
+    wrapper->addArgument(argI);
+    M->addFunction(wrapper);
+
+    auto* arrTy = new ArrayType(i32, size);
+    auto* memoG = new GlobalVariable(origName + "_memo", arrTy, new ConstantZero(arrTy));
+    auto* doneG = new GlobalVariable(origName + "_done", arrTy, new ConstantZero(arrTy));
+    M->addGlobalVariable(memoG);
+    M->addGlobalVariable(doneG);
+
+    // Redirect call targeting the body.
+    for (auto* g : M->getFunctions()) {
+        if (g == wrapper) continue;
+        for (auto* bb : g->getBody()->getBlocks())
+            for (auto* inst : bb->getInstructions())
+                if (auto* call = dyn_cast<CallInst>(inst))
+                    if (call->getFunction() == body)
+                        call->setOperand(0, wrapper);
+    }
+
+    // Build the wrapper's CFG.
+    Region* region = wrapper->getBody();
+    auto* entry = new BasicBlock("entry", region);
+    auto* check = new BasicBlock("check", region);
+    auto* hit = new BasicBlock("hit", region);
+    auto* miss = new BasicBlock("miss", region);
+    auto* slow = new BasicBlock("slow", region);
+
+    auto C = [](int v) {
+        return new ConstantInt(v);
+    };
+
+    // entry:
+    //      inb = 1<=i<=iB;
+    //      br inb, check, slow;
+    auto* c0 = new ICmpInst(ICmpInst::SGE, argI, C(1), entry);
+    c0->setName(nm());
+    auto* c1 = new ICmpInst(ICmpInst::SLE, argI, C(iB), entry);
+    c1->setName(nm());
+    auto* inb = new BinaryInst(Instruction::And, c0, c1, entry);
+    inb->setName(nm());
+    new BranchInst(inb, check, slow, entry);
+
+    // check:
+    //      idx = i;
+    //      d = done[idx];
+    //      br (d != 0), hit, miss;
+    Value* idx = argI;
+    auto* dd0 = new GetElementPtrInst(doneG, C(0), check);
+    dd0->setName(nm());
+    auto* ddp = new GetElementPtrInst(dd0, idx, check);
+    ddp->setName(nm());
+    auto* d = new LoadInst(ddp, check);
+    d->setName(nm());
+    auto* hc = new ICmpInst(ICmpInst::NE, d, C(0), check);
+    hc->setName(nm());
+    new BranchInst(hc, hit, miss, check);
+
+    // hit:
+    //      return memo[idx];
+    auto* mm0 = new GetElementPtrInst(memoG, C(0), hit);
+    mm0->setName(nm());
+    auto* mmp = new GetElementPtrInst(mm0, idx, hit);
+    mmp->setName(nm());
+    auto* m = new LoadInst(mmp, hit);
+    m->setName(nm());
+    new ReturnInst(m, hit);
+
+    // miss:
+    //      r = body(i);
+    //      done[idx] = 1;
+    //      memo[idx] = r;
+    //      return r;
+    auto* r = new CallInst(body, {argI}, miss);
+    r->setName(nm());
+    auto* sd0 = new GetElementPtrInst(doneG, C(0), miss);
+    sd0->setName(nm());
+    auto* sdp = new GetElementPtrInst(sd0, idx, miss);
+    sdp->setName(nm());
+    new StoreInst(C(1), sdp, miss);
+    auto* sm0 = new GetElementPtrInst(memoG, C(0), miss);
+    sm0->setName(nm());
+    auto* smp = new GetElementPtrInst(sm0, idx, miss);
+    smp->setName(nm());
+    new StoreInst(r, smp, miss);
+    new ReturnInst(r, miss);
+
+    // slow:
+    //      run the original recursion, never touch the table.
+    auto* r2 = new CallInst(body, {argI}, slow);
+    r2->setName(nm());
+    new ReturnInst(r2, slow);
+
+    return true;
+}
+
 bool Memoize::run() {
     std::vector<Function*> funcs(M->getFunctions().begin(), M->getFunctions().end());
     bool changed = false;
     for (auto* f : funcs) {
         int iB = 0;
-        if (isCandidate(f, iB))
-            changed |= transform(f, iB);
+        if (isCandidate2D(f, iB))
+            changed |= transform2D(f, iB);
+        else if (isCandidate1D(f, iB))
+            changed |= transform1D(f, iB);
     }
     return changed;
 }
