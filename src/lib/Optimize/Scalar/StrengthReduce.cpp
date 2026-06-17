@@ -27,7 +27,8 @@ bool StrengthReduce::rewriteFunc(Function* f, ValueTracking& vt) {
 
     struct Rewrite {
         Instruction* old_inst;
-        Value*       new_val;
+        std::vector<Instruction*> extra; // signed-sequence intermediates, inserted before new_val
+        Value* new_val;
     };
     std::vector<Rewrite> rewrites;
 
@@ -51,24 +52,49 @@ bool StrengthReduce::rewriteFunc(Function* f, ValueTracking& vt) {
             if (k < 0) continue;
 
             Value* newVal = nullptr;
+            std::vector<Instruction*> extra;
             if (isZero(lhs)) {
                 newVal = new ConstantInt(0);
             } else if (op == Instruction::Mul) {
                 newVal = new BinaryInst(Instruction::Shl, lhs,
                                         new ConstantInt(k), nullptr);
             } else if (op == Instruction::Div) {
-                if (!isNonNeg(lhs)) continue;
-                newVal = new BinaryInst(Instruction::Ashr, lhs,
-                                        new ConstantInt(k), nullptr);
+                if (isNonNeg(lhs)) {
+                    newVal = new BinaryInst(Instruction::Ashr, lhs,
+                                            new ConstantInt(k), nullptr);
+                } else {
+                    // signed-correct: x / 2^k = (x + ((x>>31) & (2^k-1))) >> k
+                    auto* t = new BinaryInst(Instruction::Ashr, lhs, new ConstantInt(31), nullptr);
+                    auto* bias = new BinaryInst(Instruction::And, t, new ConstantInt(v - 1), nullptr);
+                    auto* add = new BinaryInst(Instruction::Add, lhs, bias, nullptr);
+                    newVal = new BinaryInst(Instruction::Ashr, add, new ConstantInt(k), nullptr);
+                    extra = {t, bias, add};
+                }
             } else {
-                if (!isNonNeg(lhs)) continue;
-                newVal = new BinaryInst(Instruction::And, lhs,
-                                        new ConstantInt(v - 1), nullptr);
+                if (isNonNeg(lhs)) {
+                    newVal = new BinaryInst(Instruction::And, lhs,
+                                            new ConstantInt(v - 1), nullptr);
+                } else {
+                    // signed-correct: x % 2^k = x - ((x / 2^k) << k)
+                    // t    = x >> 31
+                    // bias = t & (2^k - 1)
+                    // add  = x + bias
+                    // q    = add >> k
+                    // qshl = q << k
+                    // r    = x - qshl
+                    auto* t = new BinaryInst(Instruction::Ashr, lhs, new ConstantInt(31), nullptr);
+                    auto* bias = new BinaryInst(Instruction::And, t, new ConstantInt(v - 1), nullptr);
+                    auto* add = new BinaryInst(Instruction::Add, lhs, bias, nullptr);
+                    auto* q = new BinaryInst(Instruction::Ashr, add, new ConstantInt(k), nullptr);
+                    auto* qshl = new BinaryInst(Instruction::Shl, q, new ConstantInt(k), nullptr);
+                    newVal = new BinaryInst(Instruction::Sub, lhs, qshl, nullptr);
+                    extra = {t, bias, add, q, qshl};
+                }
             }
 
             if (auto* newInst = dyn_cast<Instruction>(newVal))
                 newInst->setParent(bb);
-            rewrites.push_back({bin, newVal});
+            rewrites.push_back({bin, std::move(extra), newVal});
         }
     }
 
@@ -76,6 +102,10 @@ bool StrengthReduce::rewriteFunc(Function* f, ValueTracking& vt) {
         auto* bb = rw.old_inst->getParent();
         auto& instList = bb->getInstructions();
         auto it = std::find(instList.begin(), instList.end(), rw.old_inst);
+        for (auto* ex : rw.extra) {
+            ex->setParent(bb);
+            instList.insert(it, ex);
+        }
         if (auto* newInst = dyn_cast<Instruction>(rw.new_val)) {
             if (!rw.old_inst->getName().empty())
                 newInst->setName(rw.old_inst->getName());
