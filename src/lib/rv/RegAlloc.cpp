@@ -70,6 +70,62 @@ void RegAlloc::preColor(MCFunction* func) {
     }
 }
 
+void RegAlloc::collectCopyAffinity(MCFunction* func) {
+    // Layout index of each block: a back-edge (latch -> header) goes to a block
+    // at or before its source, so a loop header is the target of a pred whose
+    // index is >= the header's. This cheaply recognizes BOTH a single-block self
+    // loop (header is its own pred) AND a normal loop header (separate latch),
+    // while a pure branch-merge block (all preds before it) has no back-edge and
+    // is correctly skipped.
+    std::unordered_map<MCBlock*, int> idx;
+    {
+        int i = 0;
+        for (auto& b : func->blocks) idx[b.get()] = i++;
+    }
+
+    for (auto& blkPtr : func->blocks) {
+        MCBlock* now = blkPtr.get();
+        if (now->preds.size() != 1 || now->succs.size() != 1) continue;
+
+        //                  ┌──── back-edge (self or latch)
+        //                  │  │
+        // pred -> now -> dst -┘
+        // `now` is a single-use trampoline on a forward ENTRY edge of the loop
+        // header `dst`; the moves it holds are loop-entry phi copies.
+        MCBlock* pred = now->preds[0];
+        MCBlock* dst = now->succs[0];
+        if (pred == dst) continue;
+        if (dst->preds.size() != 2) continue; // header: one entry + one back-edge
+        if (idx[now] >= idx[dst]) continue; // `now` must be the forward entry edge
+        bool hasBackEdge = false;
+        for (MCBlock* p : dst->preds)
+            if (idx[p] >= idx[dst]) { hasBackEdge = true; break; }
+        if (!hasBackEdge) continue; // dst must be a real loop header
+
+        for (RvOp* op = now->head; op; op = op->next) {
+            // Remember a preference.
+            auto addAffinity = [&](MCOperand& dstOp, MCOperand& srcOp) {
+                if (!dstOp.isVReg() || !srcOp.isVReg()) return;
+                VReg a = dstOp.getVReg(), b = srcOp.getVReg();
+                if (a == b) return;
+                auto* ai = func->getVRegInfo(a);
+                auto* bi = func->getVRegInfo(b);
+                if (!ai || !bi || ai->isFloat != bi->isFloat) return;
+                copyAffinity[a][b]++;
+                copyAffinity[b][a]++;
+            };
+
+            if (op->opcode == RvOp::MvOp) {
+                auto* mv = static_cast<MvOp*>(op);
+                addAffinity(mv->rd, mv->rs);
+            } else if (op->opcode == RvOp::FMvSOp) {
+                auto* mv = static_cast<FMvSOp*>(op);
+                addAffinity(mv->rd, mv->rs);
+            }
+        }
+    }
+}
+
 static void addInterf(std::unordered_map<VReg, std::unordered_set<VReg>>& g, VReg a, VReg b) {
     g[a].insert(b);
     g[b].insert(a);
@@ -200,7 +256,28 @@ void RegAlloc::colorGraph(MCFunction* func) {
         int cnt = getAllocOrderCount(isFloat, isLeaf);
 
         bool found = false;
+        int bestScore = -1;
+        Reg bestReg = Reg::zero;
+
+        if (copyAffinity.count(v)) {
+            for (auto& [u, weight] : copyAffinity[v]) {
+                if (!assignment.count(u)) continue;
+                Reg r = assignment[u];
+                if (r == Reg::sp || r == Reg::zero || bad.count(r)) continue;
+                if (weight > bestScore) {
+                    bestScore = weight;
+                    bestReg = r;
+                }
+            }
+        }
+
+        if (bestScore >= 0) {
+            assignment[v] = bestReg;
+            found = true;
+        }
+
         for (int i = 0; i < cnt; ++i) {
+            if (found) break;
             if (!bad.count(order[i])) {
                 assignment[v] = order[i];
                 found = true;
@@ -904,6 +981,7 @@ void RegAlloc::run(MCFunction* func) {
     // Reset state for each function.
     interf.clear();
     spillInterf.clear();
+    copyAffinity.clear();
     liveThroughCall.clear();
     assignment.clear();
     spillLocal.clear();
@@ -915,6 +993,7 @@ void RegAlloc::run(MCFunction* func) {
     func->buildDefUseChains();
     func->computeLiveness();
 
+    collectCopyAffinity(func);
     buildInterference(func);
     preColor(func);
     colorGraph(func);

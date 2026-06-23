@@ -23,6 +23,9 @@ private:
     // Only for Slot allocation.
     std::unordered_map<VReg, std::unordered_set<VReg>> spillInterf;
     std::unordered_map<VReg, std::unordered_set<Reg>> pregInterf;
+    // Narrow copy-affinity from loop-entry phi trampolines only.
+    // This is a coloring bias, not real graph coalescing.
+    std::unordered_map<VReg, std::unordered_map<VReg, int>> copyAffinity;
     // VRegs live across a CallOp: cannot use caller-saved registers.
     std::unordered_set<VReg> liveThroughCall;
 
@@ -34,6 +37,7 @@ private:
     std::unordered_map<VReg, Reg> argIncomingReg;
 
     void preColor(MCFunction* func);
+    void collectCopyAffinity(MCFunction* func);
     void buildInterference(MCFunction* func);
     void colorGraph(MCFunction* func);
     void assignSpillSlots(MCFunction* func);
