@@ -291,6 +291,59 @@ static bool eliminateFallthroughs(MCFunction* func) {
     return changed;
 }
 
+// bb.loop:
+//     ...
+//     bnez ..., bb.loop_to_bb.loop
+// bb.loop_to_bb.loop:
+//     mv ...
+//     j bb.loop
+//
+// turns to:
+//
+// bb.loop_to_bb.loop:
+//     mv ...
+// bb.loop:
+//     ...
+// If we place the trampoline immediately before bb.loop, the terminal jump can
+// fall through and disappear, which also lets qemu form a less fragmented TB.
+static bool foldSelfEdgeTrampolines(MCFunction* func) {
+    auto& blocks = func->blocks;
+
+    // Find the index of current block.
+    auto findIndex = [&](MCBlock* block) -> size_t {
+        for (size_t i = 0; i < blocks.size(); ++i)
+            if (blocks[i].get() == block) return i;
+        return blocks.size();
+    };
+
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        MCBlock* now = blocks[i].get();
+        if (now == blocks.front().get()) continue;
+        // Fall-through bb.
+        if (now->preds.size() != 1 || now->succs.size() != 1) continue;
+
+        MCBlock* pred = now->preds[0];
+        MCBlock* dst = now->succs[0];
+        if (pred != dst) continue;
+
+        RvOp* term = now->getTerminator();
+        // now is tramp.
+        if (!term || term->opcode != RvOp::JOp) continue;
+
+        size_t dstIdx = findIndex(dst);
+        if (i + 1 == dstIdx) continue; // already directly before target
+
+        auto tmp = std::move(blocks[i]);
+        blocks.erase(blocks.begin() + i);
+        if (i < dstIdx) --dstIdx;
+        blocks.insert(blocks.begin() + dstIdx, std::move(tmp));
+
+        return true;
+    }
+
+    return false;
+}
+
 void MCPeepholePass::run(MCFunction* func) {
     for (auto& b : func->blocks) {
         forwardStackStores(b.get());
@@ -298,6 +351,7 @@ void MCPeepholePass::run(MCFunction* func) {
     }
     // Defend chained trampolines.
     while (eliminateTrivialBlocks(func)) {}
+    while (foldSelfEdgeTrampolines(func)) {}
     eliminateFallthroughs(func);
 }
 
