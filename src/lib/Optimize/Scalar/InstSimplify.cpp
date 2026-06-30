@@ -26,6 +26,8 @@ static Match regularMatches[] = {
     Match("(rewrite (add x 0) x)"),
     Match("(rewrite (add x (sub y x)) y)"),
     Match("(rewrite (add (sub x 'a) 'a) x)"),
+    Match("(rewrite (add (sub 0 x) x) 0)"),
+    Match("(rewrite (add x (sub 0 x)) 0)"),
 
     Match("(rewrite (sub 'a 'b) (!sub 'a 'b))"),
     Match("(rewrite (sub x 0) x)"),
@@ -33,6 +35,8 @@ static Match regularMatches[] = {
     Match("(rewrite (sub (add x 'a) 'a) x)"),
     Match("(rewrite (sub (add x y) x) y)"),
     Match("(rewrite (sub (add x y) y) x)"),
+    Match("(rewrite (sub x (add x y)) (sub 0 y))"),
+    Match("(rewrite (sub x (add y x)) (sub 0 y))"),
 
     Match("(rewrite (mul 'a 'b) (!mul 'a 'b))"),
     Match("(rewrite (mul x 1) x)"),

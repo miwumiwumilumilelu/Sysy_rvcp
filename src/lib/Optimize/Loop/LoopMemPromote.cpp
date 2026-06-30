@@ -40,6 +40,7 @@ bool LoopMemPromote::promoteLoop(Loop* L, Dominators& dt) {
     auto* preBlock = L->entryBlock(dt);
     if (!preBlock || !L->latch || !L->head) return false;
     if (!L->hasPreheaderAndSingleLatch()) return false;
+    if (L->exits.empty()) return false;
 
     // Only promote loops whose in-loop exit edges all leave from the latch.
     for (auto* exitBB : L->exits) {
@@ -115,6 +116,20 @@ bool LoopMemPromote::promoteLoop(Loop* L, Dominators& dt) {
 
         Type* ty = slot.lds[0]->getType();
 
+        std::vector<std::pair<BasicBlock*, std::vector<BasicBlock*>>> exitPreds;
+        bool exitsOk = true;
+        for (auto* exitBB : L->exits) {
+            auto preds = dt.getPredecessors(exitBB);
+            if (preds.empty()) { exitsOk = false; break; }
+            for (auto* pred : preds) {
+                if (pred == preBlock) continue;
+                if (!L->has(pred)) { exitsOk = false; break; }
+            }
+            if (!exitsOk) break;
+            exitPreds.push_back({exitBB, std::move(preds)});
+        }
+        if (!exitsOk) continue;
+
         auto* preload = new LoadInst(addr, nullptr);
         preload->setName("lmp_pre" + std::to_string(lmpID));
         preload->setParent(preBlock);
@@ -133,18 +148,19 @@ bool LoopMemPromote::promoteLoop(Loop* L, Dominators& dt) {
         }
         st->eraseInst();
 
-        for (auto* exitBB : L->exits) {
-            auto preds = dt.getPredecessors(exitBB);
-            if (preds.empty()) return false;
-
+        for (auto& [exitBB, preds] : exitPreds) {
             std::vector<std::pair<Value*, BasicBlock*>> incomings;
             incomings.reserve(preds.size());
             for (auto* pred : preds) {
+                // If the flow goes directly from preBlock to exitBB, 
+                // it means the loop body was never executed, 
+                // so the values ​​in memory were not updated by the loop.
+                // At this point, the exit store should be reset to its initial value:
+                // preload = load addr;
                 if (pred == preBlock) {
                     incomings.push_back({preload, pred});
                     continue;
                 }
-                if (!L->has(pred)) return false;
                 // With the single in-loop store restricted to the latch,
                 // the promoted value remains the loop-carried header value on every other in-loop exit edge.
                 incomings.push_back({pred == L->latch ? sval : hphi, pred});
