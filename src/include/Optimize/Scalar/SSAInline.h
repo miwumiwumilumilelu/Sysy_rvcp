@@ -5,6 +5,9 @@
 
 namespace sysy {
 
+struct Loop;
+class SCEV;
+
 class SSAInline {
     Module* M;
     int threshold;
@@ -16,7 +19,7 @@ public:
     bool run();
 
 private:
-    bool isInlineable(CallInst* call, bool callSiteInLoop) const;
+    bool isInlineable(CallInst* call, Loop* callSiteLoop, SCEV* scev, int callSiteCount) const;
 
     void doInline(CallInst* call);
 

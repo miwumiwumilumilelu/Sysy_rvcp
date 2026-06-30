@@ -201,7 +201,6 @@ int main(int argc, char **argv) {
 // ======== Scalar Cleanup ========
 
     runCleanup(module.get(), ok);
-    if (ok("scalarclean")) return 0;
 
 // ======== Memoization ========
 

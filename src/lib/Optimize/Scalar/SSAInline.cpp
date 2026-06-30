@@ -1,10 +1,12 @@
 #include "../../../include/Optimize/Scalar/SSAInline.h"
 #include "../../../include/Optimize/Scalar/IRClone.h"
 #include "../../../include/Optimize/Analysis/Dominators.h"
+#include "../../../include/Optimize/Analysis/LoopInfo.h"
+#include "../../../include/Optimize/Analysis/SCEV.h"
+#include "../../../include/Optimize/Loop/LoopUtils/LoopTripUtils.h"
 #include <algorithm>
 #include <assert.h>
-#include <map>
-#include <set>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -83,45 +85,39 @@ static bool writesGlobal(Function* f) {
     return false;
 }
 
-static std::set<BasicBlock*> naturalLoopBlocks(Function* f) {
-    std::map<BasicBlock*, std::vector<BasicBlock*>> preds;
-    for (auto bb : f->getBody()->getBlocks()) {
-        preds[bb];
-        for (auto* succ : successorsOf(bb))
-            preds[succ].push_back(bb);
+static bool hasSmallTrip(Loop* L, SCEV& scev, int64_t maxTrip) {
+    for (auto* cur = L; cur; cur = cur->up) {
+        int64_t trips = -1;
+        ExitBranchInfo info;
+        bool ok = (cur->latch &&
+                   analyzeExitBranch(cur, cur->latch, scev, info) &&
+                   getConstantTripCountFromInfo(info, cur, trips) ||
+                  (cur->head &&
+                   analyzeExitBranch(cur, cur->head, scev, info) &&
+                   getConstantTripCountFromInfo(info, cur, trips)
+                  )
+        );
+        if (!ok || trips < 0 || trips > maxTrip)
+            return false;
     }
-
-    Dominators dom(f);
-    dom.run();
-
-    std::set<BasicBlock*> loopBlocks;
-    for (auto latch : f->getBody()->getBlocks()) {
-        for (auto* header : successorsOf(latch)) {
-            if (!dom.dominates(header, latch)) continue;
-
-            std::vector<BasicBlock*> stack{latch};
-            loopBlocks.insert(header);
-            while (!stack.empty()) {
-                BasicBlock* bb = stack.back();
-                stack.pop_back();
-                if (!loopBlocks.insert(bb).second) continue;
-                for (auto* pred : preds[bb]) {
-                    if (pred != header)
-                        stack.push_back(pred);
-                }
-            }
-        }
-    }
-    return loopBlocks;
+    return true;
 }
 
-bool SSAInline::isInlineable(CallInst* call, bool callSiteInLoop) const {
+bool SSAInline::isInlineable(CallInst* call, Loop* callSiteLoop, SCEV* scev, int callSiteCount) const {
     Function* f = call ? call->getFunction() : nullptr;
     if (!f) return false;
     if (f->getBody()->getBlocks().empty()) return false;
     if (isRecursive(f)) return false;
-    if (hasLoop(f) && writesGlobal(f)) return false;
-    if (callSiteInLoop && writesGlobal(f)) return false;
+    bool calleeHasLoop = hasLoop(f);
+    bool calleeWritesGlobal = writesGlobal(f);
+    if (calleeHasLoop && calleeWritesGlobal) return false;
+    if (!calleeHasLoop && calleeWritesGlobal && callSiteCount > 1) return false;
+
+    // If the callee contains a loop and the call site is also within a loop, 
+    // inlining is permitted only if the trip count of the loop containing the call site is small 
+    // and can be proven Trip <= 8.
+    if (calleeHasLoop && callSiteLoop && (!scev || !hasSmallTrip(callSiteLoop, *scev, 8))) return false;
+    
     if (countInsts(f) > threshold) return false;
     return true;
 }
@@ -297,13 +293,23 @@ void SSAInline::AllocaHoist(Function* func) {
 
 bool SSAInline::run() {
     bool anyChanged = false;
+    std::unordered_map<Function*, int> callSiteCounts;
+    for (auto func : M->getFunctions())
+        for (auto bb : func->getBody()->getBlocks())
+            for (auto inst : bb->getInstructions())
+                if (auto* call = dyn_cast<CallInst>(inst))
+                    ++callSiteCounts[call->getFunction()];
+
     for (auto func : M->getFunctions()) {
         std::vector<CallInst*> toInline;
-        auto loopBlocks = naturalLoopBlocks(func);
+        Dominators dt(func);
+        dt.run();
+        LoopInfo li(func, dt);
+        SCEV scev(func, li);
         for (auto bb : func->getBody()->getBlocks())
             for (auto inst : bb->getInstructions())
                 if (auto call = dyn_cast<CallInst>(inst))
-                    if (isInlineable(call, loopBlocks.count(bb)))
+                    if (isInlineable(call, li.loopOf(bb), &scev, callSiteCounts[call->getFunction()]))
                         toInline.push_back(call);
 
         for (auto call : toInline) {
