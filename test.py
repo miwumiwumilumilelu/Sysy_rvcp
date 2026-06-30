@@ -41,7 +41,6 @@ IR_PASSES = [
     "hlicm",
     "flatten",
     "mem2reg",
-    "scalarclean",
     "memoize",
     "tce",
     "inline",

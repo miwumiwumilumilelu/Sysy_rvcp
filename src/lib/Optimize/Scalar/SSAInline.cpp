@@ -110,15 +110,31 @@ bool SSAInline::isInlineable(CallInst* call, Loop* callSiteLoop, SCEV* scev, int
     if (isRecursive(f)) return false;
     bool calleeHasLoop = hasLoop(f);
     bool calleeWritesGlobal = writesGlobal(f);
+    int instCount = countInsts(f);
     if (calleeHasLoop && calleeWritesGlobal) return false;
     if (!calleeHasLoop && calleeWritesGlobal && callSiteCount > 1) return false;
 
+    auto hasStore = [&](Function* f) -> bool {
+        for (auto bb : f->getBody()->getBlocks())
+            for (auto inst : bb->getInstructions())
+                if (isa<StoreInst>(inst))
+                    return true;
+        return false;
+    };
+
     // If the callee contains a loop and the call site is also within a loop, 
     // inlining is permitted only if the trip count of the loop containing the call site is small 
-    // and can be proven Trip <= 8.
-    if (calleeHasLoop && callSiteLoop && (!scev || !hasSmallTrip(callSiteLoop, *scev, 8))) return false;
+    // which can be proven Trip <= 8.
+    // or
+    // The loop is tiny read-only.
+    if (calleeHasLoop && callSiteLoop) {
+        bool tinyReadOnlyLoop = !hasStore(f) && instCount <= 40;
+        // neither ..., nor ...
+        if (!tinyReadOnlyLoop && (!scev || !hasSmallTrip(callSiteLoop, *scev, 8)))
+            return false;
+    }
     
-    if (countInsts(f) > threshold) return false;
+    if (instCount > threshold) return false;
     return true;
 }
 
