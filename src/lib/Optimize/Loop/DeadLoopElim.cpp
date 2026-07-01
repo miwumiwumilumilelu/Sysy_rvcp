@@ -78,26 +78,26 @@ static bool isDeadPhiClosure(PhiInst* phi) {
     return true;
 }
 
-static bool isBadPhi(PhiInst* phi, Loop* L, BasicBlock* entryPred) {
+static bool isBadPhi(PhiInst* phi, Loop* L, BasicBlock* preHeader) {
     Value* init = nullptr;
     Value* backVal = nullptr;
     for (int k = 0; k < phi->getNumOperands(); k += 2) {
         auto* fromBB = dyn_cast<BasicBlock>(phi->getOperand(k + 1));
-        if (fromBB == entryPred) init = phi->getOperand(k);
+        if (fromBB == preHeader) init = phi->getOperand(k);
         else if (fromBB && L->has(fromBB)) backVal = phi->getOperand(k);
     }
     if (init && backVal && init == backVal) return true; // loop-invariant PHI
     return isDeadPhiClosure(phi); // or dead PHIs
 }
 
-static bool isControlOnlyIV(PhiInst* phi, Loop* L, BasicBlock* entryPred) {
+static bool isControlOnlyIV(PhiInst* phi, Loop* L, BasicBlock* preHeader) {
     // iv = phi [init, entry], [iv.next, latch]
     if (phi->getNumOperands() != 4) return false; // exactly entry + latch incomings
     Value* inc = nullptr;
     for (int k = 0; k < phi->getNumOperands(); k += 2) {
         auto* fromBB = dyn_cast<BasicBlock>(phi->getOperand(k + 1));
         // Find the latch.
-        if (fromBB && fromBB != entryPred && L->has(fromBB))
+        if (fromBB && fromBB != preHeader && L->has(fromBB))
             inc = phi->getOperand(k);
     }
     auto* bin = dyn_cast<BinaryInst>(inc);
@@ -457,9 +457,9 @@ static bool noLoopCarriedMemDep(Loop* L, Dominators& dt, SCEV& scev) {
 // Returns +1 = always takes exit (zero-trip), -1 = never takes exit (skip-edge invariant), 0 = unknown.
 static int evalPreheaderEdge(Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev) {
     if (!L || !exitBB) return 0;
-    auto* entryPred = L->entryBlock(dt);
-    if (!entryPred || entryPred->getInstructions().empty()) return 0;
-    auto* br = dyn_cast<BranchInst>(entryPred->getInstructions().back());
+    auto* preHeader = L->entryBlock(dt);
+    if (!preHeader || preHeader->getInstructions().empty()) return 0;
+    auto* br = dyn_cast<BranchInst>(preHeader->getInstructions().back());
     if (!br || br->getNumOperands() != 3) return 0;
     auto* t = dyn_cast<BasicBlock>(br->getOperand(1));
     auto* f = dyn_cast<BasicBlock>(br->getOperand(2));
@@ -479,7 +479,7 @@ static bool collectExitPhiReplacements(
     std::map<PhiInst*, Value*>& outMap) {
     if (!L || !exitBB) return false;
 
-    auto* entryPred = L->entryBlock(dt);
+    auto* preHeader = L->entryBlock(dt);
     bool skipEdgeNeverTaken = (evalPreheaderEdge(L, exitBB, dt, scev) == -1);
 
     // Build replacement values for live exit phis.
@@ -515,7 +515,7 @@ static bool collectExitPhiReplacements(
         for (int k = 0; k < (int)phi->getNumOperands(); k += 2) {
             auto* fromBB = dyn_cast<BasicBlock>(phi->getOperand(k + 1));
             if (!fromBB || L->has(fromBB)) continue;
-            if (fromBB != entryPred) return false;
+            if (fromBB != preHeader) return false;
             if (skipEdgeNeverTaken) continue;
             if (!sameValue(uniqueLoopVal, phi->getOperand(k), scev))
                 return false;
@@ -530,8 +530,8 @@ static bool collectExitPhiReplacements(
 
 static bool breakBackedgeIfNotTaken(Loop* L, BasicBlock* exitBB, Dominators& dt) {
     if (!L || !exitBB || !L->head || !L->latch) return false;
-    auto* entryPred = L->entryBlock(dt);
-    if (!entryPred) return false;
+    auto* preHeader = L->entryBlock(dt);
+    if (!preHeader) return false;
 
     auto& latchInsts = L->latch->getInstructions();
     if (latchInsts.empty()) return false;
@@ -551,7 +551,7 @@ static bool breakBackedgeIfNotTaken(Loop* L, BasicBlock* exitBB, Dominators& dt)
     std::unordered_map<Value*, Value*> cache;
     std::set<Value*> vis;
     auto* cond = dyn_cast<ConstantInt>(
-        evaluateFirstIterValue(br->getOperand(0), L, entryPred, dt, tempOwner, cache, vis));
+        evaluateFirstIterValue(br->getOperand(0), L, preHeader, dt, tempOwner, cache, vis));
     if (!cond) return false;
 
     bool takesHead = trueIsHead ? (cond->getValue() != 0) : (cond->getValue() == 0);
@@ -568,7 +568,7 @@ static bool breakBackedgeIfNotTaken(Loop* L, BasicBlock* exitBB, Dominators& dt)
         Value* initVal = nullptr;
         for (int k = 0; k < (int)phi->getNumOperands(); k += 2) {
             auto* fromBB = dyn_cast<BasicBlock>(phi->getOperand(k + 1));
-            if (fromBB == entryPred) {
+            if (fromBB == preHeader) {
                 initVal = phi->getOperand(k);
                 break;
             }
@@ -590,22 +590,22 @@ static bool collectZeroTrip(Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& s
                                             std::map<PhiInst*, Value*>& outMap) {
     if (evalPreheaderEdge(L, exitBB, dt, scev) != 1) return false;
 
-    auto* entryPred = L->entryBlock(dt);
+    auto* preHeader = L->entryBlock(dt);
     for (auto* inst : exitBB->getInstructions()) {
         auto* phi = dyn_cast<PhiInst>(inst);
         if (!phi) break;
         if (phi->getUsers().empty()) continue;
 
-        Value* fromEntry = nullptr;
+        Value* fromPreH = nullptr;
         for (int k = 0; k < (int)phi->getNumOperands(); k += 2) {
             auto* fromBB = dyn_cast<BasicBlock>(phi->getOperand(k + 1));
-            if (fromBB == entryPred) {
-                fromEntry = phi->getOperand(k);
+            if (fromBB == preHeader) {
+                fromPreH = phi->getOperand(k);
                 break;
             }
         }
-        if (!fromEntry) return false;
-        outMap[phi] = fromEntry;
+        if (!fromPreH) return false;
+        outMap[phi] = fromPreH;
     }
 
     // Check if there are other live-out values that we cannot handle.
@@ -621,13 +621,13 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
                             std::map<PhiInst*, Value*>& replacements,
                             Dominators& dt) {
     if (!exitBB) return false;
-    auto* entryPred = L->entryBlock(dt);
-    if (!entryPred) return false;
+    auto* preHeader = L->entryBlock(dt);
+    if (!preHeader) return false;
 
-    auto& entryInsts = entryPred->getInstructions();
+    auto& entryInsts = preHeader->getInstructions();
     if (entryInsts.empty()) return false;
 
-    // entryPred:
+    // preHeader:
     //      br ... head/exitBB; 
     // loop:
     //      %x.loop = ...; 
@@ -638,7 +638,7 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
     //
     // becomes:
     //
-    // entryPred: 
+    // preHeader: 
     //      %x.dle = ...; 
     //      br exitBB; 
     // exitBB: 
@@ -648,7 +648,7 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
     std::unordered_map<Value*, Value*> matCache;
     for (auto& [phi, val] : replacements) {
         std::set<Value*> vis;
-        Value* repl = materializeForDeletion(val, L, entryPred, matCache, vis);
+        Value* repl = materializeForDeletion(val, L, preHeader, matCache, vis);
         if (!repl) return false;
         phi->replaceAllUsesWith(repl);
         phi->eraseInst();
@@ -656,7 +656,7 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
 
     // Delete dead exit phis that still mention the loop.
     // such as:
-    // y.exit = phi [ y.loop, latch ], [ y.entry, entryPred ]
+    // y.exit = phi [ y.loop, latch ], [ y.entry, preHeader ]
     // but y.exit is not used outside, we can just delete it without replacement.
     {
         auto& exitInsts = exitBB->getInstructions();
@@ -682,7 +682,7 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
     entryTerm->replaceAllUsesWith(nullptr);
     entryTerm->eraseInst();
 
-    new BranchInst(exitBB, entryPred);
+    new BranchInst(exitBB, preHeader);
     return true;
 }
 
@@ -691,8 +691,8 @@ static bool performDeletion(Loop* L, BasicBlock* exitBB,
 static bool tryCollapseRepeatLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev) {
     if (!L || !exitBB || !L->head || !L->latch) return false;
     if (L->latches.size() != 1) return false;
-    auto* entryPred = L->entryBlock(dt);
-    if (!entryPred) return false;
+    auto* preHeader = L->entryBlock(dt);
+    if (!preHeader) return false;
 
     // Require a compile-time trip count >= 1.
     ExitBranchInfo info;
@@ -717,8 +717,8 @@ static bool tryCollapseRepeatLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, S
     for (auto* inst : L->head->getInstructions()) {
         auto* phi = dyn_cast<PhiInst>(inst);
         if (!phi) break;
-        if (isBadPhi(phi, L, entryPred)) continue;
-        if (isControlOnlyIV(phi, L, entryPred)) continue;
+        if (isBadPhi(phi, L, preHeader)) continue;
+        if (isControlOnlyIV(phi, L, preHeader)) continue;
         return false; // a real loop-carried scalar -> not idempotent
     }
 
@@ -747,7 +747,7 @@ static bool tryCollapseRepeatLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, S
     for (auto* phi : phis) {
         Value* initVal = nullptr;
         for (int k = 0; k < phi->getNumOperands(); k += 2)
-            if (dyn_cast<BasicBlock>(phi->getOperand(k + 1)) == entryPred) {
+            if (dyn_cast<BasicBlock>(phi->getOperand(k + 1)) == preHeader) {
                 initVal = phi->getOperand(k);
                 break;
             }
@@ -760,6 +760,247 @@ static bool tryCollapseRepeatLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, S
     br->replaceAllUsesWith(nullptr);
     br->eraseInst();
     new BranchInst(exitBB, L->latch);
+    return true;
+}
+
+// Collapse a side-effect-free countdown loop to a guarded last-iteration fast path.
+//
+// Before:
+//   while (iv) {
+//       live = readonly(iv);
+//       iv = iv - 1;
+//   }
+//
+// After:
+//   if (iv > 0) {
+//       live = readonly(1);
+//   } else {
+//       while (iv) { ...original loop... }
+//   }
+static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev) {
+    if (!L || !exitBB || !L->head || !L->latch) return false;
+    if (L->latches.size() != 1 || !L->sub.empty()) return false;
+    if (L->blocks.size() != 1 || L->head != L->latch) return false;
+
+    std::function<bool(Function*, std::unordered_map<Function*, bool>&)> 
+    isReadOnly = [&](Function* f, std::unordered_map<Function*, bool>& cache) -> bool {
+        if (!f || f->getBody()->getBlocks().empty()) return false;
+        auto it = cache.find(f);
+        if (it != cache.end()) return it->second;
+        cache[f] = true;
+
+        for (auto* bb : f->getBody()->getBlocks()) {
+            for (auto* inst : bb->getInstructions()) {
+                if (isa<StoreInst>(inst)) {
+                    cache[f] = false;
+                    return false;
+                }
+                if (isa<ReturnInst>(inst)) continue;
+                if (auto* call = dyn_cast<CallInst>(inst)) {
+                    if (!isReadOnly(call->getFunction(), cache)) {
+                        cache[f] = false;
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    };
+
+    std::unordered_map<Function*, bool> cache;
+    for (auto* bb : L->blocks) {
+        for (auto* inst : bb->getInstructions()) {
+            if (isa<ReturnInst>(inst) || isa<StoreInst>(inst)) return false;
+            if (auto* call = dyn_cast<CallInst>(inst))
+                if (!isReadOnly(call->getFunction(), cache)) return false;
+        }
+    }
+
+    auto* preHeader = L->entryBlock(dt);
+    if (!preHeader) return false;
+
+    ExitBranchInfo info;
+    if (!analyzeExitBranch(L, L->latch, scev, info)) return false;
+
+    std::map<Value*, Value*> vmap;
+    PhiInst* lastIV = nullptr;
+    Value* initVal = nullptr;
+    for (auto* inst : L->head->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+
+        // while (n) {}
+        // Exit only when IV down to zero.
+        if (!lastIV && phi->getNumOperands() == 4 && info.continuePred == ICmpInst::NE) {
+            Value* fromPreH = nullptr;
+            Value* fromLatch = nullptr;
+            for (int k = 0; k < phi->getNumOperands(); k += 2) {
+                auto* fromBB = dyn_cast<BasicBlock>(phi->getOperand(k + 1));
+                if (fromBB == preHeader) fromPreH = phi->getOperand(k);
+                else if (fromBB && L->has(fromBB)) fromLatch = phi->getOperand(k);
+            }
+
+            auto* next = dyn_cast<BinaryInst>(fromLatch);
+            auto* step = next ? dyn_cast<ConstantInt>(next->getOperand(1)) : nullptr;
+
+            auto isNextZero = [&](Value* a, Value* b) {
+                auto* c = dyn_cast<ConstantInt>(b);
+                return a == fromLatch && c && c->getValue() == 0;
+            };
+            bool latchTestsNextZero = isNextZero(info.lhs, info.rhs) ||
+                                      isNextZero(info.rhs, info.lhs);
+
+            if (fromPreH && fromLatch && 
+                next && next->getOpID() == Instruction::Sub &&
+                next->getOperand(0) == phi && step && step->getValue() == 1 &&
+                latchTestsNextZero) {
+                initVal = fromPreH;
+                lastIV = phi;
+                vmap[phi] = new ConstantInt(1);
+                continue;
+            }
+        }
+
+        // Here processes non-IV phis.
+        if (!isBadPhi(phi, L, preHeader)) return false;
+        for (int k = 0; k < phi->getNumOperands(); k += 2) {
+            if (dyn_cast<BasicBlock>(phi->getOperand(k + 1)) == preHeader) {
+                vmap[phi] = phi->getOperand(k);
+                break;
+            }
+        }
+        if (!vmap.count(phi)) return false;
+    }
+    if (!lastIV || !initVal) return false;
+
+    // Checking structure.
+    auto& entryInsts = preHeader->getInstructions();
+    if (entryInsts.empty()) return false;
+    auto* entryBr = dyn_cast<BranchInst>(entryInsts.back());
+    if (!entryBr || entryBr->getNumOperands() != 3) return false;
+    Value* oldCond = entryBr->getOperand(0);
+    auto* oldTrue = dyn_cast<BasicBlock>(entryBr->getOperand(1));
+    auto* oldFalse = dyn_cast<BasicBlock>(entryBr->getOperand(2));
+    if (!oldTrue || !oldFalse) return false;
+    auto* entryCmp = dyn_cast<ICmpInst>(oldCond);
+    if (!entryCmp) return false;
+    bool trueHead = oldTrue == L->head;
+    bool falseHead = oldFalse == L->head;
+    if (trueHead == falseHead) return false;
+    if ((trueHead ? oldFalse : oldTrue) != exitBB) return false;
+
+    auto isInitZero = [&](Value* a, Value* b) {
+        auto* c = dyn_cast<ConstantInt>(b);
+        return a == initVal && c && c->getValue() == 0;
+    };
+    // while(n) {}
+    // is
+    // if (initVal != 0) goto body;
+    // else goto exit;
+    bool initZero = isInitZero(entryCmp->getOperand(0), entryCmp->getOperand(1)) ||
+                    isInitZero(entryCmp->getOperand(1), entryCmp->getOperand(0));
+    if (!initZero) return false;
+    if ((entryCmp->getPredicate() == ICmpInst::NE && !trueHead) ||
+        (entryCmp->getPredicate() == ICmpInst::EQ && !falseHead))
+        return false;
+    if (entryCmp->getPredicate() != ICmpInst::NE && entryCmp->getPredicate() != ICmpInst::EQ)
+        return false;
+
+    BasicBlock* tHead = trueHead ? oldTrue : oldFalse;
+    BasicBlock* tExit = trueHead ? oldFalse : oldTrue;
+
+    // Transform:
+    //      if (initVal > 0) {
+    //          fast path
+    //      } else {
+    //          slow path:
+    //              if (initVal < 0) goto old loop head;
+    //              else goto exit
+    //      }
+    auto* region = preHeader->getParent();
+    if (!region) return false;
+    
+    // fast path
+    auto* fastBB = new BasicBlock("fastBB", region);
+    for (auto* inst : L->head->getInstructions()) {
+        if (isa<PhiInst>(inst)) continue;
+        if (isa<BranchInst>(inst)) break;
+        auto* cloned = inst->clone(vmap);
+        if (!cloned) return false;
+        cloned->setName(inst->getName());
+        cloned->setParent(fastBB);
+        fastBB->addInstruction(cloned);
+        if (!cloned->getType()->isVoid())
+            vmap[inst] = cloned;
+    }
+    new BranchInst(exitBB, fastBB);
+
+    // slow path
+    auto* slowBB = new BasicBlock("slowBB", region);
+    auto* slowCond = new ICmpInst(ICmpInst::SLT, initVal, new ConstantInt(0), slowBB);
+    new BranchInst(slowCond, tHead, tExit, slowBB);
+
+    // Fix header phis.
+    for (auto* inst : L->head->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+        for (int k = 0; k < phi->getNumOperands(); k += 2)
+            if (dyn_cast<BasicBlock>(phi->getOperand(k + 1)) == preHeader)
+                phi->setOperand(k + 1, slowBB);
+    }
+
+    // Fix exit phis.
+    // preHeader
+    //   ├── fastBB  -> exit
+    //   └── slowBB
+    //         ├── old loop -> exit
+    //         └── exit
+    //
+    // %ans.exit = phi [ %ans.loop, loop ],
+    //                 [ %ans.init, slowBB ],
+    //                 [ %ans.fast, fastBB ]
+    for (auto* inst : exitBB->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+
+        Value* loopVal = nullptr;
+        bool hasEntryIncoming = false;
+        for (int k = 0; k < phi->getNumOperands(); k += 2) {
+            auto* fromBB = dyn_cast<BasicBlock>(phi->getOperand(k + 1));
+            // preHeader:
+            //      br ..., loop, exit
+            //
+            // turns to:
+            //
+            // preHeader:
+            //      br ..., fastBB, slowBB
+            if (fromBB == preHeader) {
+                phi->setOperand(k + 1, slowBB);
+                hasEntryIncoming = true;
+            } else if (fromBB && L->has(fromBB)) {
+                loopVal = phi->getOperand(k);
+            }
+        }
+        if (loopVal) {
+            auto it = vmap.find(loopVal);
+            Value* fastVal = (it != vmap.end()) ? it->second : loopVal;
+            // If loopVal is inst, which is coming from loop.
+            // Then fastVal != loopVal
+            if (auto* def = dyn_cast<Instruction>(loopVal))
+                if (L->has(def->getParent()) && fastVal == loopVal)
+                    return false;
+
+            phi->addIncoming(fastVal, fastBB);
+        } else if (!hasEntryIncoming)
+            return false;
+    }
+
+    auto* pos = new ICmpInst(ICmpInst::SGT, initVal, new ConstantInt(0), nullptr);
+    pos->setParent(preHeader);
+    entryInsts.insert(std::prev(entryInsts.end()), pos);
+    entryBr->replaceAllUsesWith(nullptr);
+    entryBr->eraseInst();
+    new BranchInst(pos, fastBB, slowBB, preHeader);
     return true;
 }
 
@@ -786,6 +1027,11 @@ static bool runOnFunction(Function* f) {
             // Collapse repeat loops before rejecting loops with subloops.
             if (L->exits.size() == 1 &&
                 tryCollapseRepeatLoop(L, L->exits[0], dt, scev))
+                return true;
+
+            // while(n) {readOnly} -> if(n) {readOnly when IV = 1} else {slowpath}
+            if (L->exits.size() == 1 &&
+                tryCollapseDeadLoop(L, L->exits[0], dt, scev))
                 return true;
 
             // Stay conservative while subloops remain.
