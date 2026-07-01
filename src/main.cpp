@@ -280,8 +280,9 @@ int main(int argc, char **argv) {
 //    }
 //    if (ok("loopgvn")) return 0;
 
-    LoopStrengthReduce(module.get()).run();
+    bool lsrChanged = LoopStrengthReduce(module.get()).run();
     if (ok("lsr")) return 0;
+    if (lsrChanged) runCleanup(module.get());
 
 // ======== LoopExitFold + LICM + LoopMemPromote + SubloopHoist (fixpoint) ========
 
