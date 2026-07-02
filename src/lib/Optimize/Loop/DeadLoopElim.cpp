@@ -985,8 +985,10 @@ static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCE
 
     // slow path
     auto* slowBB = new BasicBlock("slowBB", region);
+    auto* slowEntryBB = new BasicBlock("slowEntryBB", region);
     auto* slowCond = new ICmpInst(ICmpInst::NE, initVal, stopVal, slowBB);
-    new BranchInst(slowCond, tHead, tExit, slowBB);
+    new BranchInst(slowCond, slowEntryBB, tExit, slowBB);
+    new BranchInst(tHead, slowEntryBB);
 
     // Fix header phis.
     for (auto* inst : L->head->getInstructions()) {
@@ -994,7 +996,7 @@ static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCE
         if (!phi) break;
         for (int k = 0; k < phi->getNumOperands(); k += 2)
             if (dyn_cast<BasicBlock>(phi->getOperand(k + 1)) == preHeader)
-                phi->setOperand(k + 1, slowBB);
+                phi->setOperand(k + 1, slowEntryBB);
     }
 
     // Fix exit phis.
