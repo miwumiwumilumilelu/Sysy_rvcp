@@ -4,6 +4,7 @@
 #include "../../../include/Optimize/Analysis/PureFunc.h"
 #include "../../../include/Optimize/Analysis/SCEV.h"
 #include "../../../include/Optimize/Analysis/ValueTracking.h"
+#include "../../../include/Optimize/Loop/LoopUtils/LoopCloneUtils.h"
 #include "../../../include/Optimize/Loop/LoopUtils/LoopDeletionUtils.h"
 #include "../../../include/Optimize/Loop/LoopUtils/LoopTripUtils.h"
 #include <map>
@@ -764,7 +765,7 @@ static bool tryCollapseRepeatLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, S
 }
 
 // Collapse a side-effect-free countdown loop to a guarded last-iteration fast path.
-//
+// Only support while cond is NEQ.
 // Before:
 //   while (iv) {
 //       live = readonly(iv);
@@ -777,10 +778,35 @@ static bool tryCollapseRepeatLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, S
 //   } else {
 //       while (iv) { ...original loop... }
 //   }
+/*
+preHeader
+├── stepVal > 0 :
+│   ├── initVal < stopVal
+│   │   ├── (stopVal - initVal) % stepVal == 0
+│   │   │   └── fast path: lastIV = stopVal - stepVal
+│   │   └── else
+│   │       └── slowBB
+│   └── else
+│       └── slowBB
+│
+├── stepVal < 0 :
+│   ├── initVal > stopVal
+│   │   ├── (initVal - stopVal) % (-stepVal) == 0
+│   │   │   └── fast path: lastIV = stopVal - stepVal
+│   │   └── else
+│   │       └── slowBB
+│   └── else
+│       └── slowBB
+│
+└── slowBB:
+    ├── initVal != stopVal
+    │   └── goto loop head
+    └── initVal == stopVal
+        └── goto exit
+*/
 static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCEV& scev) {
     if (!L || !exitBB || !L->head || !L->latch) return false;
     if (L->latches.size() != 1 || !L->sub.empty()) return false;
-    if (L->blocks.size() != 1 || L->head != L->latch) return false;
 
     std::function<bool(Function*, std::unordered_map<Function*, bool>&)> 
     isReadOnly = [&](Function* f, std::unordered_map<Function*, bool>& cache) -> bool {
@@ -825,12 +851,13 @@ static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCE
     std::map<Value*, Value*> vmap;
     PhiInst* lastIV = nullptr;
     Value* initVal = nullptr;
+    Value* stopVal = nullptr;
+    int64_t stepVal = 0;
     for (auto* inst : L->head->getInstructions()) {
         auto* phi = dyn_cast<PhiInst>(inst);
         if (!phi) break;
 
-        // while (n) {}
-        // Exit only when IV down to zero.
+        // Match a counted IV whose latch tests next != stop.
         if (!lastIV && phi->getNumOperands() == 4 && info.continuePred == ICmpInst::NE) {
             Value* fromPreH = nullptr;
             Value* fromLatch = nullptr;
@@ -841,22 +868,43 @@ static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCE
             }
 
             auto* next = dyn_cast<BinaryInst>(fromLatch);
-            auto* step = next ? dyn_cast<ConstantInt>(next->getOperand(1)) : nullptr;
-
-            auto isNextZero = [&](Value* a, Value* b) {
-                auto* c = dyn_cast<ConstantInt>(b);
-                return a == fromLatch && c && c->getValue() == 0;
+            auto matchStep = [&](BinaryInst* inst, int64_t& step) {
+                if (!inst) return false;
+                if (inst->getOpID() == Instruction::Sub) {
+                    auto* c = dyn_cast<ConstantInt>(inst->getOperand(1));
+                    if (inst->getOperand(0) != phi || !c || c->getValue() == 0)
+                        return false;
+                    step = -c->getValue();
+                    return true;
+                }
+                if (inst->getOpID() == Instruction::Add) {
+                    auto chk = [&](Value* a, Value* b, int64_t& out) {
+                        auto* c = dyn_cast<ConstantInt>(b);
+                        if (a != phi || !c || c->getValue() == 0) return false;
+                        out = c->getValue();
+                        return true;
+                    };
+                    return chk(inst->getOperand(0), inst->getOperand(1), step) ||
+                           chk(inst->getOperand(1), inst->getOperand(0), step);
+                }
+                return false;
             };
-            bool latchTestsNextZero = isNextZero(info.lhs, info.rhs) ||
-                                      isNextZero(info.rhs, info.lhs);
 
-            if (fromPreH && fromLatch && 
-                next && next->getOpID() == Instruction::Sub &&
-                next->getOperand(0) == phi && step && step->getValue() == 1 &&
-                latchTestsNextZero) {
+            Value* candStop = nullptr;
+            auto isNextStop = [&](Value* a, Value* b) {
+                if (a != fromLatch || !isLoopInvariantValue(b, L)) return false;
+                candStop = b;
+                return true;
+            };
+            bool latchTestsNextStop = isNextStop(info.lhs, info.rhs) ||
+                                      isNextStop(info.rhs, info.lhs);
+
+            int64_t matchedStep = 0;
+            if (fromPreH && fromLatch && matchStep(next, matchedStep) && latchTestsNextStop) {
                 initVal = fromPreH;
+                stopVal = candStop;
+                stepVal = matchedStep;
                 lastIV = phi;
-                vmap[phi] = new ConstantInt(1);
                 continue;
             }
         }
@@ -871,7 +919,7 @@ static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCE
         }
         if (!vmap.count(phi)) return false;
     }
-    if (!lastIV || !initVal) return false;
+    if (!lastIV || !initVal || !stopVal || stepVal == 0) return false;
 
     // Checking structure.
     auto& entryInsts = preHeader->getInstructions();
@@ -889,17 +937,14 @@ static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCE
     if (trueHead == falseHead) return false;
     if ((trueHead ? oldFalse : oldTrue) != exitBB) return false;
 
-    auto isInitZero = [&](Value* a, Value* b) {
-        auto* c = dyn_cast<ConstantInt>(b);
-        return a == initVal && c && c->getValue() == 0;
+    // entryCmp = (initVal != stopVal)
+    // br entryCmp, ...
+    auto isInitStop = [&](Value* a, Value* b) {
+        return a == initVal && sameValue(b, stopVal, scev);
     };
-    // while(n) {}
-    // is
-    // if (initVal != 0) goto body;
-    // else goto exit;
-    bool initZero = isInitZero(entryCmp->getOperand(0), entryCmp->getOperand(1)) ||
-                    isInitZero(entryCmp->getOperand(1), entryCmp->getOperand(0));
-    if (!initZero) return false;
+    bool initStop = isInitStop(entryCmp->getOperand(0), entryCmp->getOperand(1)) ||
+                    isInitStop(entryCmp->getOperand(1), entryCmp->getOperand(0));
+    if (!initStop) return false;
     if ((entryCmp->getPredicate() == ICmpInst::NE && !trueHead) ||
         (entryCmp->getPredicate() == ICmpInst::EQ && !falseHead))
         return false;
@@ -921,23 +966,26 @@ static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCE
     if (!region) return false;
     
     // fast path
-    auto* fastBB = new BasicBlock("fastBB", region);
-    for (auto* inst : L->head->getInstructions()) {
-        if (isa<PhiInst>(inst)) continue;
-        if (isa<BranchInst>(inst)) break;
-        auto* cloned = inst->clone(vmap);
-        if (!cloned) return false;
-        cloned->setName(inst->getName());
-        cloned->setParent(fastBB);
-        fastBB->addInstruction(cloned);
-        if (!cloned->getType()->isVoid())
-            vmap[inst] = cloned;
+    BasicBlock* lastIVBB = nullptr;
+    if (auto* c = dyn_cast<ConstantInt>(stopVal)) {
+        vmap[lastIV] = new ConstantInt(c->getValue() - stepVal);
+    } else if (stepVal > 0) {
+        lastIVBB = new BasicBlock("fastBB", region);
+        vmap[lastIV] = new BinaryInst(Instruction::Sub, stopVal, new ConstantInt(stepVal), lastIVBB);
+    } else {
+        lastIVBB = new BasicBlock("fastBB", region);
+        vmap[lastIV] = new BinaryInst(Instruction::Add, stopVal, new ConstantInt(-stepVal), lastIVBB);
     }
-    new BranchInst(exitBB, fastBB);
+
+    LoopOneIterClone fastClone;
+    if (!cloneLoopOneIteration(L, exitBB, region, vmap, fastClone)) return false;
+    vmap = fastClone.valueMap;
+    if (lastIVBB)
+        new BranchInst(fastClone.entry, lastIVBB);
 
     // slow path
     auto* slowBB = new BasicBlock("slowBB", region);
-    auto* slowCond = new ICmpInst(ICmpInst::SLT, initVal, new ConstantInt(0), slowBB);
+    auto* slowCond = new ICmpInst(ICmpInst::NE, initVal, stopVal, slowBB);
     new BranchInst(slowCond, tHead, tExit, slowBB);
 
     // Fix header phis.
@@ -958,12 +1006,12 @@ static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCE
     //
     // %ans.exit = phi [ %ans.loop, loop ],
     //                 [ %ans.init, slowBB ],
-    //                 [ %ans.fast, fastBB ]
+    //                 [ %ans.fast, cloned-exit-pred ]
     for (auto* inst : exitBB->getInstructions()) {
         auto* phi = dyn_cast<PhiInst>(inst);
         if (!phi) break;
 
-        Value* loopVal = nullptr;
+        std::map<BasicBlock*, Value*> loopVals;
         bool hasEntryIncoming = false;
         for (int k = 0; k < phi->getNumOperands(); k += 2) {
             auto* fromBB = dyn_cast<BasicBlock>(phi->getOperand(k + 1));
@@ -978,10 +1026,14 @@ static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCE
                 phi->setOperand(k + 1, slowBB);
                 hasEntryIncoming = true;
             } else if (fromBB && L->has(fromBB)) {
-                loopVal = phi->getOperand(k);
+                loopVals[fromBB] = phi->getOperand(k);
             }
         }
-        if (loopVal) {
+        if (!loopVals.empty()) {
+            for (auto& [origPred, clonedPred] : fastClone.exitEdges) {
+                auto lv = loopVals.find(origPred);
+                if (lv == loopVals.end()) return false;
+                Value* loopVal = lv->second;
             auto it = vmap.find(loopVal);
             Value* fastVal = (it != vmap.end()) ? it->second : loopVal;
             // If loopVal is inst, which is coming from loop.
@@ -990,17 +1042,40 @@ static bool tryCollapseDeadLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, SCE
                 if (L->has(def->getParent()) && fastVal == loopVal)
                     return false;
 
-            phi->addIncoming(fastVal, fastBB);
-        } else if (!hasEntryIncoming)
+                phi->addIncoming(fastVal, clonedPred);
+            }
+        } else
             return false;
     }
 
-    auto* pos = new ICmpInst(ICmpInst::SGT, initVal, new ConstantInt(0), nullptr);
-    pos->setParent(preHeader);
-    entryInsts.insert(std::prev(entryInsts.end()), pos);
+    auto emitPre = [&](Instruction* inst) -> Instruction* {
+        inst->setParent(preHeader);
+        entryInsts.insert(std::prev(entryInsts.end()), inst);
+        return inst;
+    };
+    // Determination of generation direction.
+    auto* dir = static_cast<ICmpInst*>(emitPre(
+        new ICmpInst(stepVal > 0 ? ICmpInst::SLT : ICmpInst::SGT, initVal, stopVal, nullptr)));
+    Value* fastCond = dir;
+    int64_t absStep = stepVal > 0 ? stepVal : -stepVal;
+    // If the step size is not 1, 
+    // then need to check whether the distance is divisible by the step.
+    if (absStep != 1) {
+        // aligned = (diff % absStep == 0)
+        // then goto fast path.
+        auto* diff = static_cast<BinaryInst*>(emitPre(
+            stepVal > 0
+                ? new BinaryInst(Instruction::Sub, stopVal, initVal, nullptr)
+                : new BinaryInst(Instruction::Sub, initVal, stopVal, nullptr)));
+        auto* rem = static_cast<BinaryInst*>(emitPre(
+            new BinaryInst(Instruction::Mod, diff, new ConstantInt(absStep), nullptr)));
+        auto* aligned = static_cast<ICmpInst*>(emitPre(
+            new ICmpInst(ICmpInst::EQ, rem, new ConstantInt(0), nullptr)));
+        fastCond = emitPre(new BinaryInst(Instruction::And, dir, aligned, nullptr));
+    }
     entryBr->replaceAllUsesWith(nullptr);
     entryBr->eraseInst();
-    new BranchInst(pos, fastBB, slowBB, preHeader);
+    new BranchInst(fastCond, lastIVBB ? lastIVBB : fastClone.entry, slowBB, preHeader);
     return true;
 }
 
