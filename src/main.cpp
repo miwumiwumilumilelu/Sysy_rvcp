@@ -45,6 +45,7 @@
 #include "include/rv/InstSel.h"
 #include "include/rv/RegAlloc.h"
 #include "include/rv/MCPeephole.h"
+#include "include/rv/MCInvariantHoist.h"
 #include "include/rv/AsmPrinter.h"
 
 using namespace sysy;
@@ -355,6 +356,11 @@ int main(int argc, char **argv) {
 
     InstSelPass isel;
     auto mcFuncs = isel.run(module.get());
+
+    MCInvariantHoistPass mcInvariantHoist;
+    for (auto& mcFunc : mcFuncs) {
+        mcInvariantHoist.run(mcFunc.get());
+    }
 
     RegAlloc regalloc;
     for (auto& mcFunc : mcFuncs) {
