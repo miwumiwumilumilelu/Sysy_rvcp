@@ -2,6 +2,12 @@
 
 #include <vector>
 
+/*
+ Since supporting multi-block loops hoist invariants from the loop body to the preheader，
+ — thereby extending live ranges and increasing register pressure，
+ — So only single-block self-loops and two-block loops are supported here.
+*/
+
 namespace sysy {
 namespace rv {
 
