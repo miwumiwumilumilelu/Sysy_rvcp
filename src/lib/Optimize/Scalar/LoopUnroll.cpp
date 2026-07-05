@@ -15,6 +15,11 @@
 using namespace sysy;
 
 static constexpr int MaxMemLoopUnrollTrip = 8;
+// Rely on store-only
+static constexpr int MaxTinyMemLoopUnrollTrip = 16;
+// Rely on bodyInsts
+// In the case of a large(trip count) loop, the number of instructions will be limited.
+static constexpr int MaxTinyMemLoopInsts = 8;
 
 static bool isSafe(Instruction* inst) {
     switch (inst->getOpID()) {
@@ -280,12 +285,30 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev, ValueTracking& vt, U
     if (tripCount < 0 || tripCount > threshold) return false;
 
     if (tripCount > MaxMemLoopUnrollTrip) {
+        bool hasMem = false;
+        bool hasLoad = false;
+        int bodyInsts = 0;
         for (auto* bb : L->blocks) {
             for (auto* inst : bb->getInstructions()) {
+                // Skip these loop-framing instructions to obtain the actual number of effective instructions.
+                if (isa<PhiInst>(inst) || isa<BranchInst>(inst) ||
+                    inst == ivIncrement || inst == exitCmpInLatch)
+                    continue;
+                ++bodyInsts;
                 if (isa<LoadInst>(inst) || isa<StoreInst>(inst))
-                    return false;
+                    hasMem = true;
+                if (isa<LoadInst>(inst))
+                    hasLoad = true;
             }
         }
+        // Widen only tiny store-only loops:
+        // they usually have fewer live values than load-bearing loops,
+        // so unrolling is less likely to increase register pressure.
+        if (hasMem &&
+            (tripCount > MaxTinyMemLoopUnrollTrip ||
+             hasLoad ||
+             bodyInsts > MaxTinyMemLoopInsts))
+            return false;
     }
 
     // For latch-tested shape: compute body block order and check sizes.
