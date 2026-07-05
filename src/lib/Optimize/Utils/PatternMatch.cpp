@@ -566,7 +566,7 @@ Value* Match::evalConstExpr(const PMExpr* expr) {
 }
 
 // (add x y) -> new BinaryInst(Add, x, y)
-Value* Match::buildExpr(const PMExpr* expr, Instruction* before) {
+Value* Match::buildExpr(const PMExpr* expr, Instruction* before, int& tmpID) {
     if (!expr)
         return nullptr;
     if (expr->atom) {
@@ -594,11 +594,13 @@ Value* Match::buildExpr(const PMExpr* expr, Instruction* before) {
 
     if (opName == "select") {
         if (expr->elements.size() != 4) return nullptr;
-        Value* cond    = buildExpr(expr->elements[1].get(), before);
-        Value* trueVal = buildExpr(expr->elements[2].get(), before);
-        Value* falseVal = buildExpr(expr->elements[3].get(), before);
+        Value* cond    = buildExpr(expr->elements[1].get(), before, tmpID);
+        Value* trueVal = buildExpr(expr->elements[2].get(), before, tmpID);
+        Value* falseVal = buildExpr(expr->elements[3].get(), before, tmpID);
         if (!cond || !trueVal || !falseVal) return nullptr;
         auto* sel = new SelectInst(cond, trueVal, falseVal, nullptr);
+        std::string base = before->getName().empty() ? "%tmp" : before->getName();
+        sel->setName(base + ".tmp" + std::to_string(tmpID++));
         sel->setParent(before->getParent());
         insts.insert(pos, sel);
         return sel;
@@ -607,14 +609,16 @@ Value* Match::buildExpr(const PMExpr* expr, Instruction* before) {
     if (expr->elements.size() != 3)
         return nullptr;
 
-    Value* lhs = buildExpr(expr->elements[1].get(), before);
-    Value* rhs = buildExpr(expr->elements[2].get(), before);
+    Value* lhs = buildExpr(expr->elements[1].get(), before, tmpID);
+    Value* rhs = buildExpr(expr->elements[2].get(), before, tmpID);
     if (!lhs || !rhs)
         return nullptr;
 
     Instruction::OpID op;
     if (opFromName(opName, op)) {
         auto* bin = new BinaryInst(op, lhs, rhs, nullptr);
+        std::string base = before->getName().empty() ? "%tmp" : before->getName();
+        bin->setName(base + ".tmp" + std::to_string(tmpID++));
         bin->setParent(before->getParent());
         insts.insert(pos, bin);
         return bin;
@@ -623,6 +627,8 @@ Value* Match::buildExpr(const PMExpr* expr, Instruction* before) {
     ICmpInst::CmpOp pred;
     if (cmpFromName(opName, pred)) {
         auto* cmp = new ICmpInst(pred, lhs, rhs, nullptr);
+        std::string base = before->getName().empty() ? "%tmp" : before->getName();
+        cmp->setName(base + ".tmp" + std::to_string(tmpID++));
         cmp->setParent(before->getParent());
         insts.insert(pos, cmp);
         return cmp;
@@ -644,9 +650,13 @@ bool Match::rewrite(Instruction* inst) {
             return false;
     }
 
-    Value* replacement = buildExpr(To.get(), inst);
+    int tmpID = 0;
+    Value* replacement = buildExpr(To.get(), inst, tmpID);
     if (!replacement || replacement == inst)
         return false;
+    if (auto* replInst = dyn_cast<Instruction>(replacement))
+        if (!inst->getName().empty())
+            replInst->setName(inst->getName());
 
     inst->replaceAllUsesWith(replacement);
     inst->eraseInst();

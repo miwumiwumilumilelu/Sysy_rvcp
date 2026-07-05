@@ -50,7 +50,7 @@ private:
     bool parseRewrite();
 
     bool matchExpr(const PMExpr* expr, Value* value);
-    Value* buildExpr(const PMExpr* expr, Instruction* before);
+    Value* buildExpr(const PMExpr* expr, Instruction* before, int& tmpID);
     Value* evalConstExpr(const PMExpr* expr);
     bool evalConstInt(const PMExpr* expr, int& value);
     bool evalConstFloat(const PMExpr* expr, float& value);
