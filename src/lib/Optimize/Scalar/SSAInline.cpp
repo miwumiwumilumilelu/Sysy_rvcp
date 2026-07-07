@@ -111,8 +111,8 @@ bool SSAInline::isInlineable(CallInst* call, Loop* callSiteLoop, SCEV* scev, int
     bool calleeHasLoop = hasLoop(f);
     bool calleeWritesGlobal = writesGlobal(f);
     int instCount = countInsts(f);
-    if (calleeHasLoop && calleeWritesGlobal) return false;
-    if (!calleeHasLoop && calleeWritesGlobal && callSiteCount > 1) return false;
+    bool singleSiteGlobalLoop = calleeHasLoop && calleeWritesGlobal && callSiteCount == 1;
+    if (calleeWritesGlobal && callSiteCount > 1) return false;
 
     auto hasStore = [&](Function* f) -> bool {
         for (auto bb : f->getBody()->getBlocks())
@@ -130,7 +130,8 @@ bool SSAInline::isInlineable(CallInst* call, Loop* callSiteLoop, SCEV* scev, int
     if (calleeHasLoop && callSiteLoop) {
         bool tinyReadOnlyLoop = !hasStore(f) && instCount <= 40;
         // neither ..., nor ...
-        if (!tinyReadOnlyLoop && (!scev || !hasSmallTrip(callSiteLoop, *scev, 8)))
+        if (!singleSiteGlobalLoop && !tinyReadOnlyLoop &&
+            (!scev || !hasSmallTrip(callSiteLoop, *scev, 8)))
             return false;
     }
     
