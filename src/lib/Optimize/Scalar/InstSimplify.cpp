@@ -57,6 +57,11 @@ static Match regularMatches[] = {
     Match("(rewrite (and x 0) 0)"),
     Match("(rewrite (and x -1) x)"),
     Match("(rewrite (and x x) x)"),
+    Match("(rewrite (and (and X 'mask) (and Y 'mask)) (and (and X Y) 'mask))"),
+    // Multiplication in the one-bit ring is logical conjunction.  This removes
+    // a full-width multiply from parity tests without making assumptions about
+    // signedness or overflow.
+    Match("(rewrite (and (mul X Y) 1) (and (and X 1) (and Y 1)))"),
 
     Match("(rewrite (or x 0) x)"),
     Match("(rewrite (or x -1) -1)"),
