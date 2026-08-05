@@ -30,8 +30,8 @@ using VReg = uint32_t;
 constexpr VReg InvalidVReg = 0;
 
 #define RV_INSTRUCTIONS \
-    X(Addi) X(Add) X(Addw) X(Subw) X(Mulw) X(Divw) X(Remw) \
-    X(Sll) X(Srl) X(Sra) X(Slliw) X(Srliw) X(Sraiw) X(Andi) X(Ori) X(Xori) \
+    X(Addi) X(Add) X(Addw) X(Subw) X(Mul) X(Mulw) X(Divw) X(Remw) \
+    X(Sll) X(Srl) X(Sra) X(Srai) X(Slliw) X(Srliw) X(Sraiw) X(Andi) X(Ori) X(Xori) \
     X(And) X(Or) X(Xor) X(Slt) X(Sltu) X(Sltiu) X(Slti) \
     X(FAddS) X(FSubS) X(FMulS) X(FDivS) \
     /* call @sqrt(float %a) -> FSqrtS */ \
@@ -204,6 +204,7 @@ public:
 
 class AddwOp  : public RVInstR { public: AddwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::AddwOp, "addw", d, s1, s2) {} };
 class SubwOp  : public RVInstR { public: SubwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::SubwOp, "subw", d, s1, s2) {} };
+class MulOp   : public RVInstR { public: MulOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::MulOp, "mul", d, s1, s2) {} };
 class MulwOp  : public RVInstR { public: MulwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::MulwOp, "mulw", d, s1, s2) {} };
 class DivwOp  : public RVInstR { public: DivwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::DivwOp, "divw", d, s1, s2) {} };
 class RemwOp  : public RVInstR { public: RemwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::RemwOp, "remw", d, s1, s2) {} };
@@ -221,6 +222,7 @@ class SltiOp  : public RVInstI { public: SltiOp (MCOperand d, MCOperand s, int i
 class SlliwOp : public RVInstI { public: SlliwOp(MCOperand d, MCOperand s, int i) : RVInstI(RvOp::SlliwOp, "slliw", d, s, i) {} };
 class SrliwOp : public RVInstI { public: SrliwOp(MCOperand d, MCOperand s, int i) : RVInstI(RvOp::SrliwOp, "srliw", d, s, i) {} };
 class SraiwOp : public RVInstI { public: SraiwOp(MCOperand d, MCOperand s, int i) : RVInstI(RvOp::SraiwOp, "sraiw", d, s, i) {} };
+class SraiOp  : public RVInstI { public: SraiOp(MCOperand d, MCOperand s, int i) : RVInstI(RvOp::SraiOp, "srai", d, s, i) {} };
 class AndiOp  : public RVInstI { public: AndiOp (MCOperand d, MCOperand s, int i) : RVInstI(RvOp::AndiOp,  "andi",  d, s, i) {} };
 class OriOp   : public RVInstI { public: OriOp  (MCOperand d, MCOperand s, int i) : RVInstI(RvOp::OriOp,   "ori",   d, s, i) {} };
 class XoriOp  : public RVInstI { public: XoriOp (MCOperand d, MCOperand s, int i) : RVInstI(RvOp::XoriOp,  "xori",  d, s, i) {} };

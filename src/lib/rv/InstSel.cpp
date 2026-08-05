@@ -6,10 +6,52 @@
 #include <cstring>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <limits>
 #include <map>
 
 namespace sysy {
 namespace rv {
+
+namespace {
+
+struct SignedDivisionMagic {
+    int32_t multiplier;
+    int shift;
+};
+
+// Hacker's Delight, signed magic-number division.  The returned multiplier
+// and shift implement every non-zero, non-power-of-two signed i32 divisor.
+static SignedDivisionMagic signedDivisionMagic(int32_t divisor) {
+    const uint64_t absolute = divisor < 0
+        ? static_cast<uint64_t>(-static_cast<int64_t>(divisor))
+        : static_cast<uint64_t>(divisor);
+    const uint64_t two31 = uint64_t{1} << 31;
+    const uint64_t t = two31 + (divisor < 0 ? 1 : 0);
+    const uint64_t anc = t - 1 - t % absolute;
+    int p = 31;
+    uint64_t q1 = two31 / anc;
+    uint64_t r1 = two31 - q1 * anc;
+    uint64_t q2 = two31 / absolute;
+    uint64_t r2 = two31 - q2 * absolute;
+    uint64_t delta;
+    do {
+        ++p;
+        q1 *= 2;
+        r1 *= 2;
+        if (r1 >= anc) { ++q1; r1 -= anc; }
+        q2 *= 2;
+        r2 *= 2;
+        if (r2 >= absolute) { ++q2; r2 -= absolute; }
+        delta = absolute - r2;
+    } while (q1 < delta || (q1 == delta && r1 == 0));
+
+    int64_t multiplier = static_cast<int64_t>(q2 + 1);
+    if (divisor < 0) multiplier = -multiplier;
+    return {static_cast<int32_t>(static_cast<uint32_t>(multiplier)), p - 32};
+}
+
+} // namespace
 
 MCOperand InstSelContext::getVReg(Value* v, bool isFloat) {
     auto it = valueMap.find(v);
@@ -542,10 +584,18 @@ void InstSelPass::selectDiv(BinaryInst* inst, InstSelContext& ctx) {
     // x / 2^k -> (x + ((x >> 31) & (2^k - 1))) >> k.
     if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
         int v = ci->getValue();
+        auto rs = ctx.getVReg(lhs, false);
+        if (v == 1) {
+            ctx.block->append(new AddwOp(rd, rs, MCOperand(Reg::zero)));
+            return;
+        }
+        if (v == -1) {
+            ctx.block->append(new SubwOp(rd, MCOperand(Reg::zero), rs));
+            return;
+        }
         if (v > 1 && (v & (v - 1)) == 0) {
             int k = __builtin_ctz(static_cast<unsigned>(v));
             int mask = v - 1;
-            auto rs = ctx.getVReg(lhs, false);
             auto sign = ctx.newVReg(false);
             ctx.block->append(new SraiwOp(sign, rs, 31));
             auto adj = ctx.newVReg(false);
@@ -559,6 +609,34 @@ void InstSelPass::selectDiv(BinaryInst* inst, InstSelContext& ctx) {
             auto xadj = ctx.newVReg(false);
             ctx.block->append(new AddwOp(xadj, rs, adj));
             ctx.block->append(new SraiwOp(rd, xadj, k));
+            return;
+        }
+
+        if (v != 0 && v != std::numeric_limits<int32_t>::min()) {
+            SignedDivisionMagic magic = signedDivisionMagic(v);
+            auto multiplier = ctx.newVReg(false);
+            ctx.block->append(new LiOp(multiplier, magic.multiplier));
+            auto product = ctx.newVReg(false);
+            ctx.block->append(new MulOp(product, rs, multiplier));
+            auto quotient = ctx.newVReg(false);
+            ctx.block->append(new SraiOp(quotient, product, 32));
+            if (v > 0 && magic.multiplier < 0) {
+                auto adjusted = ctx.newVReg(false);
+                ctx.block->append(new AddwOp(adjusted, quotient, rs));
+                quotient = adjusted;
+            } else if (v < 0 && magic.multiplier > 0) {
+                auto adjusted = ctx.newVReg(false);
+                ctx.block->append(new SubwOp(adjusted, quotient, rs));
+                quotient = adjusted;
+            }
+            if (magic.shift != 0) {
+                auto shifted = ctx.newVReg(false);
+                ctx.block->append(new SraiwOp(shifted, quotient, magic.shift));
+                quotient = shifted;
+            }
+            auto correction = ctx.newVReg(false);
+            ctx.block->append(new SrliwOp(correction, quotient, 31));
+            ctx.block->append(new AddwOp(rd, quotient, correction));
             return;
         }
     }
@@ -577,9 +655,14 @@ void InstSelPass::selectMod(BinaryInst* inst, InstSelContext& ctx) {
     // where adj = (x >> 31) & (2^k - 1).
     if (auto* ci = dyn_cast<ConstantInt>(rhs)) {
         int v = ci->getValue();
+        auto rs = ctx.getVReg(lhs, false);
+        if (v == 1 || v == -1) {
+            ctx.block->append(new AddwOp(rd, MCOperand(Reg::zero),
+                                         MCOperand(Reg::zero)));
+            return;
+        }
         if (v > 1 && (v & (v - 1)) == 0) {
             int mask = v - 1;
-            auto rs = ctx.getVReg(lhs, false);
             auto sign = ctx.newVReg(false);
             ctx.block->append(new SraiwOp(sign, rs, 31));
             auto adj = ctx.newVReg(false);
@@ -601,6 +684,40 @@ void InstSelPass::selectMod(BinaryInst* inst, InstSelContext& ctx) {
                 ctx.block->append(new AndOp(masked, xadj, mReg));
             }
             ctx.block->append(new SubwOp(rd, masked, adj));
+            return;
+        }
+
+        if (v != 0 && v != std::numeric_limits<int32_t>::min()) {
+            SignedDivisionMagic magic = signedDivisionMagic(v);
+            auto magicReg = ctx.newVReg(false);
+            ctx.block->append(new LiOp(magicReg, magic.multiplier));
+            auto wideProduct = ctx.newVReg(false);
+            ctx.block->append(new MulOp(wideProduct, rs, magicReg));
+            auto quotient = ctx.newVReg(false);
+            ctx.block->append(new SraiOp(quotient, wideProduct, 32));
+            if (v > 0 && magic.multiplier < 0) {
+                auto adjusted = ctx.newVReg(false);
+                ctx.block->append(new AddwOp(adjusted, quotient, rs));
+                quotient = adjusted;
+            } else if (v < 0 && magic.multiplier > 0) {
+                auto adjusted = ctx.newVReg(false);
+                ctx.block->append(new SubwOp(adjusted, quotient, rs));
+                quotient = adjusted;
+            }
+            if (magic.shift != 0) {
+                auto shifted = ctx.newVReg(false);
+                ctx.block->append(new SraiwOp(shifted, quotient, magic.shift));
+                quotient = shifted;
+            }
+            auto correction = ctx.newVReg(false);
+            ctx.block->append(new SrliwOp(correction, quotient, 31));
+            auto corrected = ctx.newVReg(false);
+            ctx.block->append(new AddwOp(corrected, quotient, correction));
+            auto divisor = ctx.newVReg(false);
+            ctx.block->append(new LiOp(divisor, v));
+            auto multiple = ctx.newVReg(false);
+            ctx.block->append(new MulwOp(multiple, corrected, divisor));
+            ctx.block->append(new SubwOp(rd, rs, multiple));
             return;
         }
     }

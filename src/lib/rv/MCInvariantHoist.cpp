@@ -85,9 +85,10 @@ bool MCInvariantHoistPass::hoistInvariant(MCFunction* func) {
             if (!op || !op->getDef()) return false;
             switch (op->opcode) {
                 case RvOp::AddiOp: case RvOp::AddOp: case RvOp::AddwOp:
-                case RvOp::SubwOp: case RvOp::MulwOp:
+                case RvOp::SubwOp: case RvOp::MulOp: case RvOp::MulwOp:
                 case RvOp::SllOp: case RvOp::SrlOp: case RvOp::SraOp:
-                case RvOp::SlliwOp: case RvOp::SrliwOp: case RvOp::SraiwOp:
+                case RvOp::SraiOp: case RvOp::SlliwOp:
+                case RvOp::SrliwOp: case RvOp::SraiwOp:
                 case RvOp::AndiOp: case RvOp::OriOp: case RvOp::XoriOp:
                 case RvOp::AndOp: case RvOp::OrOp: case RvOp::XorOp:
                 case RvOp::SltOp: case RvOp::SltuOp:

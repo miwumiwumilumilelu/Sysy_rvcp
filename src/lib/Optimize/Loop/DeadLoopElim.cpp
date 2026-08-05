@@ -695,13 +695,16 @@ static bool tryCollapseRepeatLoop(Loop* L, BasicBlock* exitBB, Dominators& dt, S
     auto* preHeader = L->entryBlock(dt);
     if (!preHeader) return false;
 
-    // Require a compile-time trip count >= 1.
+    // A monotone loop with an invariant bound may execute zero, one, or many
+    // times.  The original entry test preserves the zero-trip case; after the
+    // first body execution an idempotence proof below lets us cut the backedge.
     ExitBranchInfo info;
-    int64_t tc = -1;
-    bool gotTrip =
-        (analyzeExitBranch(L, L->latch, scev, info) && getConstantTripCountFromInfo(info, L, tc) && tc >= 1) ||
-        (analyzeExitBranch(L, L->head,  scev, info) && getConstantTripCountFromInfo(info, L, tc) && tc >= 1);
-    if (!gotTrip) return false;
+    bool finite = false;
+    if (analyzeExitBranch(L, L->latch, scev, info))
+        finite = hasKnownFiniteTripCount(info, L);
+    if (!finite && analyzeExitBranch(L, L->head, scev, info))
+        finite = hasKnownFiniteTripCount(info, L);
+    if (!finite) return false;
 
     // Reject early returns and impure calls. Keep stores as repeated work.
     {
