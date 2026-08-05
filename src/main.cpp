@@ -12,6 +12,7 @@
 #include "include/Optimize/High/HighMem2Reg.h"
 #include "include/Optimize/High/HighLICM.h"
 #include "include/Optimize/High/ReductionProjection.h"
+#include "include/Optimize/High/InPlaceMatMulInterchange.h"
 #include "include/Optimize/High/WhileToFor.h"
 #include "include/Optimize/High/HighDCE.h"
 #include "include/Optimize/High/LowerFor.h"
@@ -173,6 +174,9 @@ int main(int argc, char **argv) {
 
     ReductionProjection(module.get()).run();
     if (ok("redproj")) return 0;
+
+    InPlaceMatMulInterchange(module.get()).run();
+    if (ok("ipmm")) return 0;
 
     LoopUnswitch(module.get()).run();
     if (ok("unswitch")) return 0;
