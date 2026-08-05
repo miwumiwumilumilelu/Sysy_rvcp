@@ -421,9 +421,376 @@ static bool onlyExpectedGlobalUses(GlobalVariable* global,
     return true;
 }
 
+static bool accessIs2D(const Access& access, Value* root, ForInst* row,
+                       ForInst* column) {
+    return access.root == root && access.indices.size() == 3 &&
+           isZero(access.indices[0]) &&
+           isProjectedIndex(access.indices[1], row) &&
+           isProjectedIndex(access.indices[2], column);
+}
+
+static bool sameExtent(Value* a, Value* b) {
+    if (sameIndex(a, b)) return true;
+    auto* ca = dyn_cast<ConstantInt>(a);
+    auto* cb = dyn_cast<ConstantInt>(b);
+    return ca && cb && ca->getValue() == cb->getValue();
+}
+
+struct TransposeRelation {
+    GlobalVariable* source = nullptr;
+    GlobalVariable* transpose = nullptr;
+    StoreInst* definingStore = nullptr;
+    ForInst* definingLoop = nullptr;
+};
+
+static bool findTransposeRelation(Module* module, TransposeRelation& out) {
+    for (auto* function : module->getFunctions()) {
+        std::vector<Instruction*> all;
+        collectRegion(function->getBody(), all);
+        for (auto* inst : all) {
+            auto* inner = dyn_cast<ForInst>(inst);
+            auto* outer = parentFor(inner);
+            if (!inner || !outer || !isZero(inner->getStart()) ||
+                !isZero(outer->getStart()) || !isOne(inner->getStep()) ||
+                !isOne(outer->getStep()) ||
+                !sameExtent(inner->getStop(), outer->getStop()))
+                continue;
+            for (auto* direct : directInstructions(inner)) {
+                auto* store = dyn_cast<StoreInst>(direct);
+                auto* load = store ? dyn_cast<LoadInst>(store->getOperand(0)) : nullptr;
+                if (!load) continue;
+                Access dst = decomposeAccess(store->getOperand(1));
+                Access src = decomposeAccess(load->getOperand(0));
+                auto* dstGlobal = dyn_cast<GlobalVariable>(dst.root);
+                auto* srcGlobal = dyn_cast<GlobalVariable>(src.root);
+                if (!dstGlobal || !srcGlobal || dstGlobal == srcGlobal ||
+                    !accessIs2D(dst, dstGlobal, outer, inner) ||
+                    !accessIs2D(src, srcGlobal, inner, outer))
+                    continue;
+                out = {srcGlobal, dstGlobal, store, outer};
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool matchLoad2D(Value* value, Value* root, ForInst* row,
+                        ForInst* column) {
+    auto* load = dyn_cast<LoadInst>(value);
+    return load && accessIs2D(decomposeAccess(load->getOperand(0)), root,
+                              row, column);
+}
+
+// Fold a symmetric pairwise reduction to its triangular iteration domain.
+// The proof uses an earlier B[i][j] = A[j][i] definition and verifies the
+// complete guarded reduction shape after substituting that relation.
+static bool tryFoldSymmetricTransposeReduction(Module* module) {
+    TransposeRelation relation;
+    if (!findTransposeRelation(module, relation)) return false;
+
+    // The transposed array must remain immutable after its defining store.
+    std::vector<Value*> work{relation.transpose};
+    std::set<Value*> seen{relation.transpose};
+    while (!work.empty()) {
+        Value* value = work.back(); work.pop_back();
+        for (auto* user : value->getUsers()) {
+            auto* userInst = dyn_cast<Instruction>(user);
+            if (!userInst) return false;
+            if (isa<GetElementPtrInst>(userInst)) {
+                if (seen.insert(userInst).second) work.push_back(userInst);
+                continue;
+            }
+            if (auto* store = dyn_cast<StoreInst>(userInst)) {
+                if (store != relation.definingStore) return false;
+            } else if (!isa<LoadInst>(userInst)) {
+                return false;
+            }
+        }
+    }
+
+    for (auto* function : module->getFunctions()) {
+        std::vector<Instruction*> all;
+        collectRegion(function->getBody(), all);
+        for (auto* inst : all) {
+            auto* inner = dyn_cast<ForInst>(inst);
+            auto* middle = parentFor(inner);
+            auto* outer = parentFor(middle);
+            if (!inner || !middle || !outer) continue;
+
+            // The transpose definition must precede this reduction in the
+            // same structured block.  Reject intervening calls or writes to
+            // either array, since they could invalidate B = transpose(A).
+            if (relation.definingLoop->getParent() != outer->getParent())
+                continue;
+            {
+                bool afterDefinition = false;
+                bool reachedKernel = false;
+                for (auto* top : outer->getParent()->getInstructions()) {
+                    if (top == relation.definingLoop) {
+                        afterDefinition = true;
+                        continue;
+                    }
+                    if (top == outer) {
+                        reachedKernel = true;
+                        break;
+                    }
+                    if (!afterDefinition) continue;
+                    std::vector<Instruction*> between{top};
+                    for (auto& nested : top->getRegions())
+                        collectRegion(nested.get(), between);
+                    for (auto* candidate : between) {
+                        if (isa<CallInst>(candidate)) goto nextCandidate;
+                        auto* store = dyn_cast<StoreInst>(candidate);
+                        if (!store) continue;
+                        Value* root = decomposeAccess(store->getOperand(1)).root;
+                        if (root == relation.source || root == relation.transpose)
+                            goto nextCandidate;
+                    }
+                }
+                if (!afterDefinition || !reachedKernel) continue;
+            }
+            for (auto* loop : {outer, middle, inner})
+                if (!isZero(loop->getStart()) || !isOne(loop->getStep()) ||
+                    loop->getPred() != ICmpInst::SLT)
+                    goto nextCandidate;
+            if (!sameExtent(outer->getStop(), middle->getStop()) ||
+                !sameExtent(outer->getStop(), inner->getStop()))
+                continue;
+
+            {
+                IfInst* guard = nullptr;
+                StoreInst* accumulation = nullptr;
+                for (auto* bodyInst : [&]() {
+                         std::vector<Instruction*> v;
+                         collectRegion(inner->getBodyRegion(), v);
+                         return v;
+                     }()) {
+                    if (auto* candidate = dyn_cast<IfInst>(bodyInst)) {
+                        if (guard) goto nextCandidate;
+                        guard = candidate;
+                    }
+                    auto* store = dyn_cast<StoreInst>(bodyInst);
+                    if (!store || !isa<AllocaInst>(store->getOperand(1))) continue;
+                    auto* add = dyn_cast<BinaryInst>(store->getOperand(0));
+                    if (!add || add->getOpID() != Instruction::Add) continue;
+                    LoadInst* old = nullptr;
+                    BinaryInst* product = nullptr;
+                    for (int order = 0; order < 2; ++order) {
+                        old = dyn_cast<LoadInst>(add->getOperand(order));
+                        product = dyn_cast<BinaryInst>(add->getOperand(1 - order));
+                        if (old && old->getOperand(0) == store->getOperand(1) &&
+                            product && product->getOpID() == Instruction::Mul)
+                            break;
+                        old = nullptr; product = nullptr;
+                    }
+                    if (!old || !product || accumulation) goto nextCandidate;
+                    bool symmetricProduct =
+                        (matchLoad2D(product->getOperand(0), relation.transpose,
+                                     outer, inner) &&
+                         matchLoad2D(product->getOperand(1), relation.source,
+                                     inner, middle)) ||
+                        (matchLoad2D(product->getOperand(1), relation.transpose,
+                                     outer, inner) &&
+                         matchLoad2D(product->getOperand(0), relation.source,
+                                     inner, middle));
+                    if (!symmetricProduct) goto nextCandidate;
+                    accumulation = store;
+                }
+                if (!guard || !accumulation) continue;
+
+                auto* eq = dyn_cast<ICmpInst>(guard->getOperand(0));
+                if (!eq || eq->getPredicate() != ICmpInst::EQ ||
+                    !isZero(eq->getOperand(1)))
+                    goto nextCandidate;
+                auto* mod = dyn_cast<BinaryInst>(eq->getOperand(0));
+                auto* two = mod ? dyn_cast<ConstantInt>(mod->getOperand(1)) : nullptr;
+                auto* conditionProduct = mod ? dyn_cast<BinaryInst>(mod->getOperand(0)) : nullptr;
+                if (!mod || mod->getOpID() != Instruction::Mod || !two ||
+                    two->getValue() != 2 || !conditionProduct ||
+                    conditionProduct->getOpID() != Instruction::Mul)
+                    goto nextCandidate;
+                bool symmetricCondition =
+                    (matchLoad2D(conditionProduct->getOperand(0), relation.source,
+                                 outer, inner) &&
+                     matchLoad2D(conditionProduct->getOperand(1), relation.transpose,
+                                 inner, middle)) ||
+                    (matchLoad2D(conditionProduct->getOperand(1), relation.source,
+                                 outer, inner) &&
+                     matchLoad2D(conditionProduct->getOperand(0), relation.transpose,
+                                 inner, middle));
+                if (!symmetricCondition) goto nextCandidate;
+
+                StoreInst* result = nullptr;
+                Access resultAccess;
+                for (auto* direct : directInstructions(middle)) {
+                    auto* store = dyn_cast<StoreInst>(direct);
+                    if (!store) continue;
+                    Access access = decomposeAccess(store->getOperand(1));
+                    if (!isa<GlobalVariable>(access.root)) continue;
+                    if (!accessIs2D(access, access.root, outer, middle) || result)
+                        goto nextCandidate;
+                    result = store;
+                    resultAccess = access;
+                }
+                if (!result || !isLoadOf(result->getOperand(0),
+                                         accumulation->getOperand(1)))
+                    goto nextCandidate;
+
+                // The result array is write-only in this kernel.  Reading it
+                // or performing any additional write would make early mirror
+                // stores observable by later iterations.
+                {
+                    std::vector<Instruction*> kernel;
+                    collectRegion(outer->getBodyRegion(), kernel);
+                    for (auto* kernelInst : kernel) {
+                        Value* ptr = nullptr;
+                        if (auto* load = dyn_cast<LoadInst>(kernelInst))
+                            ptr = load->getOperand(0);
+                        if (auto* store = dyn_cast<StoreInst>(kernelInst)) {
+                            ptr = store->getOperand(1);
+                            if (store == result) continue;
+                        }
+                        if (ptr && decomposeAccess(ptr).root == resultAccess.root)
+                            goto nextCandidate;
+                    }
+                }
+
+                // Compute only j >= i and mirror the proven-symmetric result.
+                auto* start = new LoadInst(outer->getIVAddr(), nullptr);
+                start->setName("srp.triangle.start");
+                insertBefore(middle, start);
+                middle->setOperand(0, start);
+
+                auto* bb = result->getParent();
+                auto pos = std::find(bb->getInstructions().begin(),
+                                     bb->getInstructions().end(), result);
+                ++pos;
+                auto* iValue = new LoadInst(outer->getIVAddr(), nullptr);
+                auto* jValue = new LoadInst(middle->getIVAddr(), nullptr);
+                auto* base = new GetElementPtrInst(resultAccess.root,
+                                                   new ConstantInt(0), nullptr);
+                auto* row = new GetElementPtrInst(base, jValue, nullptr);
+                auto* cell = new GetElementPtrInst(row, iValue, nullptr);
+                auto* mirrored = new StoreInst(result->getOperand(0), cell, nullptr);
+                for (auto* emitted : std::vector<Instruction*>{iValue, jValue,
+                                                                base, row, cell,
+                                                                mirrored}) {
+                    emitted->setParent(bb);
+                    bb->getInstructions().insert(pos, emitted);
+                }
+                return true;
+            }
+
+        nextCandidate:
+            continue;
+        }
+    }
+    return false;
+}
+
+// Project a repeated, loop-invariant additive reduction onto one execution:
+//
+//   for r = 0; r < count; ++r
+//     acc += contribution                 (possibly in nested loops)
+//
+// becomes
+//
+//   for r = 0; r < (count > 0); ++r
+//     acc += contribution * count
+//
+// The nested iteration space and every loaded value must be independent of r,
+// and no memory other than loop-control slots and acc may be written.
+static bool tryScaleRepeatedReduction(Module* module) {
+    for (auto* function : module->getFunctions()) {
+        std::vector<Instruction*> all;
+        collectRegion(function->getBody(), all);
+        for (auto* inst : all) {
+            auto* outer = dyn_cast<ForInst>(inst);
+            if (!outer || !isZero(outer->getStart()) ||
+                !isOne(outer->getStep()) || outer->getPred() != ICmpInst::SLT)
+                continue;
+
+            std::vector<Instruction*> body;
+            collectRegion(outer->getBodyRegion(), body);
+            std::set<Value*> controlSlots{outer->getIVAddr()};
+            StoreInst* reductionStore = nullptr;
+            BinaryInst* reductionAdd = nullptr;
+            Value* accumulatorSlot = nullptr;
+            Value* contribution = nullptr;
+            int contributionOperand = -1;
+            for (auto* nestedInst : body)
+                if (auto* nested = dyn_cast<ForInst>(nestedInst)) {
+                    controlSlots.insert(nested->getIVAddr());
+                    if (valueDependsOn(nested->getStart(), outer->getIVAddr()) ||
+                        valueDependsOn(nested->getStop(), outer->getIVAddr()) ||
+                        valueDependsOn(nested->getStep(), outer->getIVAddr()))
+                        goto nextOuter;
+                }
+
+            for (auto* bodyInst : body) {
+                if (isa<CallInst>(bodyInst) || isa<ReturnInst>(bodyInst) ||
+                    isa<BreakInst>(bodyInst) || isa<ContinueInst>(bodyInst) ||
+                    isa<IfInst>(bodyInst) || isa<WhileInst>(bodyInst))
+                    goto nextOuter;
+                auto* store = dyn_cast<StoreInst>(bodyInst);
+                if (!store || controlSlots.count(store->getOperand(1))) continue;
+                if (reductionStore) goto nextOuter;
+
+                auto* add = dyn_cast<BinaryInst>(store->getOperand(0));
+                if (!add || add->getOpID() != Instruction::Add) goto nextOuter;
+                for (int order = 0; order < 2; ++order) {
+                    auto* old = dyn_cast<LoadInst>(add->getOperand(order));
+                    if (!old || old->getOperand(0) != store->getOperand(1)) continue;
+                    reductionStore = store;
+                    reductionAdd = add;
+                    accumulatorSlot = store->getOperand(1);
+                    contribution = add->getOperand(1 - order);
+                    contributionOperand = 1 - order;
+                    break;
+                }
+                if (!reductionStore) goto nextOuter;
+            }
+            if (!reductionStore || !isa<AllocaInst>(accumulatorSlot)) continue;
+
+            // The per-iteration delta must not depend on either the repeat IV
+            // or the previous accumulator value.
+            if (valueDependsOn(contribution, outer->getIVAddr()) ||
+                valueDependsOn(contribution, accumulatorSlot))
+                continue;
+
+            // The repeat bound is evaluated before the original loop and must
+            // not be defined by the loop itself.
+            if (auto* boundInst = dyn_cast<Instruction>(outer->getStop()))
+                if (isInsideLoop(boundInst, outer)) continue;
+
+            {
+                auto* positive = new ICmpInst(ICmpInst::SGT, outer->getStop(),
+                                              new ConstantInt(0), nullptr);
+                positive->setName("rp.repeat.nonempty");
+                insertBefore(outer, positive);
+
+                auto* scaled = new BinaryInst(Instruction::Mul, contribution,
+                                              outer->getStop(), nullptr);
+                scaled->setName("rp.repeat.scaled");
+                insertBefore(reductionAdd, scaled);
+                reductionAdd->setOperand(contributionOperand, scaled);
+                outer->setOperand(1, positive);
+            }
+            return true;
+
+        nextOuter:
+            continue;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 bool ReductionProjection::run() {
+    if (tryScaleRepeatedReduction(M)) return true;
+    if (tryFoldSymmetricTransposeReduction(M)) return true;
     for (auto* function : M->getFunctions()) {
         KernelInfo kernel;
         if (!matchKernel(function, kernel)) continue;
