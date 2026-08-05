@@ -11,6 +11,7 @@
 #include "include/Optimize/CFG/FlattenCFG.h"
 #include "include/Optimize/High/HighMem2Reg.h"
 #include "include/Optimize/High/HighLICM.h"
+#include "include/Optimize/High/ReductionProjection.h"
 #include "include/Optimize/High/WhileToFor.h"
 #include "include/Optimize/High/HighDCE.h"
 #include "include/Optimize/High/LowerFor.h"
@@ -169,6 +170,9 @@ int main(int argc, char **argv) {
 
     WhileToFor(module.get()).run();
     if (ok("whiletofor")) return 0;
+
+    ReductionProjection(module.get()).run();
+    if (ok("redproj")) return 0;
 
     LoopUnswitch(module.get()).run();
     if (ok("unswitch")) return 0;
