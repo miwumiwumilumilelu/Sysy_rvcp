@@ -102,10 +102,13 @@ static bool isControlOnlyIV(PhiInst* phi, Loop* L, BasicBlock* preHeader) {
             inc = phi->getOperand(k);
     }
     auto* bin = dyn_cast<BinaryInst>(inc);
-    // Only support AddInstruction.
-    if (!bin || bin->getOpID() != Instruction::Add) return false;
-    bool selfInc = (bin->getOperand(0) == phi && isa<ConstantInt>(bin->getOperand(1))) ||
-                   (bin->getOperand(1) == phi && isa<ConstantInt>(bin->getOperand(0)));
+    if (!bin) return false;
+    bool selfInc = false;
+    if (bin->getOpID() == Instruction::Add)
+        selfInc = (bin->getOperand(0) == phi && isa<ConstantInt>(bin->getOperand(1))) ||
+                  (bin->getOperand(1) == phi && isa<ConstantInt>(bin->getOperand(0)));
+    else if (bin->getOpID() == Instruction::Sub)
+        selfInc = bin->getOperand(0) == phi && isa<ConstantInt>(bin->getOperand(1));
     if (!selfInc) return false;
 
     std::set<Value*> ctrlCond;
@@ -451,6 +454,240 @@ static bool noLoopCarriedMemDep(Loop* L, Dominators& dt, SCEV& scev) {
         if (provesFullBoxReset(base, accs, L, dt, scev, vt)) continue;
         return false;
     }
+    return true;
+}
+
+enum RepeatEffect { RepeatRead = 1, RepeatWrite = 2 };
+struct RepeatEffects {
+    bool deterministic = true;
+    std::map<GlobalVariable*, unsigned> globals;
+};
+
+static GlobalVariable* repeatGlobalBase(Value* address) {
+    while (auto* gep = dyn_cast<GetElementPtrInst>(address))
+        address = gep->getOperand(0);
+    return dyn_cast<GlobalVariable>(address);
+}
+
+static RepeatEffects summarizeRepeatEffects(
+    Function* function, std::map<Function*, RepeatEffects>& cache,
+    std::set<Function*>& active) {
+    auto found = cache.find(function);
+    if (found != cache.end()) return found->second;
+    RepeatEffects result;
+    if (!function || function->getBody()->getBlocks().empty() ||
+        !active.insert(function).second) {
+        result.deterministic = false;
+        return result;
+    }
+    for (auto* bb : function->getBody()->getBlocks())
+        for (auto* inst : bb->getInstructions()) {
+            if (auto* load = dyn_cast<LoadInst>(inst)) {
+                auto* global = repeatGlobalBase(load->getOperand(0));
+                if (!global) result.deterministic = false;
+                else result.globals[global] |= RepeatRead;
+            } else if (auto* store = dyn_cast<StoreInst>(inst)) {
+                auto* global = repeatGlobalBase(store->getOperand(1));
+                if (!global) result.deterministic = false;
+                else result.globals[global] |= RepeatWrite;
+            } else if (auto* call = dyn_cast<CallInst>(inst)) {
+                RepeatEffects child = summarizeRepeatEffects(
+                    call->getFunction(), cache, active);
+                result.deterministic &= child.deterministic;
+                for (auto& [global, effect] : child.globals)
+                    result.globals[global] |= effect;
+            }
+        }
+    active.erase(function);
+    cache[function] = result;
+    return result;
+}
+
+static bool repeatScalarGlobal(GlobalVariable* global) {
+    auto* pointer = global ? dyn_cast<PointerType>(global->getType()) : nullptr;
+    return pointer && pointer->getPointeeType()->isInt();
+}
+
+static bool repeatInstructionBefore(Instruction* first, Instruction* second,
+                                    Dominators& dt) {
+    if (first->getParent() != second->getParent())
+        return dt.dominates(first->getParent(), second->getParent());
+    for (auto* inst : first->getParent()->getInstructions()) {
+        if (inst == first) return true;
+        if (inst == second) return false;
+    }
+    return false;
+}
+
+// A scalar reset is iteration-local only when one constant store precedes
+// every direct or transitive read portal in the repeat loop.
+static bool repeatResetBeforeReads(
+    GlobalVariable* global, Loop* loop, Dominators& dt,
+    const std::map<Function*, RepeatEffects>& cache) {
+    std::vector<Instruction*> reads;
+    std::vector<StoreInst*> resets;
+    for (auto* bb : loop->blocks)
+        for (auto* inst : bb->getInstructions()) {
+            if (auto* load = dyn_cast<LoadInst>(inst)) {
+                if (repeatGlobalBase(load->getOperand(0)) == global)
+                    reads.push_back(load);
+            } else if (auto* store = dyn_cast<StoreInst>(inst)) {
+                if (repeatGlobalBase(store->getOperand(1)) == global &&
+                    isa<ConstantInt>(store->getOperand(0)))
+                    resets.push_back(store);
+            } else if (auto* call = dyn_cast<CallInst>(inst)) {
+                auto summary = cache.find(call->getFunction());
+                if (summary == cache.end()) continue;
+                auto access = summary->second.globals.find(global);
+                if (access != summary->second.globals.end() &&
+                    (access->second & RepeatRead))
+                    reads.push_back(call);
+            }
+        }
+    if (reads.empty()) return false;
+    for (auto* reset : resets) {
+        bool beforeAll = true;
+        for (auto* read : reads)
+            if (!repeatInstructionBefore(reset, read, dt)) {
+                beforeAll = false;
+                break;
+            }
+        if (beforeAll) return true;
+    }
+    return false;
+}
+
+static Value* repeatIncoming(PhiInst* phi, BasicBlock* block, int* index = nullptr) {
+    for (int i = 0; i < phi->getNumOperands(); i += 2)
+        if (phi->getOperand(i + 1) == block) {
+            if (index) *index = i;
+            return phi->getOperand(i);
+        }
+    return nullptr;
+}
+
+static bool tryGuardedRepeatFixedPoint(Loop* loop, BasicBlock* exit,
+                                       Dominators& dt, SCEV& scev) {
+    if (!loop || !exit || !loop->head || !loop->latch ||
+        loop->latches.size() != 1)
+        return false;
+    auto* preheader = loop->entryBlock(dt);
+    if (!preheader || loop->latch->getInstructions().empty()) return false;
+
+    ExitBranchInfo info;
+    if (!analyzeExitBranch(loop, loop->head, scev, info) ||
+        !hasKnownFiniteTripCount(info, loop))
+        return false;
+    if (info.continuePred != ICmpInst::SLT &&
+        info.continuePred != ICmpInst::SGT &&
+        info.continuePred != ICmpInst::NE)
+        return false;
+
+    Value* varying = nullptr;
+    Value* boundary = nullptr;
+    if (info.lhsRec && info.lhsRec->loop == loop &&
+        isLoopInvariantValue(info.rhs, loop)) {
+        varying = info.lhs;
+        boundary = info.rhs;
+    } else if (info.rhsRec && info.rhsRec->loop == loop &&
+               isLoopInvariantValue(info.lhs, loop)) {
+        varying = info.rhs;
+        boundary = info.lhs;
+    } else return false;
+    auto* control = dyn_cast<PhiInst>(varying);
+    if (!control || control->getParent() != loop->head ||
+        !isControlOnlyIV(control, loop, preheader))
+        return false;
+    int controlBackIndex = -1;
+    Value* controlNext = repeatIncoming(control, loop->latch, &controlBackIndex);
+    if (!controlNext || controlBackIndex < 0 || isa<SelectInst>(controlNext))
+        return false;
+
+    std::map<Function*, RepeatEffects> cache;
+    std::set<Function*> active;
+    RepeatEffects effects;
+    for (auto* bb : loop->blocks)
+        for (auto* inst : bb->getInstructions()) {
+            if (auto* load = dyn_cast<LoadInst>(inst)) {
+                auto* global = repeatGlobalBase(load->getOperand(0));
+                if (!global) return false;
+                effects.globals[global] |= RepeatRead;
+            } else if (auto* store = dyn_cast<StoreInst>(inst)) {
+                auto* global = repeatGlobalBase(store->getOperand(1));
+                if (!global) return false;
+                effects.globals[global] |= RepeatWrite;
+            } else if (auto* call = dyn_cast<CallInst>(inst)) {
+                RepeatEffects child = summarizeRepeatEffects(
+                    call->getFunction(), cache, active);
+                if (!child.deterministic) return false;
+                for (auto& [global, effect] : child.globals)
+                    effects.globals[global] |= effect;
+            }
+        }
+
+    std::vector<GlobalVariable*> memoryState;
+    for (auto& [global, effect] : effects.globals) {
+        if (!repeatScalarGlobal(global)) {
+            // Arrays may be immutable inputs or write-only outputs.  An array
+            // that is both read and written is unsummarized state.
+            if ((effect & RepeatRead) && (effect & RepeatWrite)) return false;
+            continue;
+        }
+        if (effect == (RepeatRead | RepeatWrite) &&
+            !repeatResetBeforeReads(global, loop, dt, cache))
+            memoryState.push_back(global);
+    }
+
+    std::vector<std::pair<Value*, Value*>> comparisons;
+    for (auto* inst : loop->head->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+        if (phi == control || isDeadPhiClosure(phi)) continue;
+        Value* next = repeatIncoming(phi, loop->latch);
+        if (!next) return false;
+        comparisons.push_back({next, phi});
+    }
+
+    // Capture scalar memory at the very start of every executed iteration.
+    auto headPos = loop->head->getInstructions().begin();
+    while (headPos != loop->head->getInstructions().end() &&
+           isa<PhiInst>(*headPos)) ++headPos;
+    for (auto* global : memoryState) {
+        auto* before = new LoadInst(global, nullptr);
+        before->setName("repeat.state.before");
+        before->setParent(loop->head);
+        loop->head->getInstructions().insert(headPos, before);
+        auto* after = new LoadInst(global, nullptr);
+        after->setName("repeat.state.after");
+        auto& latchInsts = loop->latch->getInstructions();
+        after->setParent(loop->latch);
+        latchInsts.insert(std::prev(latchInsts.end()), after);
+        comparisons.push_back({after, before});
+    }
+    if (comparisons.empty()) return false;
+
+    auto& latchInsts = loop->latch->getInstructions();
+    auto latchPos = std::prev(latchInsts.end());
+    Value* fixed = nullptr;
+    for (auto& [next, current] : comparisons) {
+        auto* equal = new ICmpInst(ICmpInst::EQ, next, current, nullptr);
+        equal->setName("repeat.state.equal");
+        equal->setParent(loop->latch);
+        latchInsts.insert(latchPos, equal);
+        if (!fixed) fixed = equal;
+        else {
+            auto* all = new BinaryInst(Instruction::And, fixed, equal, nullptr);
+            all->setName("repeat.state.fixed");
+            all->setParent(loop->latch);
+            latchInsts.insert(latchPos, all);
+            fixed = all;
+        }
+    }
+    auto* selected = new SelectInst(fixed, boundary, controlNext, nullptr);
+    selected->setName("repeat.fixed.next.iv");
+    selected->setParent(loop->latch);
+    latchInsts.insert(latchPos, selected);
+    control->setOperand(controlBackIndex, selected);
     return true;
 }
 
@@ -1105,6 +1342,10 @@ static bool runOnFunction(Function* f) {
             if (L->latches.size() != 1) return false;
 
             // Collapse repeat loops before rejecting loops with subloops.
+            if (L->exits.size() == 1 &&
+                tryGuardedRepeatFixedPoint(L, L->exits[0], dt, scev))
+                return true;
+
             if (L->exits.size() == 1 &&
                 tryCollapseRepeatLoop(L, L->exits[0], dt, scev))
                 return true;

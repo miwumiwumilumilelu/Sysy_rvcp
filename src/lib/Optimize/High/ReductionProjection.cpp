@@ -482,6 +482,179 @@ static bool matchLoad2D(Value* value, Value* root, ForInst* row,
                               row, column);
 }
 
+// After a symmetric matrix is reduced to one minimum per row, recognize:
+//   C[i][*] = min_i; C[i][j] = -C[j][i]; sum += C[i][j]
+// The in-place transpose/negate has total sum -sum_i(min_i), so retain only
+// the row-minimum loop and accumulate `sum -= min_i` once per row.
+static bool tryCollapseMinTransposeSum(GlobalVariable* matrix,
+                                       ForInst* kernelOuter,
+                                       StoreInst* kernelStore,
+                                       StoreInst* mirrorStore) {
+    auto* parent = kernelOuter->getParent();
+    if (!parent) return false;
+    auto& top = parent->getInstructions();
+    auto kernelPos = std::find(top.begin(), top.end(), kernelOuter);
+    if (kernelPos == top.end()) return false;
+
+    std::vector<ForInst*> following;
+    for (auto it = std::next(kernelPos); it != top.end(); ++it)
+        if (auto* loop = dyn_cast<ForInst>(*it)) following.push_back(loop);
+    if (following.size() < 3) return false;
+
+    ForInst* minOuter = following[0];
+    ForInst* transposeOuter = following[1];
+    ForInst* sumOuter = following[2];
+    for (auto* loop : {minOuter, transposeOuter, sumOuter})
+        if (!isZero(loop->getStart()) || !isOne(loop->getStep()) ||
+            loop->getPred() != ICmpInst::SLT ||
+            !sameExtent(loop->getStop(), kernelOuter->getStop()))
+            return false;
+
+    std::vector<ForInst*> minChildren;
+    for (auto* direct : directInstructions(minOuter))
+        if (auto* loop = dyn_cast<ForInst>(direct)) minChildren.push_back(loop);
+    if (minChildren.size() != 2) return false;
+    ForInst* minLoop = minChildren[0];
+    ForInst* fillLoop = minChildren[1];
+    if (!sameExtent(minLoop->getStop(), kernelOuter->getStop()) ||
+        !sameExtent(fillLoop->getStop(), kernelOuter->getStop()))
+        return false;
+
+    AllocaInst* minSlot = nullptr;
+    StoreInst* minUpdate = nullptr;
+    LoadInst* minElement = nullptr;
+    ICmpInst* minCompare = nullptr;
+    std::vector<Instruction*> minBody;
+    collectRegion(minLoop->getBodyRegion(), minBody);
+    for (auto* inst : minBody) {
+        if (auto* cmp = dyn_cast<ICmpInst>(inst)) {
+            if (cmp->getPredicate() == ICmpInst::SLT && !minCompare)
+                minCompare = cmp;
+        }
+        auto* store = dyn_cast<StoreInst>(inst);
+        auto* slot = store ? dyn_cast<AllocaInst>(store->getOperand(1)) : nullptr;
+        auto* value = store ? dyn_cast<LoadInst>(store->getOperand(0)) : nullptr;
+        if (!slot || !value) continue;
+        if (!accessIs2D(decomposeAccess(value->getOperand(0)), matrix,
+                        minOuter, minLoop))
+            continue;
+        if (minUpdate) return false;
+        minSlot = slot;
+        minUpdate = store;
+        minElement = value;
+    }
+    if (!minSlot || !minCompare) return false;
+    auto* comparedElement = dyn_cast<LoadInst>(minCompare->getOperand(0));
+    bool cmpMatches = comparedElement &&
+        accessIs2D(decomposeAccess(comparedElement->getOperand(0)), matrix,
+                   minOuter, minLoop) &&
+        isLoadOf(minCompare->getOperand(1), minSlot);
+    if (!cmpMatches) return false;
+
+    bool hasMinInit = false;
+    for (auto* direct : directInstructions(minOuter)) {
+        auto* store = dyn_cast<StoreInst>(direct);
+        if (store && store->getOperand(1) == minSlot && store != minUpdate)
+            hasMinInit = true;
+    }
+    if (!hasMinInit) return false;
+
+    StoreInst* fillStore = nullptr;
+    for (auto* inst : directInstructions(fillLoop)) {
+        auto* store = dyn_cast<StoreInst>(inst);
+        if (!store) continue;
+        if (!accessIs2D(decomposeAccess(store->getOperand(1)), matrix,
+                        minOuter, fillLoop) ||
+            !isLoadOf(store->getOperand(0), minSlot) || fillStore)
+            return false;
+        fillStore = store;
+    }
+    if (!fillStore) return false;
+
+    auto directChild = [&](ForInst* outer) -> ForInst* {
+        ForInst* child = nullptr;
+        for (auto* direct : directInstructions(outer))
+            if (auto* loop = dyn_cast<ForInst>(direct)) {
+                if (child) return nullptr;
+                child = loop;
+            }
+        return child;
+    };
+    ForInst* transposeInner = directChild(transposeOuter);
+    ForInst* sumInner = directChild(sumOuter);
+    if (!transposeInner || !sumInner) return false;
+
+    StoreInst* transposeStore = nullptr;
+    LoadInst* transposeLoad = nullptr;
+    for (auto* inst : directInstructions(transposeInner)) {
+        auto* store = dyn_cast<StoreInst>(inst);
+        auto* neg = store ? dyn_cast<BinaryInst>(store->getOperand(0)) : nullptr;
+        if (!store || !neg || neg->getOpID() != Instruction::Sub ||
+            !isZero(neg->getOperand(0)))
+            continue;
+        auto* load = dyn_cast<LoadInst>(neg->getOperand(1));
+        if (!load ||
+            !accessIs2D(decomposeAccess(store->getOperand(1)), matrix,
+                        transposeOuter, transposeInner) ||
+            !accessIs2D(decomposeAccess(load->getOperand(0)), matrix,
+                        transposeInner, transposeOuter) || transposeStore)
+            return false;
+        transposeStore = store;
+        transposeLoad = load;
+    }
+    if (!transposeStore) return false;
+
+    StoreInst* sumStore = nullptr;
+    LoadInst* sumElement = nullptr;
+    AllocaInst* sumSlot = nullptr;
+    for (auto* inst : directInstructions(sumInner)) {
+        auto* store = dyn_cast<StoreInst>(inst);
+        auto* add = store ? dyn_cast<BinaryInst>(store->getOperand(0)) : nullptr;
+        auto* slot = store ? dyn_cast<AllocaInst>(store->getOperand(1)) : nullptr;
+        if (!store || !add || add->getOpID() != Instruction::Add || !slot)
+            continue;
+        for (int order = 0; order < 2; ++order) {
+            auto* old = dyn_cast<LoadInst>(add->getOperand(order));
+            auto* elem = dyn_cast<LoadInst>(add->getOperand(1 - order));
+            if (!old || old->getOperand(0) != slot || !elem) continue;
+            if (!accessIs2D(decomposeAccess(elem->getOperand(0)), matrix,
+                            sumOuter, sumInner))
+                continue;
+            sumStore = store;
+            sumElement = elem;
+            sumSlot = slot;
+            break;
+        }
+    }
+    if (!sumStore || !sumSlot) return false;
+
+    std::set<Instruction*> accepted{kernelStore, mirrorStore, minElement,
+                                    comparedElement, fillStore, transposeStore,
+                                    transposeLoad, sumElement};
+    if (!onlyExpectedGlobalUses(matrix, accepted)) return false;
+
+    // Insert the closed-form contribution immediately after the row-min loop.
+    auto* bodyBB = minLoop->getParent();
+    auto pos = std::find(bodyBB->getInstructions().begin(),
+                         bodyBB->getInstructions().end(), minLoop);
+    ++pos;
+    auto* oldSum = new LoadInst(sumSlot, nullptr); oldSum->setName("srp.sum.old");
+    auto* rowMin = new LoadInst(minSlot, nullptr); rowMin->setName("srp.row.min");
+    auto* nextSum = new BinaryInst(Instruction::Sub, oldSum, rowMin, nullptr);
+    nextSum->setName("srp.sum.next");
+    auto* publish = new StoreInst(nextSum, sumSlot, nullptr);
+    for (auto* emitted : std::vector<Instruction*>{oldSum, rowMin, nextSum,
+                                                    publish}) {
+        emitted->setParent(bodyBB);
+        bodyBB->getInstructions().insert(pos, emitted);
+    }
+
+    IRRewriter::eraseOp(fillLoop);
+    IRRewriter::eraseOp(transposeOuter);
+    IRRewriter::eraseOp(sumOuter);
+    return true;
+}
+
 // Fold a symmetric pairwise reduction to its triangular iteration domain.
 // The proof uses an earlier B[i][j] = A[j][i] definition and verifies the
 // complete guarded reduction shape after substituting that relation.
@@ -679,6 +852,9 @@ static bool tryFoldSymmetricTransposeReduction(Module* module) {
                     emitted->setParent(bb);
                     bb->getInstructions().insert(pos, emitted);
                 }
+                tryCollapseMinTransposeSum(
+                    cast<GlobalVariable>(resultAccess.root), outer, result,
+                    mirrored);
                 return true;
             }
 
