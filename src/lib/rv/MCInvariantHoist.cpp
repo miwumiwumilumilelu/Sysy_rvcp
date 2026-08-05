@@ -55,6 +55,7 @@ bool MCInvariantHoistPass::hoistInvariant(MCFunction* func) {
         //           └── loop
         // bbx -> bbx_to_bbx -> bbx
         MCBlock* backTramp = nullptr;
+        MCBlock* bodyBlock = nullptr;
         if (!selfCircle) {
             for (auto* succ : loopBB->succs) {
                 if (succ->preds.size() == 1 && succ->preds[0] == loopBB &&
@@ -65,6 +66,27 @@ bool MCInvariantHoistPass::hoistInvariant(MCFunction* func) {
                         break;
                     }
                 }
+            }
+        }
+        // Canonical lowered two-block loop:
+        //   header -> body -> backTramp -> header
+        //                  \-> exit
+        // The previous recognizer only handled header -> backTramp -> header.
+        if (!selfCircle && !backTramp) {
+            for (auto* body : loopBB->succs) {
+                if (body == loopBB) continue;
+                for (auto* succ : body->succs) {
+                    if (succ->preds.size() == 1 && succ->preds[0] == body &&
+                        succ->succs.size() == 1 && succ->succs[0] == loopBB) {
+                        auto* term = succ->getTerminator();
+                        if (term && term->opcode == RvOp::JOp) {
+                            bodyBlock = body;
+                            backTramp = succ;
+                            break;
+                        }
+                    }
+                }
+                if (backTramp) break;
             }
         }
         if (!selfCircle && !backTramp) continue;
@@ -100,7 +122,8 @@ bool MCInvariantHoistPass::hoistInvariant(MCFunction* func) {
             }
         };
 
-        for (RvOp* op = loopBB->head; op; op = op->next) {
+        MCBlock* candidateBlock = bodyBlock ? bodyBlock : loopBB;
+        for (RvOp* op = candidateBlock->head; op; op = op->next) {
             if (!isOk(op)) continue;
             auto* dst = op->getDef();
             if (!dst || !dst->isVReg()) continue;
@@ -109,6 +132,7 @@ bool MCInvariantHoistPass::hoistInvariant(MCFunction* func) {
             op->collectUses(workList);
 
             std::vector<MCBlock*> loopBlocks{loopBB};
+            if (bodyBlock) loopBlocks.push_back(bodyBlock);
             if (backTramp) loopBlocks.push_back(backTramp);
 
             // Check if Operand is defined in loop.
@@ -121,7 +145,7 @@ bool MCInvariantHoistPass::hoistInvariant(MCFunction* func) {
             bool dstUsedAfter = false;
 
             for (MCBlock* lb : loopBlocks) {
-                bool beforeCandidate = (lb == loopBB);
+                bool beforeCandidate = (lb == candidateBlock);
                 for (RvOp* it = lb->head; it; it = it->next) {
                     if (it != op && opDefines(it, *dst))
                         dstDefinedElsewhere = true;
@@ -156,7 +180,7 @@ bool MCInvariantHoistPass::hoistInvariant(MCFunction* func) {
             }
             if (dstUsedOutside) continue;
 
-            loopBB->remove(op);
+            candidateBlock->remove(op);
             pre->insertBefore(preTerm, op);
             return true;
         }
