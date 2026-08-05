@@ -13,8 +13,10 @@ bool TCE::runFunc(Function* f) {
     // ret %r1;
     struct Site {
         CallInst* call;
-        ReturnInst* ret;
         BasicBlock* bb;
+        ReturnInst* directRet = nullptr;
+        BranchInst* forwardingBr = nullptr;
+        PhiInst* forwardingPhi = nullptr;
     };
     std::vector<Site> sites;
 
@@ -26,12 +28,62 @@ bool TCE::runFunc(Function* f) {
                 pendingCall = (call->getFunction() == f) ? call : nullptr;
             } else if (auto* ret = dyn_cast<ReturnInst>(inst)) {
                 if (pendingCall && ret->getNumOperands() == 1 && ret->getOperand(0) == pendingCall)
-                    sites.push_back({pendingCall, ret, bb});
+                    sites.push_back({pendingCall, bb, ret, nullptr, nullptr});
                 pendingCall = nullptr;
             } else {
                 pendingCall = nullptr;
             }
         }
+    }
+
+    // Inlining commonly represents the same tail position through a shared
+    // return block:
+    //
+    //   %r = call f(...)
+    //   br merge
+    // merge:
+    //   %v = phi [ %r, tail_bb ], ...
+    //   ret %v
+    //
+    // Recognize that forwarding edge as a tail call too.  Other incoming values
+    // and the shared return remain intact.
+    for (auto* bb : f->getBody()->getBlocks()) {
+        auto& insts = bb->getInstructions();
+        if (insts.size() < 2) continue;
+        auto brIt = std::prev(insts.end());
+        auto* br = dyn_cast<BranchInst>(*brIt);
+        if (!br || br->getNumOperands() != 1) continue;
+        auto* dest = dyn_cast<BasicBlock>(br->getOperand(0));
+        if (!dest) continue;
+
+        auto callIt = std::prev(brIt);
+        auto* call = dyn_cast<CallInst>(*callIt);
+        if (!call || call->getFunction() != f) continue;
+
+        auto& destInsts = dest->getInstructions();
+        if (destInsts.empty()) continue;
+        auto* ret = dyn_cast<ReturnInst>(destInsts.back());
+        if (!ret || ret->getNumOperands() != 1) continue;
+        auto* phi = dyn_cast<PhiInst>(ret->getOperand(0));
+        if (!phi || phi->getParent() != dest) continue;
+
+        bool forwardsCall = false;
+        for (int i = 0; i + 1 < phi->getNumOperands(); i += 2)
+            if (phi->getOperand(i) == call && phi->getOperand(i + 1) == bb) {
+                forwardsCall = true;
+                break;
+            }
+        if (!forwardsCall) continue;
+
+        bool simpleReturnBlock = true;
+        for (auto* inst : destInsts)
+            if (inst != ret && !isa<PhiInst>(inst)) {
+                simpleReturnBlock = false;
+                break;
+            }
+        if (!simpleReturnBlock) continue;
+
+        sites.push_back({call, bb, nullptr, br, phi});
     }
     if (sites.empty()) return false;
 
@@ -86,7 +138,21 @@ bool TCE::runFunc(Function* f) {
         for (size_t i = 0; i < args.size(); i++)
             phis[i]->addIncoming(s.call->getOperand(i + 1), s.bb);
 
-        s.ret->eraseInst();
+        if (s.directRet)
+            s.directRet->eraseInst();
+        if (s.forwardingPhi) {
+            // The forwarding edge is being removed.  Keep every phi in the
+            // shared return block consistent, including currently-dead phis
+            // that cleanup has not removed yet.
+            auto* dest = s.forwardingPhi->getParent();
+            for (auto* inst : dest->getInstructions()) {
+                auto* phi = dyn_cast<PhiInst>(inst);
+                if (!phi) break;
+                phi->removeIncomingByBlock(s.bb);
+            }
+        }
+        if (s.forwardingBr)
+            s.forwardingBr->eraseInst();
         s.call->eraseInst();
         new BranchInst(oldEntry, s.bb);
     }

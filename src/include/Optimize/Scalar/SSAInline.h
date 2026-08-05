@@ -18,6 +18,12 @@ public:
     explicit SSAInline(Module* m, int threshold = 200) : M(m), threshold(threshold) {}
     bool run();
 
+    // Inline a call whose legality and profitability were established
+    // by a specialized transform.  
+    // The caller is responsible for avoiding unbounded recursive expansion; 
+    // this performs exactly one inline step.
+    void inlineCallUnchecked(CallInst* call) { doInline(call); }
+
 private:
     bool isInlineable(CallInst* call, Loop* callSiteLoop, SCEV* scev, int callSiteCount) const;
 

@@ -206,12 +206,12 @@ int main(int argc, char **argv) {
 // ======== Memoization ========
 
     Memoize(module.get()).run();
-    if (ok("memoize")) return 0;
+    if (ok("memo")) return 0;
 
 // ======== Tail Call Elimination ========
 
     TCE(module.get()).run();
-    if (ok("tce")) return 0;
+    if (ok("pretce")) return 0;
 
 // ======== Inline ========
 
@@ -219,6 +219,12 @@ int main(int argc, char **argv) {
         runCleanup(module.get());
     }
     if (ok("inline")) return 0;
+
+    // Inlining can expose direct tail recursion that was previously hidden
+    // behind a small wrapper (notably the tail-path memoization wrapper).
+    if (TCE(module.get()).run())
+        runCleanup(module.get());
+    if (ok("posttce")) return 0;
 
 // ======== ConstSpec ========
 
