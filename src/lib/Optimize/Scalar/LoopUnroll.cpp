@@ -147,7 +147,9 @@ static std::vector<BasicBlock*> getLoopOrder(Loop* L, BasicBlock* head, BasicBlo
 }
 
 // Match counted-loop shape.
-static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev, ValueTracking& vt, UnrollInfo& info, int threshold) {
+static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev, ValueTracking& vt,
+                      UnrollInfo& info, int threshold,
+                      bool forPartialUnroll = false) {
     if (!pre) return false;
 
     BasicBlock* head = L->head;
@@ -284,7 +286,7 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev, ValueTracking& vt, U
 
     if (tripCount < 0 || tripCount > threshold) return false;
 
-    if (tripCount > MaxMemLoopUnrollTrip) {
+    if (!forPartialUnroll && tripCount > MaxMemLoopUnrollTrip) {
         bool hasMem = false;
         bool hasLoad = false;
         int bodyInsts = 0;
@@ -321,12 +323,17 @@ static bool matchLoop(Loop* L, BasicBlock* pre, SCEV& scev, ValueTracking& vt, U
         isMultiBlock = (bodyOrder.size() > 1);
 
         // Limit total cloned instructions: bodyOrder.size() * tripCount <= 200.
-        if (isMultiBlock && bodyOrder.size() * (size_t)tripCount > 200) return false;
+        if (!forPartialUnroll && isMultiBlock &&
+            bodyOrder.size() * (size_t)tripCount > 200)
+            return false;
 
         // Reject body blocks with unsupported instructions (for all body blocks).
         for (auto* bb : bodyOrder) {
             for (auto* inst : bb->getInstructions()) {
                 if (isa<BranchInst>(inst)) continue;
+                // Merge phis are structural SSA nodes and are remapped by
+                // IRClone together with their predecessor blocks.
+                if (forPartialUnroll && isa<PhiInst>(inst)) continue;
                 if (inst == ivIncrement) continue;
                 if (inst == exitCmpInLatch) continue;
                 if (!isSafe(inst)) return false;
@@ -716,6 +723,105 @@ static bool unrollMultiBlockLoop(Loop* /*L*/, BasicBlock* pre, UnrollInfo& info,
     return true;
 }
 
+// Widen one latch-tested iteration into two consecutive body copies.  This is
+// deliberately limited to exact even trip counts, so no cleanup loop is
+// needed and the original exit condition remains valid on the second copy.
+// Header phis feed copy 0; their latch values feed copy 1; copy 1 then feeds
+// the next header iteration.
+static bool partialUnrollMultiBlockLoop(UnrollInfo& info, Region* region) {
+    if (!info.exitCmp || !info.multiBlock || info.tripCount < 8 ||
+        (info.tripCount & 1) || info.bodyOrder.empty())
+        return false;
+
+    BasicBlock* head = info.head;
+    BasicBlock* latch = info.latch;
+    BasicBlock* exit = info.exit;
+
+    auto getLatchIncoming = [&](PhiInst* phi) -> Value* {
+        for (int i = 0; i < phi->getNumOperands(); i += 2)
+            if (dyn_cast<BasicBlock>(phi->getOperand(i + 1)) == latch)
+                return phi->getOperand(i);
+        return nullptr;
+    };
+
+    // Keep code growth and live-range growth bounded.  Branches and phis are
+    // framing rather than duplicated arithmetic work for this budget.
+    int bodyInsts = 0;
+    for (auto* bb : info.bodyOrder)
+        for (auto* inst : bb->getInstructions())
+            if (!isa<BranchInst>(inst) && !isa<PhiInst>(inst)) ++bodyInsts;
+    if (info.bodyOrder.size() > 6 || bodyInsts > 48) return false;
+
+    ValueMap valueMap;
+    valueMap[info.ivPhi] = info.ivIncrement;
+    for (auto* phi : info.carriedPhis) {
+        Value* next = getLatchIncoming(phi);
+        if (!next) return false;
+        valueMap[phi] = next;
+    }
+
+    BlockMap blockMap;
+    for (auto* bb : info.bodyOrder) {
+        auto* clone = new BasicBlock(bb->getName() + ".pu1", region);
+        blockMap[bb] = clone;
+    }
+
+    // Clone the second body copy.  Its latch branch is rebuilt after all
+    // values (including the second exit comparison) have been remapped.
+    for (auto* bb : info.bodyOrder) {
+        auto* cloneBB = blockMap[bb];
+        for (auto* inst : bb->getInstructions()) {
+            if (bb == latch && isa<BranchInst>(inst)) continue;
+            auto* clone = cloneInst(inst, cloneBB, valueMap, blockMap);
+            if (!clone) return false;
+            valueMap[inst] = clone;
+        }
+    }
+
+    auto* secondEntry = blockMap[info.bodyOrder.front()];
+    auto* secondLatch = blockMap[latch];
+    if (!secondEntry || !secondLatch) return false;
+
+    // Copy 0 no longer tests the loop bound; it always continues into copy 1.
+    auto& latchInsts = latch->getInstructions();
+    auto* oldBranch = dyn_cast<BranchInst>(latchInsts.back());
+    if (!oldBranch) return false;
+    auto* trueBB = dyn_cast<BasicBlock>(oldBranch->getOperand(1));
+    auto* falseBB = dyn_cast<BasicBlock>(oldBranch->getOperand(2));
+    if (!trueBB || !falseBB) return false;
+    oldBranch->eraseInst();
+    new BranchInst(secondEntry, latch);
+
+    Value* secondCond = remapValue(info.exitCmp, valueMap, blockMap);
+    if (!secondCond) return false;
+    new BranchInst(secondCond, trueBB, falseBB, secondLatch);
+
+    // The loop backedge and LCSSA exit edge now originate in copy 1.
+    std::vector<PhiInst*> headerPhis;
+    for (auto* inst : head->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+        headerPhis.push_back(phi);
+    }
+    for (auto* phi : headerPhis) {
+        for (int i = 0; i < phi->getNumOperands(); i += 2) {
+            if (dyn_cast<BasicBlock>(phi->getOperand(i + 1)) != latch) continue;
+            phi->setOperand(i, remapValue(phi->getOperand(i), valueMap, blockMap));
+            phi->setOperand(i + 1, secondLatch);
+        }
+    }
+    for (auto* inst : exit->getInstructions()) {
+        auto* phi = dyn_cast<PhiInst>(inst);
+        if (!phi) break;
+        for (int i = 0; i < phi->getNumOperands(); i += 2) {
+            if (dyn_cast<BasicBlock>(phi->getOperand(i + 1)) != latch) continue;
+            phi->setOperand(i, remapValue(phi->getOperand(i), valueMap, blockMap));
+            phi->setOperand(i + 1, secondLatch);
+        }
+    }
+    return true;
+}
+
 bool LoopUnroll::runFunc(Function* f) {
     if (f->getBody()->getBlocks().empty()) return false;
 
@@ -743,7 +849,16 @@ bool LoopUnroll::runFunc(Function* f) {
             for (auto* inner : innermost) {
                 UnrollInfo info;
                 ValueTracking vt(f);
-                if (!matchLoop(inner, inner->pre, scev, vt, info, Threshold)) continue;
+                if (!matchLoop(inner, inner->pre, scev, vt, info, Threshold)) {
+                    // Large exact loops are candidates for bounded factor-2
+                    // widening instead of explosive complete unrolling.
+                    if (!matchLoop(inner, inner->pre, scev, vt, info, 1024,
+                                   true) ||
+                        !partialUnrollMultiBlockLoop(info, f->getBody()))
+                        continue;
+                    changed = anyChanged = true;
+                    break;
+                }
                 bool ok = false;
                 if (info.multiBlock)
                     ok = unrollMultiBlockLoop(inner, inner->pre, info, f->getBody());
