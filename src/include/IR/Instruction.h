@@ -28,6 +28,8 @@ public:
         Phi,
         // cond ? T : F
         Select,
+        // Exact (i64(a) * i64(b)) % modulus, returned as i32.
+        FastModMul,
         Flow
     };
 
@@ -87,6 +89,16 @@ public:
         if (!isa<Instruction>(v)) return false;
         OpID op = cast<Instruction>(v)->getOpID();
         return op >= Add && op <= FDiv;
+    }
+};
+
+class FastModMulInst : public Instruction {
+public:
+    FastModMulInst(Value* lhs, Value* rhs, Value* modulus, BasicBlock* parent);
+    std::string toString() const override;
+    Instruction* clone(std::map<Value*, Value*>& vmap) override;
+    static bool classof(const Value* v) {
+        return isa<Instruction>(v) && cast<Instruction>(v)->getOpID()==FastModMul;
     }
 };
 

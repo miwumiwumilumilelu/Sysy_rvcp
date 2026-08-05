@@ -8,6 +8,8 @@
 
 using namespace sysy;
 
+static std::string fmtOperand(Value* v);
+
 static std::string addIndent(const std::string &str, int spaceCount) {
     std::stringstream ss(str);
     std::string line;
@@ -23,6 +25,16 @@ static std::string addIndent(const std::string &str, int spaceCount) {
         res.pop_back(); 
     }
     return res;
+}
+
+FastModMulInst::FastModMulInst(Value* lhs, Value* rhs, Value* modulus,
+                               BasicBlock* parent)
+    : Instruction(Type::getIntTy(), FastModMul, parent) {
+    addOperand(lhs); addOperand(rhs); addOperand(modulus);
+}
+std::string FastModMulInst::toString() const {
+    return Name+" = fast_modmul "+fmtOperand(getOperand(0))+", "+
+           fmtOperand(getOperand(1))+", "+fmtOperand(getOperand(2));
 }
 
 static std::string fmtOperand(Value* v) {
@@ -663,6 +675,7 @@ bool Instruction::isPureCloneable() const {
     case SIToFP: case FPToSI:
     case Load: case GetElementPtr:
     case Select:
+    case FastModMul:
         return true;
     default:
         return false;
@@ -674,6 +687,12 @@ Instruction* Instruction::clone(std::map<Value*, Value*>&) { return nullptr; }
 Instruction* BinaryInst::clone(std::map<Value*, Value*>& vmap) {
     return new BinaryInst(getOpID(), remapVal(getOperand(0), vmap),
                           remapVal(getOperand(1), vmap), nullptr);
+}
+
+Instruction* FastModMulInst::clone(std::map<Value*, Value*>& vmap) {
+    return new FastModMulInst(remapVal(getOperand(0),vmap),
+                              remapVal(getOperand(1),vmap),
+                              remapVal(getOperand(2),vmap),nullptr);
 }
 
 Instruction* AllocaInst::clone(std::map<Value*, Value*>&) {

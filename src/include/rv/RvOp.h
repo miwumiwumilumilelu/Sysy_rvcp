@@ -30,7 +30,7 @@ using VReg = uint32_t;
 constexpr VReg InvalidVReg = 0;
 
 #define RV_INSTRUCTIONS \
-    X(Addi) X(Add) X(Addw) X(Subw) X(Mul) X(Mulw) X(Divw) X(Remw) \
+    X(Addi) X(Add) X(Addw) X(Subw) X(Mul) X(Mulw) X(Divw) X(Rem) X(Remw) \
     X(Sll) X(Srl) X(Sra) X(Srai) X(Slliw) X(Srliw) X(Sraiw) X(Andi) X(Ori) X(Xori) \
     X(And) X(Or) X(Xor) X(Slt) X(Sltu) X(Sltiu) X(Slti) \
     X(FAddS) X(FSubS) X(FMulS) X(FDivS) \
@@ -207,6 +207,7 @@ class SubwOp  : public RVInstR { public: SubwOp(MCOperand d, MCOperand s1, MCOpe
 class MulOp   : public RVInstR { public: MulOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::MulOp, "mul", d, s1, s2) {} };
 class MulwOp  : public RVInstR { public: MulwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::MulwOp, "mulw", d, s1, s2) {} };
 class DivwOp  : public RVInstR { public: DivwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::DivwOp, "divw", d, s1, s2) {} };
+class RemOp   : public RVInstR { public: RemOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::RemOp, "rem", d, s1, s2) {} };
 class RemwOp  : public RVInstR { public: RemwOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::RemwOp, "remw", d, s1, s2) {} };
 class AndOp   : public RVInstR { public: AndOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::AndOp, "and", d, s1, s2) {} };
 class OrOp    : public RVInstR { public: OrOp(MCOperand d, MCOperand s1, MCOperand s2) : RVInstR(RvOp::OrOp, "or", d, s1, s2) {} };

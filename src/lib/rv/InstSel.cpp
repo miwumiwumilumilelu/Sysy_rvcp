@@ -417,6 +417,9 @@ void InstSelPass::selectInstruction(Instruction* inst, InstSelContext& ctx) {
         case Instruction::Mod:
             selectMod(static_cast<BinaryInst*>(inst), ctx);
             break;
+        case Instruction::FastModMul:
+            selectFastModMul(static_cast<FastModMulInst*>(inst), ctx);
+            break;
         case Instruction::Shl:
             selectShl(static_cast<BinaryInst*>(inst), ctx);
             break;
@@ -644,6 +647,14 @@ void InstSelPass::selectDiv(BinaryInst* inst, InstSelContext& ctx) {
     auto rs1 = ctx.getVReg(lhs, false);
     auto rs2 = ctx.getVReg(rhs, false);
     ctx.block->append(new DivwOp(rd, rs1, rs2));
+}
+
+void InstSelPass::selectFastModMul(FastModMulInst* inst, InstSelContext& ctx) {
+    auto product=ctx.newVReg(false);
+    ctx.block->append(new MulOp(product,ctx.getVReg(inst->getOperand(0),false),
+                               ctx.getVReg(inst->getOperand(1),false)));
+    ctx.block->append(new RemOp(ctx.getVReg(inst,false),product,
+                               ctx.getVReg(inst->getOperand(2),false)));
 }
 
 void InstSelPass::selectMod(BinaryInst* inst, InstSelContext& ctx) {
