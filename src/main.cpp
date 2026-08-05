@@ -34,6 +34,7 @@
 #include "include/Optimize/Scalar/SSAInline.h"
 #include "include/Optimize/Scalar/ConstSpec.h"
 #include "include/Optimize/Scalar/LoopUnroll.h"
+#include "include/Optimize/Scalar/DemandDrivenCopyProjection.h"
 #include "include/Optimize/Loop/LoopSimplify.h"
 #include "include/Optimize/Loop/LoopRotate.h"
 #include "include/Optimize/Loop/LCSSA.h"
@@ -268,6 +269,9 @@ int main(int argc, char **argv) {
     LoopSimplify(module.get()).run();
     if (ok("loopsimplify")) return 0;
 
+    if (DemandDrivenCopyProjection(module.get()).run()) runCleanup(module.get());
+    if (ok("copyprojection")) return 0;
+
     LoopRotate(module.get()).run();
     if (ok("looprotate")) return 0;
 
@@ -298,6 +302,7 @@ int main(int argc, char **argv) {
     bool lsrChanged = LoopStrengthReduce(module.get()).run();
     if (ok("lsr")) return 0;
     if (lsrChanged) runCleanup(module.get());
+
 
 // ======== LoopExitFold + LICM + LoopMemPromote + SubloopHoist (fixpoint) ========
 
