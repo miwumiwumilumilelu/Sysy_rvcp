@@ -7,8 +7,10 @@ from pathlib import Path
 # ================= 配置区域 =================
 COMPILER = os.environ.get("CXX", "clang++")
 TARGET_NAME = "compiler"
+DEBUG_TARGET_NAME = "compiler_dbg"
 
 BASE_FLAGS = ["-std=c++17", "-O2"]
+DEBUG_FLAGS = ["-std=c++17", "-g", "-O0"]
 WARN_FLAGS = []
 LINK_FLAGS = ["-lm"]
 # ===========================================
@@ -35,28 +37,30 @@ def include_flags(project_root: Path) -> list[str]:
 def clean():
     """清理所有编译产物"""
     project_root = Path(__file__).parent.absolute()
-    
-    target_path = project_root / TARGET_NAME
-    if os.name == 'nt':
-        target_path = target_path.with_suffix(".exe")
-        
-    if target_path.exists():
-        target_path.unlink()
-        print(f"🧹 已删除: {target_path.name}")
 
-    dsym_dir = project_root / (TARGET_NAME + ".dSYM")
-    if dsym_dir.exists():
-        shutil.rmtree(dsym_dir)
-        print(f"🧹 已删除: {dsym_dir.name}")
+    for name in [TARGET_NAME, DEBUG_TARGET_NAME]:
+        target_path = project_root / name
+        if os.name == 'nt':
+            target_path = target_path.with_suffix(".exe")
+
+        if target_path.exists():
+            target_path.unlink()
+            print(f"🧹 已删除: {target_path.name}")
+
+        dsym_dir = project_root / (name + ".dSYM")
+        if dsym_dir.exists():
+            shutil.rmtree(dsym_dir)
+            print(f"🧹 已删除: {dsym_dir.name}")
 
     legacy_build_dir = project_root / "build"
     if legacy_build_dir.exists():
         shutil.rmtree(legacy_build_dir)
         print(f"🧹 已清理旧的 build 目录")
 
-def build():
+def build(debug: bool = False):
     project_root = Path(__file__).parent.absolute()
-    target_path = project_root / TARGET_NAME
+    target_name = DEBUG_TARGET_NAME if debug else TARGET_NAME
+    target_path = project_root / target_name
 
     if os.name == 'nt':
         target_path = target_path.with_suffix(".exe")
@@ -74,7 +78,7 @@ def build():
 
     cmd = (
         [COMPILER]
-        + BASE_FLAGS
+        + (DEBUG_FLAGS if debug else BASE_FLAGS)
         + WARN_FLAGS
         + include_flags(project_root)
         + source_files
@@ -82,7 +86,8 @@ def build():
         + ["-o", str(target_path)]
     )
 
-    print(f"🚀 正在编译 {target_path.name}...")
+    mode = "debug " if debug else ""
+    print(f"🚀 正在编译 {mode}{target_path.name}...")
     print(" ".join(cmd))
     try:
         subprocess.run(cmd, check=True)
@@ -103,12 +108,18 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "clean":
         clean()
         sys.exit(0)
-    
-    exe_path = build()
+
+    debug = False
+    args = sys.argv[1:]
+    if "-d" in args:
+        debug = True
+        args.remove("-d")
+
+    exe_path = build(debug)
 
     # 可选：支持直接运行测试文件
-    if len(sys.argv) > 1:
-        arg_file = sys.argv[1]
+    if args:
+        arg_file = args[0]
         if os.path.exists(arg_file):
             print(f"\n🚀 立即运行: ./{exe_path.name} {arg_file}")
             print("-" * 40)

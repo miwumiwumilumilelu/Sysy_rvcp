@@ -72,6 +72,59 @@ static int maxmod(int a1, int b1, int a2, int b2) {
     return std::max(std::abs(a2), std::abs(b2)) - 1;
 }
 
+/*
+select(a < b, b, a) → max(a,b)
+select(a <= b, b, a) → max(a,b)
+select(a > b, a, b) → max(a,b)
+select(a >= b, a, b) → max(a,b)
+select(a < b, a, b) → min(a,b)
+select(a <= b, a, b) → min(a,b)
+select(a > b, b, a) → min(a,b)
+select(a >= b, b, a) → min(a,b)
+*/
+enum class MinMaxKind { None, Min, Max };
+
+static MinMaxKind signedMinMax(SelectInst* sel, Value*& a, Value*& b) {
+    auto* cmp = sel ? dyn_cast<ICmpInst>(sel->getCond()) : nullptr;
+    if (!cmp) return MinMaxKind::None;
+    Value* lhs = cmp->getOperand(0);
+    Value* rhs = cmp->getOperand(1);
+    Value* tv = sel->getTrueVal();
+    Value* fv = sel->getFalseVal();
+    a = lhs;
+    b = rhs;
+    switch (cmp->getPredicate()) {
+        case ICmpInst::SLT:
+        case ICmpInst::SLE:
+            if (tv == rhs && fv == lhs) return MinMaxKind::Max;
+            if (tv == lhs && fv == rhs) return MinMaxKind::Min;
+            break;
+        case ICmpInst::SGT:
+        case ICmpInst::SGE:
+            if (tv == lhs && fv == rhs) return MinMaxKind::Max;
+            if (tv == rhs && fv == lhs) return MinMaxKind::Min;
+            break;
+        default:
+            break;
+    }
+    a = b = nullptr;
+    return MinMaxKind::None;
+}
+
+// Recognize the complementary pair {x, C-x} in either order.
+static bool constantComplement(Value* a, Value* b, int& constant) {
+    auto match = [&](Value* x, Value* complement) {
+        auto* sub = dyn_cast<BinaryInst>(complement);
+        auto* c = sub ? dyn_cast<ConstantInt>(sub->getOperand(0)) : nullptr;
+        if (!sub || sub->getOpID() != Instruction::Sub || !c ||
+            sub->getOperand(1) != x)
+            return false;
+        constant = c->getValue();
+        return true;
+    };
+    return match(a, b) || match(b, a);
+}
+
 // Replace every occurrence of oldVal as an operand of user with newVal.
 static void replaceInUser(User* user, Value* oldVal, Value* newVal) {
     for (int i = 0; i < user->getNumOperands(); ++i)
@@ -472,6 +525,24 @@ bool RangeAnalysis::calculateRange(Instruction* inst, int nowiden) {
             return false;
         }
         IRange r = rangeJoin(getRange(tv), getRange(fv), false);
+
+        // Complementary envelopes:
+        //   max(x, C-x) >= ceil(C/2)
+        //   min(x, C-x) <= floor(C/2).
+        Value *minMaxA = nullptr, *minMaxB = nullptr;
+        int complementConstant = 0;
+        MinMaxKind kind = signedMinMax(sel, minMaxA, minMaxB);
+        if (kind != MinMaxKind::None &&
+            constantComplement(minMaxA, minMaxB, complementConstant)) {
+            int64_t c = complementConstant;
+            if (kind == MinMaxKind::Max) {
+                int lower = static_cast<int>(c >= 0 ? (c + 1) / 2 : c / 2);
+                r.low = std::max(r.low, lower);
+            } else {
+                int upper = static_cast<int>(c >= 0 ? c / 2 : (c - 1) / 2);
+                r.high = std::min(r.high, upper);
+            }
+        }
         if (hasRange(sel)) {
             IRange cur = getRange(sel);
             IRange joined = rangeJoin(cur, r, false);
