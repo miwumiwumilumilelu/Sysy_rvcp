@@ -5,6 +5,7 @@
 #include <iostream>
 #include <map>
 #include <sstream>
+#include <fstream>
 
 using namespace sysy;
 
@@ -873,4 +874,17 @@ std::string Module::print() {
 
 void Module::dump() {
     std::cerr << print() << std::flush;
+}
+
+void Module::dumpToFile(const char* path) {
+    if (!path) return;
+
+    std::ofstream output(path);
+    if (!output.is_open()) {
+        std::cerr << "cannot open IR dump file: " << path << '\n';
+        return;
+    }
+
+    output << print();
+    output.flush();
 }

@@ -96,6 +96,7 @@ public:
     }
     std::string print();
     void dump();
+    void dumpToFile(const char* path);
 
 private:
     std::vector<Function*> Functions;
