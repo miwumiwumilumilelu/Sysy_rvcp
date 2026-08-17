@@ -95,6 +95,7 @@ public:
         return nullptr;
     }
     std::string print();
+    void dump();
 
 private:
     std::vector<Function*> Functions;
