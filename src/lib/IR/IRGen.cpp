@@ -356,6 +356,12 @@ void IRGen::visit(FuncCallAST &node) {
         if (funcName == "putint" || funcName == "putch" || funcName == "putarray" ||
             funcName == "putfarray" || funcName == "putfloat" || funcName == "_sysy_starttime" || funcName == "_sysy_stoptime")
             retType = Type::getVoidTy();
+        else if (funcName == "vadd_i32" || funcName == "vmul_i32" ||
+                 funcName == "vadd_f32" || funcName == "vmul_f32")
+            // Target-independent bulk vector intrinsics.  Their operands remain
+            // ordinary SysY pointers/scalars; the RV backend lowers the call to
+            // a VLA strip-mined RVV kernel.
+            retType = Type::getVoidTy();
         else if (funcName == "getint" || funcName == "getch" || funcName == "getarray" || funcName == "getfarray")
             retType = Type::getIntTy();
         else if (funcName == "getfloat")

@@ -870,3 +870,7 @@ std::string Module::print() {
     }
     return ss.str();
 }
+
+void Module::dump() {
+    std::cerr << print() << std::flush;
+}
