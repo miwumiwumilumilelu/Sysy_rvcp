@@ -38,6 +38,15 @@ public:
 private:
     std::unique_ptr<Module> TheModule;
     IRBuilder builder;
+
+    struct TensorInfo {
+        Type* ElementType = nullptr;
+        std::vector<int> Dims;
+        bool isParameter = false;
+        bool isTensor() const {
+            return ElementType != nullptr;
+        }
+    };
     
     Function *CurrentFunc = nullptr;
     Value *LastVal = nullptr;
@@ -50,22 +59,37 @@ private:
     // Enforce conversion of any value to a conditional judgment.
     Value* toCondition(Value* cond);
 
+    void defineTensor(const std::string &name, TensorInfo info);
+    TensorInfo* lookupTensor(const std::string &name);
+    
     Constant* getGlobalInitVal(InitValAST* init, Type* type);
     void processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std::vector<int>& indices);
 
     void fillZero(Value *baseAddr, Type *type, std::vector<int> &indices);
 
+    int evaluateDim(ASTNode* node);
+    TensorInfo getTensorExprInfo (ExprAST *expr);
+    Value* getTensorElementAddress(LValAST* lval, const std::vector<int> &indices);
+    Value* emitTensorElement(ExprAST* expr, const std::vector<int> &indices);
+    bool lowerTensorAssignment(AssignStmtAST &node);
     Constant* evaluateConstantExpr(Value* val);
 
     // Symbol stack: Variable name -> Value* in IR.
     // (usually AllocaInst* address)
     std::vector<std::map<std::string, Value*>> Scopes;
+    std::vector<std::map<std::string, TensorInfo>> TensorScopes;
 
     int ValueCounter = 0;
     int LabelCounter = 0;
 
-    void enterScope() { Scopes.emplace_back(); }
-    void exitScope() { Scopes.pop_back(); }
+    void enterScope() { 
+        Scopes.emplace_back();
+        TensorScopes.emplace_back();
+    }
+    void exitScope() { 
+        Scopes.pop_back(); 
+        TensorScopes.pop_back();
+    }
     void defineVar(const std::string &name, Value *val);
     Value* lookupVar(const std::string &name);
 

@@ -231,9 +231,16 @@ std::string AllocaInst::toString() const {
     return Name + " = alloca " + AllocatedType->toString();
 }
 
+static Type* getLoadedType(Value* ptr) {
+    Type* pointee = dyn_cast<PointerType>(ptr->getType())->getPointeeType();
+    if (auto tensorTy = dyn_cast<TensorType>(pointee))
+        return tensorTy->getElemTy();
+    return pointee;
+}
+
 LoadInst::LoadInst(Value *ptr, BasicBlock *parent) 
     : Instruction(
-        dyn_cast<PointerType>(ptr->getType())->getPointeeType(),
+        getLoadedType(ptr),
         Load, 
         parent
       ) {

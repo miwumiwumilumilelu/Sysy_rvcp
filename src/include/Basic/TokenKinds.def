@@ -14,6 +14,7 @@ TOK(eof)                 // End of file
 TOK(identifier)
 TOK(int_const)           // Decimal, octal, hexadecimal integers
 TOK(float_const)
+TOK(tensor_const)
 
 // Operators & punctuation
 PUNCTUATOR(l_paren,      "(")
@@ -29,6 +30,7 @@ PUNCTUATOR(minus,        "-")
 PUNCTUATOR(star,         "*")
 PUNCTUATOR(slash,        "/")
 PUNCTUATOR(percent,      "%")
+PUNCTUATOR(quan,         "@")
 PUNCTUATOR(equal,        "=")
 PUNCTUATOR(less,         "<")
 PUNCTUATOR(greater,      ">")
@@ -42,6 +44,7 @@ PUNCTUATOR(pipe_pipe,    "||")
 
 KEYWORD(int)
 KEYWORD(float)
+KEYWORD(tensor)
 KEYWORD(void)
 KEYWORD(const)
 KEYWORD(if)

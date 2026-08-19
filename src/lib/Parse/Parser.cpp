@@ -16,9 +16,18 @@ bool Parser::expect(tok::TokenKind K) {
 
 std::string Parser::parseType() {
     std::string typeStr;
-    if (CurTok.is(tok::kw_int)) typeStr = "int";
-    else if (CurTok.is(tok::kw_float)) typeStr = "float";
-    else if (CurTok.is(tok::kw_void)) typeStr = "void";
+    if (CurTok.is(tok::kw_tensor)) {
+        getNextToken();
+        if (CurTok.is(tok::kw_int)) {
+            typeStr = "tensor int";
+        } else if (CurTok.is(tok::kw_float)) {
+            typeStr = "tensor float";
+        }
+        else return "";
+    }
+    else if (CurTok.is(tok::kw_int)) { typeStr = "int"; }
+    else if (CurTok.is(tok::kw_float)) { typeStr = "float"; }
+    else if (CurTok.is(tok::kw_void)) { typeStr = "void"; }
     else return "";
 
     getNextToken();
@@ -169,11 +178,13 @@ std::unique_ptr<ExprAST> Parser::parseUnaryExpr() {
     return parsePrimaryExpr();
 }
 
+// oldarch：MulExpr -> PrimaryExpr { (*|/|%) PrimaryExpr }
+// update：MulExp -> UnaryExp | MulExp ('*' | '/' | '%'| '@') UnaryExp
 std::unique_ptr<ExprAST> Parser::parseMulExpr() {
     auto lhs = parseUnaryExpr();
     if (!lhs) return nullptr;
 
-    while (CurTok.is(tok::star) || CurTok.is(tok::slash) || CurTok.is(tok::percent)) {
+    while (CurTok.is(tok::star) || CurTok.is(tok::slash) || CurTok.is(tok::percent) || CurTok.is(tok::quan)) {
         std::string op(CurTok.getText());
         getNextToken();
         auto rhs = parseUnaryExpr();
@@ -340,7 +351,7 @@ std::unique_ptr<BlockAST> Parser::parseBlock() {
     auto block = std::make_unique<BlockAST>();
 
     while (CurTok.isNot(tok::r_brace) && CurTok.isNot(tok::eof)) {
-        if (CurTok.is(tok::kw_int) || CurTok.is(tok::kw_float)) {
+        if (CurTok.is(tok::kw_int) || CurTok.is(tok::kw_float) || CurTok.is(tok::kw_tensor)) {
             auto decls = parseDecl();
             for (auto& decl : decls) {
                 block->addItem(std::move(decl));

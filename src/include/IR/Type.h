@@ -14,7 +14,8 @@ public:
         PointerTy,
         LabelTy,
         FunctionTy,
-        ArrayTy
+        ArrayTy,
+        TensorTy
     };
 
     explicit Type(TypeID id) : ID(id) {}
@@ -27,6 +28,7 @@ public:
     bool isVoid() const { return ID == VoidTy; }
     bool isPointer() const { return ID == PointerTy; }
     bool isArray() const { return ID == ArrayTy; }
+    bool isTensor() const { return ID == TensorTy; }
 
     virtual std::string toString() const = 0;
 
@@ -110,6 +112,22 @@ public:
 
     static bool classof(const Type* T) {
         return T->getTypeID() == ArrayTy;
+    }
+};
+
+class TensorType : public Type {
+    Type* ElemTy;
+public:
+    TensorType(Type* elemty) : Type(TensorTy), ElemTy(elemty) {}
+
+    Type* getElemTy() const { return ElemTy; }
+
+    std::string toString() const override {
+        return "tensor<" + ElemTy->toString() + ">";
+    }
+
+    static bool classof(const Type* T) {
+        return T->getTypeID() == TensorTy;
     }
 };
 

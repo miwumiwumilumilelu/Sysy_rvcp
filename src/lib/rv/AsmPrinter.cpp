@@ -34,6 +34,7 @@ static int totalLeafCount(Type* ty) {
 // Get base type of array.
 static Type* leafType(Type* ty) {
     if (ty->isArray()) return leafType(cast<ArrayType>(ty)->getElementType());
+    if (auto* tensor = dyn_cast<TensorType>(ty)) return tensor->getElemTy();
     return ty;
 }
 

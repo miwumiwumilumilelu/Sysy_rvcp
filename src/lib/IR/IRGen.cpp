@@ -13,6 +13,12 @@ static int getDimCount(Type* ty) {
     return 0;
 }
 
+static Type* unwrapTensorTy(Type* ty) {
+    if (auto tensorTy = dyn_cast<TensorType>(ty))
+        return tensorTy->getElemTy();
+    return ty;
+}
+
 IRGen::IRGen() {
     TheModule = std::make_unique<Module>();
     CurrentFunc = nullptr;
@@ -30,14 +36,29 @@ Value* IRGen::lookupVar(const std::string &name) {
     return nullptr; 
 }
 
+void IRGen::defineTensor(const std::string &name, TensorInfo info) {
+    if (TensorScopes.empty()) return;
+    TensorScopes.back()[name] = std::move(info);
+}
+
+IRGen::TensorInfo* IRGen::lookupTensor(const std::string &name) {
+    for (auto it = TensorScopes.rbegin(); it != TensorScopes.rend(); ++it) {
+        auto found = it->find(name);
+        if (found != it->end()) return &found->second;
+    }
+    return nullptr;
+}
+
 Value* IRGen::castTo(Value* val, Type* targetTy) {
+    targetTy = unwrapTensorTy(targetTy);
+    Type* valueTy = unwrapTensorTy(val->getType());
     if (val->getType() == targetTy) return val;
-    if (targetTy->isFloat() && val->getType()->isInt()) {
+    if (targetTy->isFloat() && valueTy->isInt()) {
         auto inst = builder.Create<CastInst>(Instruction::SIToFP, val, targetTy);
         inst->setName(nextValueName());
         return inst;
     }
-    if (targetTy->isInt() && val->getType()->isFloat()) {
+    if (targetTy->isInt() && valueTy->isFloat()) {
         auto inst = builder.Create<CastInst>(Instruction::FPToSI, val, targetTy);
         inst->setName(nextValueName());
         return inst;
@@ -74,6 +95,313 @@ Value* IRGen::toCondition(Value* cond) {
         return icmp;
     }
 }
+
+// Evaluate dim to get value.
+int IRGen::evaluateDim(ASTNode* node) {
+    if (!node) return -1;
+
+    // 1, 2, 3
+    if (auto number = dynamic_cast<NumberAST*>(node)) {
+        return number->isInt() ? number->getIntVal() : 0;
+    }
+
+    // a, b, c
+    if (auto lval = dynamic_cast<LValAST*>(node)) {
+        Value* value = lookupVar(lval->getName());
+        if (auto global = dyn_cast<GlobalVariable>(value)) {
+            if (auto constant = dyn_cast<ConstantInt>(global->getInit()))
+                return constant->getValue();
+        }
+        return 0;
+    }
+
+    if (auto unary = dynamic_cast<UnaryExprAST*>(node)) {
+        int value = evaluateDim(unary->getOperand());
+        if (unary->getOp() == "-") return -value;
+        if (unary->getOp() == "!") return value==0;
+        return value;
+    }
+
+    // a + b
+    if (auto binary = dynamic_cast<BinaryExprAST*>(node)) {
+        int lhs = evaluateDim(binary->getLHS());
+        int rhs = evaluateDim(binary->getRHS());
+        const std::string &op = binary->getOp();
+        if (op == "+") return lhs + rhs;
+        if (op == "-") return lhs - rhs;
+        if (op == "*") return lhs * rhs;
+        if (op == "/") return rhs? lhs/rhs : 0;
+        if (op == "%") return rhs? lhs%rhs : 0;
+        return 0;
+    }
+
+    return 0;
+}
+
+IRGen::TensorInfo IRGen::getTensorExprInfo (ExprAST *expr) {
+    if (!expr) return {};
+
+    if (auto lval = dynamic_cast<LValAST*>(expr)) {
+        TensorInfo* symbol = lookupTensor(lval->getName());
+        if (!symbol || lval->getIndices().size() >= symbol->Dims.size()) return {};
+        TensorInfo result = *symbol;
+        result.Dims.erase(result.Dims.begin(), result.Dims.begin() + lval->getIndices().size());
+        result.isParameter = false;
+        return result;
+    }
+
+    if (auto unary = dynamic_cast<UnaryExprAST*>(expr)) {
+        if (unary->getOp() == "+" || unary->getOp() == "-")
+            return getTensorExprInfo(unary->getOperand());
+        return {};
+    }
+
+/// Binary
+    auto binary = dynamic_cast<BinaryExprAST*>(expr);
+    if (!binary) return {};
+    const std::string &op = binary->getOp();
+    if (op != "+" && op != "-" && op != "*" && op != "/" && op != "%" && op != "@") {
+        return {};
+    }
+
+    TensorInfo lhs = getTensorExprInfo(binary->getLHS());
+    TensorInfo rhs = getTensorExprInfo(binary->getRHS());
+
+    // at evaluate
+    if (op == "@") {
+        // Only support 2x2 matmul.
+        if (!lhs.isTensor() || !rhs.isTensor() ||
+            lhs.Dims.size() != 2 || rhs.Dims.size() != 2)
+            return {};
+        TensorInfo result;
+        result.ElementType = (lhs.ElementType->isFloat() || rhs.ElementType->isFloat()) ?
+                             Type::getFloatTy() : Type::getIntTy();
+        // mxn @ n*p -> result mxp
+        result.Dims = {lhs.Dims[0], rhs.Dims[1]};
+        return result;
+    }
+
+/// Promote scalar to tensor when lhs or rhs is Tensor, and the other is Scalar.
+    if (!lhs.isTensor() && !rhs.isTensor()) return {};
+
+    TensorInfo result = lhs.isTensor() ? lhs : rhs;
+    if (lhs.isTensor() && rhs.isTensor()) {
+        // Check Dims match
+        if (lhs.Dims.size() != rhs.Dims.size()) return {};
+        for (size_t i = 0; i < lhs.Dims.size(); i++) {
+            // each Dim shoud be equal;
+            if (lhs.Dims[i] >= 0 && rhs.Dims[i] >= 0 && lhs.Dims[i] != rhs.Dims[i])
+                return {};
+        }
+    }
+
+    // One Tensor is Float, then promote int to float.
+    // here used in checking expr's TensorInfo
+    if ((lhs.isTensor() && lhs.ElementType->isFloat()) || (rhs.isTensor() && rhs.ElementType->isFloat())) {
+        result.ElementType = Type::getFloatTy();
+    }
+
+    // Check the number
+    if (auto number = dynamic_cast<NumberAST*>(lhs.isTensor() ? binary->getRHS() : binary->getLHS())) {
+        if (!number->isInt()) {
+            result.ElementType = Type::getFloatTy();
+        }
+    }
+
+    result.isParameter = false;
+    return result;
+}
+
+Value* IRGen::getTensorElementAddress(LValAST* lval, const std::vector<int> &indices) {
+    Value* address = lookupVar(lval->getName());
+    TensorInfo* info = lookupTensor(lval->getName());
+    if (!address || !info) return nullptr;
+    if (info->isParameter) {
+        auto load = builder.Create<LoadInst>(address);
+        load->setName(nextValueName());
+        address = load;
+    } 
+    else if (auto pointer = dyn_cast<PointerType>(address->getType())) {
+        if (pointer->getPointeeType()->isArray()) {
+            auto gep = builder.Create<GetElementPtrInst>(address, new ConstantInt(0));
+            gep->setName(nextValueName());
+            address = gep;
+        }
+    }
+
+    for (const auto &indexExpr : lval->getIndices()) {
+        indexExpr->accept(*this);
+        auto gep = builder.Create<GetElementPtrInst>(address, LastVal);
+        gep->setName(nextValueName());
+        address = gep;
+    }
+    for (int index : indices) {
+        auto gep = builder.Create<GetElementPtrInst>(address, new ConstantInt(index));
+        gep->setName(nextValueName());
+        address = gep;
+    }
+    return address;
+}
+
+Value* IRGen::emitTensorElement(ExprAST* expr, const std::vector<int> &indices) {
+    if (auto lval = dynamic_cast<LValAST*>(expr)) {
+        TensorInfo info = getTensorExprInfo(lval);
+        if (info.isTensor()) {
+            Value* address = getTensorElementAddress(lval, indices);
+            if (!address) return nullptr;
+            auto load = builder.Create<LoadInst>(address);
+            load->setName(nextValueName());
+            return load;
+        }
+        lval->accept(*this);
+        return LastVal;
+    }
+
+    if (auto unary = dynamic_cast<UnaryExprAST*>(expr)) {
+        TensorInfo info = getTensorExprInfo(unary);
+        if (!info.isTensor()) {
+            unary->accept(*this);
+            return LastVal;
+        }
+        Value* operand = emitTensorElement(unary->getOperand(), indices);
+        if (unary->getOp() == "+") return operand;
+        Type* elementTy = unwrapTensorTy(operand->getType());
+        Instruction::OpID op = elementTy->isFloat() ? Instruction::FSub : Instruction::Sub;
+        Value* zero = elementTy->isFloat()? static_cast<Value*>(new ConstantFloat(0.0f)) 
+                                          : static_cast<Value*>(new ConstantInt(0));
+        auto result = builder.Create<BinaryInst>(op, zero, operand);
+        result->setName(nextValueName());
+        return result;
+    }
+
+    if (auto binary = dynamic_cast<BinaryExprAST*>(expr)) {
+        TensorInfo resultinfo = getTensorExprInfo(binary);
+        if (!resultinfo.isTensor()) {
+            binary->accept(*this);
+            return LastVal;
+        }
+        const std::string &op = binary->getOp();
+        // !!!
+        if (op == "@") {
+            TensorInfo lhsInfo = getTensorExprInfo(binary->getLHS());
+            TensorInfo rhsInfo = getTensorExprInfo(binary->getRHS());
+            if (indices.size() != 2 || lhsInfo.Dims[1] != rhsInfo.Dims[0]) {
+                return nullptr;
+            }
+            Value* sum = nullptr;
+            for (int k = 0; k < lhsInfo.Dims[1]; k++) {
+                Value* lhs = emitTensorElement(binary->getLHS(), {indices[0], k});
+                Value* rhs = emitTensorElement(binary->getRHS(), {k, indices[1]});
+                lhs = castTo(lhs, resultinfo.ElementType);
+                rhs = castTo(rhs, resultinfo.ElementType);
+                Instruction::OpID mulOp = resultinfo.ElementType->isFloat()? Instruction::FMul 
+                                                                           : Instruction::Mul;
+                auto product = builder.Create<BinaryInst>(mulOp, lhs, rhs);
+                product->setName(nextValueName());
+                if (!sum) sum = product;
+                else {
+                    Instruction::OpID addOp = resultinfo.ElementType->isFloat()? Instruction::FAdd : Instruction::Add;
+                    auto add = builder.Create<BinaryInst>(addOp, sum, product);
+                    add->setName(nextValueName());
+                    sum = add;
+                }          
+            }
+            return sum;
+        }
+
+        TensorInfo lhsInfo = getTensorExprInfo(binary->getLHS());
+        TensorInfo rhsInfo = getTensorExprInfo(binary->getRHS());
+        Value* lhs = nullptr;
+        if (lhsInfo.isTensor()) {
+            lhs = emitTensorElement(binary->getLHS(), indices);
+        } else {
+            binary->getLHS()->accept(*this);
+            lhs = LastVal;
+        }
+        Value* rhs = nullptr;
+        if (rhsInfo.isTensor()) {
+            rhs = emitTensorElement(binary->getRHS(), indices);
+        } else {
+            binary->getRHS()->accept(*this);
+            rhs = LastVal;
+        }
+        Type* elementTy = lhs->getType()->isFloat()? Type::getFloatTy() : Type::getIntTy()
+                          || rhs->getType()->isFloat()? Type::getFloatTy() : Type::getIntTy();
+        if (op == "%" && elementTy->isFloat()) return nullptr;
+
+        // promote
+        lhs = castTo(lhs, elementTy);
+        rhs = castTo(rhs, elementTy);
+        Instruction::OpID opID = Instruction::Add;
+        if (elementTy->isFloat()) {
+            if (op == "+") opID = Instruction::FAdd;
+            else if (op == "-") opID = Instruction::FSub;
+            else if (op == "*") opID = Instruction::FMul;
+            else if (op == "/") opID = Instruction::FDiv;
+        } else {
+            if (op == "+") opID = Instruction::Add;
+            if (op == "-") opID = Instruction::Sub;
+            if (op == "*") opID = Instruction::Mul;
+            if (op == "/") opID = Instruction::Div;
+            if (op == "%") opID = Instruction::Mod;
+        }
+        auto result = builder.Create<BinaryInst>(opID, lhs, rhs);
+        result->setName(nextValueName());
+        return result;
+    }
+
+    expr->accept(*this);
+    return LastVal;
+}
+
+bool IRGen::lowerTensorAssignment(AssignStmtAST &node) {
+    TensorInfo target = getTensorExprInfo(node.getLVal());
+    if (!target.isTensor()) return false;
+    TensorInfo value = getTensorExprInfo(node.getValue());
+    if (!value.isTensor()) 
+        return true;
+    if (target.Dims.size() != value.Dims.size()) 
+        return true;
+
+    std::vector<int> shape = target.Dims;
+    for (size_t i = 0; i < shape.size(); i++) {
+        if (shape[i] < 0) 
+            shape[i] = value.Dims[i];
+        if (value.Dims[i] >= 0 && shape[i] != value.Dims[i]) 
+            return true;
+    }
+
+    size_t elementCnt = 1;
+    for (int dim : shape) {
+        if (dim <= 0) return true;
+        elementCnt *= static_cast<size_t>(dim);
+    }
+    std::vector<std::vector<int>> allIndices;
+    std::vector<Value*> allElements;
+    allIndices.reserve(elementCnt);
+    allElements.reserve(elementCnt);
+    for (size_t flat = 0; flat < elementCnt; flat++) {
+        size_t remainder = flat;
+        std::vector<int> indices(shape.size());
+        for (size_t i = shape.size(); i > 0; i--) {
+            indices[i-1] = static_cast<int>(remainder % shape[i-1]);
+            remainder /= shape[i-1];
+        }
+        Value* element = emitTensorElement(node.getValue(), indices);
+        if (!element) return true;
+        allIndices.push_back(std::move(indices));
+        allElements.push_back(castTo(element, target.ElementType));
+    }
+
+    for (size_t i = 0; i < allElements.size(); i++) {
+        Value* address = getTensorElementAddress(node.getLVal(), allIndices[i]);
+        if (!address) return true;
+        builder.Create<StoreInst>(allElements[i], address);
+    }
+    LastVal = nullptr;
+    return true;
+}
+
 
 Constant* IRGen::evaluateConstantExpr(Value* val) {
     if (!val) return nullptr;
@@ -150,7 +478,7 @@ Constant* IRGen::getGlobalInitVal(InitValAST* init, Type* type) {
             
             Type* basicTy = ty;
             while (auto arrTy = dyn_cast<ArrayType>(basicTy)) basicTy = arrTy->getElementType();
-
+            basicTy = unwrapTensorTy(basicTy);
             Constant* cval = dyn_cast<Constant>(computedVal);
             if (!cval) cval = basicTy->isFloat() ? (Constant*)new ConstantFloat(0.0f) : (Constant*)new ConstantInt(0);
             else {
@@ -192,6 +520,7 @@ Constant* IRGen::getGlobalInitVal(InitValAST* init, Type* type) {
             }
             return new ConstantArray(arrTy, elems);
         } else {
+            ty = unwrapTensorTy(ty);
             Constant* val = flat_vals[idx++];
             if (!val) val = ty->isFloat() ? (Constant*)new ConstantFloat(0.0f) : (Constant*)new ConstantInt(0);
             return val;
@@ -218,6 +547,7 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
             Value* val = LastVal;
             Type* basicTy = ty;
             while (auto arrTy = dyn_cast<ArrayType>(basicTy)) basicTy = arrTy->getElementType();
+            basicTy = unwrapTensorTy(basicTy);
             val = castTo(val, basicTy);
             if (idx < totalSize) flat_vals[idx++] = val;
             return;
@@ -251,7 +581,7 @@ void IRGen::processLocalInit(InitValAST* init, Value* baseAddr, Type* type, std:
         ptr->setName(nextValueName());
         basicTy = pTy->getElementType();
     }
-
+    basicTy = unwrapTensorTy(basicTy);
     Constant* constZero = basicTy->isFloat() ? (Constant*)new ConstantFloat(0.0f) : (Constant*)new ConstantInt(0);
     
     if (!type->isArray()) {
@@ -414,7 +744,10 @@ void IRGen::visit(FuncDefAST &node) {
     Type* retType = Type::getIntTy();
     if (node.getRetType() == "void") retType = Type::getVoidTy();
     else if (node.getRetType() == "float") retType = Type::getFloatTy();
-
+    else if (node.returnTensor()) {
+        Type* elemTy = node.getRetType() == "tensor float" ? Type::getFloatTy() : Type::getIntTy();
+        retType = new TensorType(elemTy);
+    }
     auto func = new Function(node.getName(), retType);
     TheModule->addFunction(func);
     CurrentFunc = func;
@@ -423,7 +756,8 @@ void IRGen::visit(FuncDefAST &node) {
 
     for (size_t i = 0; i < node.getParams().size(); ++i) {
         auto &paramNode = node.getParams()[i];
-        Type* baseTy = (paramNode->getType() == "float") ? Type::getFloatTy() : Type::getIntTy();
+        Type* baseTy = (paramNode->getElementType() == "float") ? Type::getFloatTy() : Type::getIntTy();
+        if (paramNode->isTensor()) baseTy = new TensorType(baseTy);
         Type* argTy = baseTy;
 
         if (!paramNode->getDims().empty()) {
@@ -462,9 +796,9 @@ void IRGen::visit(FuncDefAST &node) {
             };
 
             const auto &dims = paramNode->getDims();
-            for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
-                if (it == dims.rend() - 1) continue;
-                int size = evalConst(it->get());
+            for (auto it = dims.size(); it > 1; it--) {
+                size_t dimIndex = it - 1;
+                int size = evalConst(dims[dimIndex].get());
                 baseTy = new ArrayType(baseTy, size);
             }
             argTy = new PointerType(baseTy);
@@ -488,6 +822,14 @@ void IRGen::visit(FuncDefAST &node) {
         alloca->setName("%" + paramNode->getName() + "_addr");
         builder.Create<StoreInst>(arg, alloca);
         defineVar(paramNode->getName(), alloca);
+        if (paramNode->isTensor()) {
+            TensorInfo info;
+            info.ElementType = paramNode->getElementType() == "float" ? Type::getFloatTy() : Type::getIntTy();
+            info.isParameter = true;
+            for (const auto &dim :paramNode->getDims())
+                info.Dims.push_back(dim? evaluateDim(dim.get()) : -1);
+            defineTensor(paramNode->getName(), std::move(info));
+        }
     }
 
     if (node.getBody()) node.getBody()->accept(*this);
@@ -517,7 +859,9 @@ void IRGen::visit(BlockAST &node) {
 }
 
 void IRGen::visit(VarDeclAST &node) {
-    Type* varType = (node.getType() == "float") ? Type::getFloatTy() : Type::getIntTy();
+    Type* varType = (node.getElementType() == "float") ? Type::getFloatTy() : Type::getIntTy();
+    if (node.isTensor())
+        varType = new TensorType(varType);
     std::function<int(ASTNode*)> evalConst = [&](ASTNode* n) -> int {
         if (!n) return 0;
         if (auto num = dynamic_cast<NumberAST*>(n)) return num->getIntVal();
@@ -553,8 +897,9 @@ void IRGen::visit(VarDeclAST &node) {
     };
 
     const auto &dims = node.getDims();
-    for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
-        int size = evalConst(it->get());
+    for (auto it = dims.size(); it > 0; it--) {
+        size_t dimIndex = it - 1;
+        int size = evalConst(dims[dimIndex].get());
         varType = new ArrayType(varType, size);
     }
 
@@ -567,6 +912,13 @@ void IRGen::visit(VarDeclAST &node) {
         globalVar->setConst(node.isConst());
         TheModule->addGlobalVariable(globalVar);
         defineVar(node.getName(), globalVar);
+        if (node.isTensor()) {
+            TensorInfo info;
+            info.ElementType = node.getElementType() == "float" ? Type::getFloatTy() : Type::getIntTy();
+            for (const auto &dim : dims)
+                info.Dims.push_back(evaluateDim(dim.get()));
+            defineTensor(node.getName(), std::move(info));
+        }
         return;
     }
 
@@ -581,6 +933,13 @@ void IRGen::visit(VarDeclAST &node) {
 
     alloca->setName("%" + node.getName() + "_" + std::to_string(ValueCounter++));
     defineVar(node.getName(), alloca);
+    if (node.isTensor()) {
+        TensorInfo info;
+        info.ElementType = node.getElementType() == "float" ? Type::getFloatTy() : Type::getIntTy();
+        for (const auto &dim : dims)
+            info.Dims.push_back(evaluateDim(dim.get()));
+        defineTensor(node.getName(), std::move(info));
+    }
 
     if (node.getInit()) {
         std::vector<int> indices;
@@ -593,6 +952,8 @@ void IRGen::visit(BreakStmtAST&) { builder.Create<BreakInst>(); }
 void IRGen::visit(ContinueStmtAST&) { builder.Create<ContinueInst>(); }
 
 void IRGen::visit(AssignStmtAST &node) {
+    if (lowerTensorAssignment(node)) return;
+    if (getTensorExprInfo(node.getValue()).isTensor()) return;
     isLValMode = true;
     node.getLVal()->accept(*this);
     isLValMode = false;

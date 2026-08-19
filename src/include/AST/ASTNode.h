@@ -8,6 +8,15 @@
 
 namespace sysy {
 
+inline bool isTensorType(const std::string &ty) {
+    return ty == "tensor int" || ty == "tensor float";
+}
+
+inline std::string getElementTypeName(const std::string &ty) {
+    // "tensor " is 7 size.
+    return isTensorType(ty)? ty.substr(7) : ty;
+}
+
 class ASTVisitor;
 
 class ASTNode {
@@ -59,6 +68,7 @@ public:
     LValAST(const std::string &name, std::vector<std::unique_ptr<ExprAST>> indices = {})
         : Name(name), Indices(std::move(indices)) {}
     std::vector<std::unique_ptr<ExprAST>>& getIndices() { return Indices; }
+    const std::vector<std::unique_ptr<ExprAST>>& getIndices() const { return Indices; }
     std::string getName() const { return Name; }
     void dump(int indent) const override;
     void accept(ASTVisitor &visitor) override;
@@ -124,6 +134,8 @@ public:
     const std::vector<std::unique_ptr<ExprAST>>& getDims() const { return Dims; }
     InitValAST* getInit() const { return Init.get(); }
     bool isConst() const { return IsConst; }
+    bool isTensor() const { return isTensorType(Type); }
+    std::string getElementType() const { return getElementTypeName(Type); }
 
     void dump(int indent) const override;
     void accept(ASTVisitor &visitor) override;
@@ -230,6 +242,8 @@ public:
     const std::string& getType() const { return Type; }
     const std::string& getName() const { return Name; }
     const std::vector<std::unique_ptr<ExprAST>>& getDims() const { return Dims; }
+    bool isTensor() const { return isTensorType(Type); }
+    std::string getElementType() const { return getElementTypeName(Type); }
 
     void dump(int indent) const override;
     void accept(ASTVisitor &visitor) override;
@@ -237,7 +251,7 @@ public:
 
 class FuncDefAST : public ASTNode {
     std::string Name;
-    std::string RetType; // int, float, void
+    std::string RetType; // int, float, void, tensor int, tensor float
     std::vector<std::unique_ptr<FuncFParamAST>> Params; 
     std::unique_ptr<BlockAST> Body;
 public:
@@ -249,6 +263,7 @@ public:
     const std::string& getRetType() const { return RetType; }
     const std::vector<std::unique_ptr<FuncFParamAST>>& getParams() const { return Params; }
     BlockAST* getBody() const { return Body.get(); }
+    bool returnTensor() const { return isTensorType(RetType); }
 
     void dump(int indent) const override;
     void accept(ASTVisitor &visitor) override;

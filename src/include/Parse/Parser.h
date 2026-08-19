@@ -38,6 +38,7 @@ private:
     std::unique_ptr<ExprAST> parseEqExpr(); // == | !=
     std::unique_ptr<ExprAST> parseRelExpr();      // < | > | <= | >=
     std::unique_ptr<ExprAST> parseAddExpr();      // AddExpr -> MulExpr { (+|-) MulExpr }
+    // update：MulExp -> UnaryExp | MulExp ('*' | '/' | '%'| '@') UnaryExp
     std::unique_ptr<ExprAST> parseMulExpr();      // MulExpr -> PrimaryExpr { (*|/|%) PrimaryExpr }
     std::unique_ptr<ExprAST> parseUnaryExpr();   // UnaryExpr -> (+|-) UnaryExpr | PrimaryExpr
     std::unique_ptr<ExprAST> parsePrimaryExpr();  // PrimaryExpr -> Number | (Expr)
